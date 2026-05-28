@@ -6,3 +6,4 @@ logs/
 !package.json
 AGENTS.md
 src/strategies/
+.DS_Store

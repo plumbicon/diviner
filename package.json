@@ -3,18 +3,16 @@
   "version": "0.1.0",
   "description": "Trading strategy backtesting ecosystem for MOEX data",
   "type": "module",
-  "main": "src/trading.js",
+  "main": "src/diviner.js",
   "bin": {
-    "trading": "./src/trading.js",
-    "diviner": "./src/trading.js",
+    "diviner": "./src/diviner.js",
     "diviner-fetch": "./src/fetch.js",
     "diviner-convert": "./src/convert.js",
     "diviner-backtest": "./src/backtest.js",
     "diviner-live": "./src/live.js"
   },
   "scripts": {
-    "start": "node src/trading.js",
-    "trading": "node src/trading.js",
+    "start": "node src/diviner.js",
     "fetch": "node src/fetch.js",
     "convert": "node src/convert.js",
     "backtest": "node src/backtest.js",

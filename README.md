@@ -24,12 +24,7 @@ diviner/
 │   │   ├── live-engine.js     # Движок live-торговли
 │   │   ├── order-manager.js   # Управление ордерами
 │   │   └── state-manager.js   # Управление состоянием позиции
-│   ├── strategies/         # Готовые стратегии
-│   │   ├── sma_cross.js
-│   │   ├── session_profit_short.js
-│   │   ├── release_morning_short.js
-│   │   └── release_morning_short_testing.js
-│   ├── trading.js          # Единая точка входа с --mode
+│   ├── diviner.js          # Единая точка входа с --mode
 │   ├── fetch.js            # Загрузка свечей через Tinkoff API
 │   ├── convert.js          # JSON → Parquet
 │   ├── backtest.js         # Запуск бэктеста
@@ -56,68 +51,53 @@ export T_INVEST_TOKEN=<your-token>
 ### 1. Загрузка данных
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24 --parquet > sber_2024.parquet
+T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24 --parquet > sber_2024.parquet
 ```
 
 ### 2. Запуск бэктеста
 
 ```bash
-./trading --mode backtest sber_2024.parquet --strategy src/strategies/sma_cross.js
+diviner --mode backtest sber_2024.parquet --strategy path/to/your-strategy.js
 ```
 
-### JSON-выгрузка
+### JSON-выгрузка с конвертацией
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24 > sber_2024.json
-```
-
-JSON можно отдельно конвертировать в Parquet:
-
-```bash
-npm run convert -- --input-json sber_2024.json --output-parquet sber_2024.parquet
+T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24 > sber_2024.json
+diviner --mode convert --input-json sber_2024.json --output-parquet sber_2024.parquet
 ```
 
 ## Команды
 
-### npm-скрипты
-
-| Команда | Описание |
-|---------|----------|
-| `./trading --mode fetch` | Единая точка входа: загрузка свечей через Tinkoff API |
-| `./trading --mode backtest` | Единая точка входа: запуск бэктеста |
-| `./trading --mode live` | Единая точка входа: live-трейдинг через Tinkoff API |
-| `npm run fetch` | Загрузка свечей через Tinkoff API |
-| `npm run convert` | Конвертация JSON → Parquet |
-| `npm run backtest` | Запуск бэктеста |
-| `npm run live` | Live-трейдинг через Tinkoff API |
-
-### `trading` — единая точка входа
+### `diviner` — единая точка входа
 
 ```bash
-./trading --mode <backtest|live|fetch> [опции выбранного режима]
+diviner --mode <backtest|live|fetch|convert> [опции выбранного режима]
 ```
 
-`trading` читает только `--mode`, а остальные флаги передаёт выбранному режиму без изменений.
+`diviner` читает только `--mode`, а остальные флаги передаёт выбранному режиму без изменений.
 
 | Опция | Описание |
 |-------|----------|
 | `--mode backtest` | Запустить бэктест |
 | `--mode live` | Запустить live-торговлю или sandbox-утилиты |
 | `--mode fetch` | Загрузить свечи через Tinkoff API |
+| `--mode convert` | Конвертировать JSON → Parquet |
 
 Примеры:
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode fetch --security SBER --from-date 2024-01-01
-./trading --mode backtest sber_2024.parquet --strategy src/strategies/sma_cross.js --balance 10000
-T_INVEST_TOKEN=<your-token> ./trading --mode live --create-account --increase-balance 10000
-T_INVEST_TOKEN=<your-token> ./trading --mode live --strategy src/strategies/test_odd_even.js --ticker SBER --sandbox --account <sandbox-account-id>
+T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01
+diviner --mode backtest sber_2024.parquet --strategy path/to/your-strategy.js --balance 10000
+T_INVEST_TOKEN=<your-token> diviner --mode live --create-account --increase-balance 10000
+T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker SBER --sandbox --account <sandbox-account-id>
+diviner --mode convert --input-json sber_2024.json --output-parquet sber_2024.parquet
 ```
 
 ### `fetch` — Загрузка данных
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24
+T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24
 ```
 
 | Опция | Описание | По умолчанию |
@@ -136,7 +116,7 @@ T_INVEST_TOKEN=<your-token> ./trading --mode fetch --security SBER --from-date 2
 **Пример — сразу скачать Parquet:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 1 --parquet > data/sber_2024.parquet
+T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 1 --parquet > data/sber_2024.parquet
 ```
 
 Parquet-файл содержит metadata инструмента (`ticker`, `classCode`, `figi`, `instrumentUid`, `exchange`, `lot`) и сами свечи. Историческое расписание рядом с данными не записывается: backtest восстанавливает календарь торгов только из свечей текущего файла.
@@ -144,7 +124,7 @@ Parquet-файл содержит metadata инструмента (`ticker`, `cl
 ### `convert` — Конвертация
 
 ```bash
-node src/convert.js --input-json sber_2024.json --output-parquet sber_2024.parquet
+diviner --mode convert --input-json sber_2024.json --output-parquet sber_2024.parquet
 ```
 
 | Опция | Описание |
@@ -155,7 +135,7 @@ node src/convert.js --input-json sber_2024.json --output-parquet sber_2024.parqu
 ### `backtest` — Бэктест
 
 ```bash
-./trading --mode backtest sber_2024.parquet --strategy src/strategies/sma_cross.js
+diviner --mode backtest sber_2024.parquet --strategy path/to/your-strategy.js
 ```
 
 | Опция | Описание | По умолчанию |
@@ -170,23 +150,16 @@ node src/convert.js --input-json sber_2024.json --output-parquet sber_2024.parqu
 Данные можно передать через pipe:
 
 ```bash
-cat sber_2024.parquet | ./trading --mode backtest --strategy src/strategies/sma_cross.js
+cat sber_2024.parquet | diviner --mode backtest --strategy path/to/your-strategy.js
 ```
 
 **Пример с --verbose:**
 
 ```bash
-./trading --mode backtest sber_2024.parquet --strategy src/strategies/sma_cross.js --verbose
+diviner --mode backtest sber_2024.parquet --strategy path/to/your-strategy.js --verbose
 ```
 
 Без флага `--verbose` история сделок (`trade_log`) будет пустым массивом, что уменьшает размер вывода.
-
-**Пример release_morning_short_testing с расписанием из контекста данных:**
-
-```bash
-./trading --mode backtest data/SBER_2025_1m.parquet \
-  --strategy src/strategies/release_morning_short_testing.js
-```
 
 В backtest расписание не читается из Parquet metadata и не запрашивается через T-Invest API: backtest-движок без предупреждений восстанавливает его из самих свечей. Календарь отдаёт стратегии только факт торгового дня, время открытия и время закрытия.
 
@@ -205,7 +178,7 @@ cat sber_2024.parquet | ./trading --mode backtest --strategy src/strategies/sma_
 - `state-manager.js` - управление состоянием позиции
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --strategy src/strategies/release_morning_short.js --ticker AFKS --sandbox --account <sandbox-account-id>
+T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker AFKS --sandbox --account <sandbox-account-id>
 ```
 
 | Опция | Описание | По умолчанию |
@@ -255,14 +228,14 @@ T_INVEST_TOKEN=<your-token> ./trading --mode live --strategy src/strategies/rele
 **Пример — тестирование в sandbox:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --strategy src/strategies/release_morning_short.js --ticker AFKS --sandbox --account <sandbox-account-id> --dry-run
+T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker AFKS --sandbox --account <sandbox-account-id> --dry-run
 ```
 
 **Пример — sandbox с реальными заявками в песочнице:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --create-account --increase-balance 10000 --print-balance
-T_INVEST_TOKEN=<your-token> ./trading --mode live --strategy src/strategies/test_odd_even.js --ticker SBER --sandbox --account <sandbox-account-id> --verbose
+T_INVEST_TOKEN=<your-token> diviner --mode live --create-account --increase-balance 10000 --print-balance
+T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker SBER --sandbox --account <sandbox-account-id> --verbose
 ```
 
 Первая команда создаст sandbox-счёт и пополнит его на `10000` RUB. Вторая запустит стратегию на созданном счёте.
@@ -270,31 +243,31 @@ T_INVEST_TOKEN=<your-token> ./trading --mode live --strategy src/strategies/test
 **Пример — запись логов в файл:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --strategy src/strategies/test_odd_even.js --ticker SBER --sandbox --account <sandbox-account-id> --log logs/diviner-live.log
+T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker SBER --sandbox --account <sandbox-account-id> --log logs/diviner-live.log
 ```
 
 **Пример — список sandbox-счетов:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --list-sandboxes
+T_INVEST_TOKEN=<your-token> diviner --mode live --list-sandboxes
 ```
 
 **Пример — создать sandbox-счёт:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --create-account
+T_INVEST_TOKEN=<your-token> diviner --mode live --create-account
 ```
 
 **Пример — удалить sandbox-счёт:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --remove-account --account <sandbox-account-id>
+T_INVEST_TOKEN=<your-token> diviner --mode live --remove-account --account <sandbox-account-id>
 ```
 
 **Пример — баланс sandbox-счёта:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --print-balance --account <sandbox-account-id>
+T_INVEST_TOKEN=<your-token> diviner --mode live --print-balance --account <sandbox-account-id>
 ```
 
 Пример вывода:
@@ -316,7 +289,7 @@ T_INVEST_TOKEN=<your-token> ./trading --mode live --print-balance --account <san
 **Пример — увеличить баланс sandbox-счёта без запуска стратегии:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --increase-balance 10000 --account <sandbox-account-id>
+T_INVEST_TOKEN=<your-token> diviner --mode live --increase-balance 10000 --account <sandbox-account-id>
 ```
 
 Команда увеличит RUB-баланс указанного sandbox-счёта на `10000`. T-Invest sandbox API предоставляет метод `SandboxPayIn` для пополнения счёта, но не метод установки произвольного баланса.
@@ -324,7 +297,7 @@ T_INVEST_TOKEN=<your-token> ./trading --mode live --increase-balance 10000 --acc
 **Пример — обнулить позиции по акциям и отдельно увеличить RUB-баланс:**
 
 ```bash
-T_INVEST_TOKEN=<your-token> ./trading --mode live --account <sandbox-account-id> --reset-positions --increase-balance 10000
+T_INVEST_TOKEN=<your-token> diviner --mode live --account <sandbox-account-id> --reset-positions --increase-balance 10000
 ```
 
 При совместном использовании `--increase-balance` применяется до `--reset-positions`, а `--reset-positions` сохраняет текущий RUB-баланс. Если на счёте есть long-позиции по акциям, команда откажется выполнять сброс: T-Invest sandbox не предоставляет API для удаления бумаг без сделки, продажа меняет RUB-баланс, а списание лишних RUB через `SandboxPayIn` отклоняется API.
@@ -375,16 +348,6 @@ EOF
    ```
 
 ## Стратегии
-
-### Готовые стратегии
-
-| Стратегия | Описание |
-|-----------|----------|
-| `sma_cross` | Пересечение SMA(10) и SMA(20) |
-| `session_profit_short` | Утренний шорт 10:00–10:10, SL 1%, TP 1% |
-| `release_morning_short` | Утренний шорт 7:00–9:50, SL 0.8%, TP 0.6% |
-| `release_morning_short_testing` | Утренний шорт от открытия биржи до 09:49 МСК; закрытие на предпоследней свече дня |
-| `test_odd_even` | Тестовая: шорт в четные минуты, закрытие в нечетные |
 
 ### Создание своей стратегии
 

@@ -1,0 +1,38 @@
+{
+  "name": "diviner",
+  "version": "0.1.0",
+  "description": "Trading strategy backtesting ecosystem for MOEX data",
+  "type": "module",
+  "main": "src/trading.js",
+  "bin": {
+    "trading": "./src/trading.js",
+    "diviner": "./src/trading.js",
+    "diviner-fetch": "./src/fetch.js",
+    "diviner-convert": "./src/convert.js",
+    "diviner-backtest": "./src/backtest.js",
+    "diviner-live": "./src/live.js"
+  },
+  "scripts": {
+    "start": "node src/trading.js",
+    "trading": "node src/trading.js",
+    "fetch": "node src/fetch.js",
+    "convert": "node src/convert.js",
+    "backtest": "node src/backtest.js",
+    "live": "node src/live.js"
+  },
+  "keywords": [
+    "trading",
+    "backtest",
+    "moex",
+    "stocks"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.11.0",
+    "@dsnp/parquetjs": "^1.8.7",
+    "commander": "^12.0.0",
+    "date-fns": "^3.0.0",
+    "tinkoff-invest-api": "^7.0.1"
+  }
+}

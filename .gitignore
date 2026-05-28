@@ -1,0 +1,8 @@
+node_modules/
+*.parquet
+*.json
+data/
+logs/
+!package.json
+AGENTS.md
+src/strategies/

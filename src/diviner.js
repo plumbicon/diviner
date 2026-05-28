@@ -7,6 +7,7 @@ const MODES = {
     backtest: "backtest.js",
     live: "live.js",
     fetch: "fetch.js",
+    convert: "convert.js",
 };
 
 const MODE_NAMES = Object.keys(MODES);
@@ -39,7 +40,7 @@ function parseTradingArgs(argv) {
 }
 
 function printHelp() {
-    const command = "trading";
+    const command = "diviner";
 
     console.log(`Usage: ${command} --mode <mode> [mode options]
 
@@ -49,17 +50,20 @@ Modes:
   backtest    Run a strategy on historical data
   live        Run live trading or sandbox utilities
   fetch       Fetch historical candles from Tinkoff Invest API
+  convert     Convert candles JSON to Parquet
 
 Examples:
-  T_INVEST_TOKEN=<token> ${command} --mode fetch --security SBER --from-date 2024-01-01
-  ${command} --mode backtest data/sber.parquet --strategy src/strategies/sma_cross.js --balance 10000
+  T_INVEST_TOKEN=<token> ${command} --mode fetch --security SBER --from-date 2024-01-01 --parquet > sber.parquet
+  ${command} --mode backtest data/sber.parquet --strategy path/to/your-strategy.js --balance 10000
   T_INVEST_TOKEN=<token> ${command} --mode live --create-account --increase-balance 10000
-  T_INVEST_TOKEN=<token> ${command} --mode live --strategy src/strategies/test_odd_even.js --ticker SBER --sandbox --account <sandbox-account-id>
+  T_INVEST_TOKEN=<token> ${command} --mode live --strategy path/to/your-strategy.js --ticker SBER --sandbox --account <sandbox-account-id>
+  ${command} --mode convert --input-json sber.json --output-parquet sber.parquet
 
 Use mode-specific help:
   ${command} --mode backtest --help
   ${command} --mode live --help
-  ${command} --mode fetch --help`);
+  ${command} --mode fetch --help
+  ${command} --mode convert --help`);
 }
 
 function exitWithError(message) {

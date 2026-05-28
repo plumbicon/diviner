@@ -302,51 +302,6 @@ T_INVEST_TOKEN=<your-token> diviner --mode live --account <sandbox-account-id> -
 
 При совместном использовании `--increase-balance` применяется до `--reset-positions`, а `--reset-positions` сохраняет текущий RUB-баланс. Если на счёте есть long-позиции по акциям, команда откажется выполнять сброс: T-Invest sandbox не предоставляет API для удаления бумаг без сделки, продажа меняет RUB-баланс, а списание лишних RUB через `SandboxPayIn` отклоняется API.
 
-### Запуск как systemd-демона
-
-Для запуска live-режима в фоне с автоматическим перезапуском и логированием через journalctl:
-
-1. **Отредактируйте файл `diviner-live.service`:**
-   - Замените `User=admin`, если сервис должен запускаться от другого пользователя
-   - Проверьте `User`, `WorkingDirectory`, `--account`, тикер и режим sandbox/production
-   - При необходимости измените стратегию и тикер
-
-2. **Создайте файл окружения:**
-   ```bash
-   sudo tee /home/admin/trading/trader.env >/dev/null <<'EOF'
-T_INVEST_TOKEN=<your-token>
-EOF
-   sudo chown admin:admin /home/admin/trading/trader.env
-   sudo chmod 600 /home/admin/trading/trader.env
-   ```
-
-3. **Установите сервис:**
-   ```bash
-   sudo cp diviner-live.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable diviner-live
-   sudo systemctl start diviner-live
-   ```
-
-4. **Чтение логов через journalctl:**
-   ```bash
-   # Все логи в реальном времени
-   sudo journalctl -u diviner-live -f
-   
-   # Последние 100 строк
-   sudo journalctl -u diviner-live -n 100
-   
-   # С фильтром по времени
-   sudo journalctl -u diviner-live --since today
-   ```
-
-5. **Управление сервисом:**
-   ```bash
-   sudo systemctl stop diviner-live
-   sudo systemctl restart diviner-live
-   sudo systemctl status diviner-live
-   ```
-
 ## Стратегии
 
 ### Создание своей стратегии

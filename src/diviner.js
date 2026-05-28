@@ -15,7 +15,7 @@ const MODE_NAMES = Object.keys(MODES);
 /**
  * Parse only the top-level --mode flag and leave mode-specific arguments intact.
  */
-function parseTradingArgs(argv) {
+function parseArgs(argv) {
     const args = [];
     let mode = null;
 
@@ -73,7 +73,7 @@ function exitWithError(message) {
 }
 
 async function main() {
-    const { mode, args } = parseTradingArgs(process.argv.slice(2));
+    const { mode, args } = parseArgs(process.argv.slice(2));
 
     if (!mode) {
         if (args.includes("--help") || args.includes("-h")) {

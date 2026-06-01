@@ -2,7 +2,7 @@
  * Simulated trading portfolio for backtests.
  */
 export class Portfolio {
-    constructor({ cash = 10000, commission = 0.0001 } = {}) {
+    constructor({ cash = 10000, commission = 0.0005 } = {}) {
         this.initialCash = cash;
         this.cash = cash;
         this.commission = commission;

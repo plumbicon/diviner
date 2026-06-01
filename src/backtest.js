@@ -14,7 +14,7 @@ program
   .argument("[history-parquet]", "Path to Parquet file with historical data")
   .requiredOption("--strategy <path>", "Path to the strategy file")
   .option("--balance <amount>", "Initial balance", "10000")
-  .option("--commission <rate>", "Commission rate", "0.0001")
+  .option("--commission <rate>", "Commission rate", "0.0005")
   .option("--verbose", "Output full trade log");
 
 program.parse();

@@ -10,7 +10,7 @@ export class BacktestRunner {
         data,
         StrategyClass,
         initialCash = 10000,
-        commission = 0.0001,
+        commission = 0.0005,
         context = null,
     }) {
         this.data = data;

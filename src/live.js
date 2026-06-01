@@ -50,7 +50,7 @@ program
     "Candle interval in minutes (1, 5, 15, 60, 120, 240, 1440)",
     "1",
   )
-  .option("--commission <rate>", "Commission rate", "0.0001")
+  .option("--commission <rate>", "Commission rate", "0.0005")
   .option(
     "--order-retries <count>",
     "Retry count for transient order API errors",

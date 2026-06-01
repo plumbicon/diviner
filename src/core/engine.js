@@ -6,7 +6,7 @@ import { BacktestRunner } from "./runner.js";
  * New code should use BacktestRunner directly.
  */
 export class Engine {
-    constructor(data, StrategyClass, cash = 10000, commission = 0.0001) {
+    constructor(data, StrategyClass, cash = 10000, commission = 0.0005) {
         this.runner = new BacktestRunner({
             data,
             StrategyClass,

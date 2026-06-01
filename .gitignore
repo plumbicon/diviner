@@ -1,0 +1,10 @@
+node_modules/
+*.parquet
+*.json
+data/
+logs/
+reports/
+!package.json
+AGENTS.md
+**/.DS_Store
+src/strategies/

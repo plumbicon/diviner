@@ -36,6 +36,7 @@ export class TinkoffClient {
     this.streamUnsubscribe = null;
     this.candleSubscription = null;
     this.streamErrorHandler = null;
+    this.streamCloseHandler = null;
     this.streamReconnectTimer = null;
     this.streamReconnectAttempts = 0;
     this.streamReconnectDelayMs = options.streamReconnectDelayMs || 1000;
@@ -542,7 +543,23 @@ export class TinkoffClient {
       this._scheduleCandleReconnect(error);
     };
 
+    this.streamCloseHandler = (error) => {
+      if (this.isClosing || this.isReplacingStream) {
+        return;
+      }
+
+      // 'error' event fires first when there's an error, so a reconnect is already
+      // scheduled — skip to avoid double-scheduling.
+      if (error) {
+        return;
+      }
+
+      console.warn("[TinkoffClient] Stream closed unexpectedly (clean close), reconnecting...");
+      this._scheduleCandleReconnect(new Error("Stream closed unexpectedly"));
+    };
+
     this.api.stream.market.on("error", this.streamErrorHandler);
+    this.api.stream.market.on("close", this.streamCloseHandler);
   }
 
   /**
@@ -560,7 +577,7 @@ export class TinkoffClient {
     this.streamReconnectAttempts += 1;
 
     console.warn(
-      `[TinkoffClient] Candle stream reconnect in ${delay}ms after error: ${error.message}`,
+      `[TinkoffClient] Candle stream reconnect in ${delay}ms after error: ${error?.message ?? error}`,
     );
 
     this.streamReconnectTimer = setTimeout(async () => {
@@ -971,19 +988,7 @@ export class TinkoffClient {
    * @param {string|null} accountId - ID sandbox-счёта.
    */
   async assertCanResetSandboxSharePositions(accountId = this.accountId) {
-    const result = await this.getSandboxSharePositions(accountId);
-    const longPositions = result.positions.filter((position) => position.quantity > 0);
-
-    if (longPositions.length > 0) {
-      const description = longPositions
-        .map((position) => `${position.figi}:${position.quantity}`)
-        .join(", ");
-      throw new Error(
-        `Cannot reset long share positions without changing RUB balance on the same sandbox account (${description}). T-Invest sandbox has no API to delete securities directly; selling them changes RUB balance, and decreasing RUB balance is rejected by SandboxPayIn.`,
-      );
-    }
-
-    return result;
+    return this.getSandboxSharePositions(accountId);
   }
 
   /**
@@ -1032,8 +1037,8 @@ export class TinkoffClient {
       const restoreAmount = beforeRubBalance - afterCloseRubBalance;
 
       if (restoreAmount < -0.01) {
-        throw new Error(
-          `Failed to preserve RUB balance after resetting positions: closing positions increased RUB balance by ${Math.abs(restoreAmount).toFixed(2)}, and sandbox API cannot decrease it.`,
+        console.warn(
+          `[Sandbox] RUB balance increased by ${Math.abs(restoreAmount).toFixed(2)} after closing long positions (sandbox limitation — cannot decrease balance).`,
         );
       }
 
@@ -1171,6 +1176,15 @@ export class TinkoffClient {
         this.api.stream.market.removeListener("error", this.streamErrorHandler);
       }
       this.streamErrorHandler = null;
+    }
+
+    if (this.streamCloseHandler) {
+      if (typeof this.api.stream.market.off === "function") {
+        this.api.stream.market.off("close", this.streamCloseHandler);
+      } else if (typeof this.api.stream.market.removeListener === "function") {
+        this.api.stream.market.removeListener("close", this.streamCloseHandler);
+      }
+      this.streamCloseHandler = null;
     }
 
     if (this.api?.streamClients?.market) {

@@ -178,6 +178,16 @@ export class LiveEngine {
             return;
         }
 
+        // Re-sync actual broker position before replaying missed candles to avoid
+        // double-close if the position was already closed during the stream outage.
+        if (!this.options.dryRun) {
+            try {
+                await this.syncWithAccountPosition();
+            } catch (err) {
+                console.error('[LiveEngine] Failed to sync position on reconnect:', err.message);
+            }
+        }
+
         const intervalMs = this._getCandleIntervalMs();
         const lowerBoundTime = this.lastProcessedCandleTime
             ?? this.catchUpFromTime?.getTime()
@@ -453,13 +463,21 @@ export class LiveEngine {
             }
 
             console.log(`[LiveEngine] Close order executed: ${position.side} ${executedLots}/${position.size} lots of ${this.instrument.ticker} (${summary.statusName}, ${result.orderId || result.status || 'accepted'})`);
-            await this.refreshAccountBalance();
         } catch (error) {
             console.error('[LiveEngine] Failed to close position:', error.message);
+            // Restore only if the order itself failed (position is still open)
             if (!this.stateManager.hasPosition()) {
                 this.stateManager.setPosition(position);
                 this.stateManager.syncWithStrategy(this.strategy);
             }
+            return;
+        }
+
+        // Balance refresh is post-order — errors here must not affect position state
+        try {
+            await this.refreshAccountBalance();
+        } catch (error) {
+            console.error('[LiveEngine] Failed to refresh balance after close:', error.message);
         }
     }
 

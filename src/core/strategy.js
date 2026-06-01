@@ -2,7 +2,7 @@
  * Базовый класс для торговых стратегий
  */
 export class Strategy {
-  constructor(data, cash = 10000, commission = 0.0001) {
+  constructor(data, cash = 10000, commission = 0.0005) {
     this.data = data;
     this.cash = cash;
     this.commission = commission;

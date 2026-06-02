@@ -9,6 +9,10 @@ export const MOSCOW_OFFSET_MS = 3 * 60 * 60 * 1000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SCHEDULE_CHUNK_MS = 14 * DAY_MS;
+// T-Invest TradingSchedules rejects a `to` further than ~14 days ahead of the
+// current date (error: "period should not exceed 14 days"), regardless of the
+// from..to span. Clamp the requested end below that limit.
+const SCHEDULE_MAX_AHEAD_MS = 13 * DAY_MS;
 
 const INTERVAL_CONFIGS = new Map([
     ["1", {
@@ -303,9 +307,11 @@ export class TinkoffMarketDataProvider {
      */
     async getTradingSchedule({ from, to }) {
         const requestedStart = toDate(from);
-        const end = toDate(to);
+        const maxEnd = new Date(Date.now() + SCHEDULE_MAX_AHEAD_MS);
+        const requestedEnd = toDate(to);
+        const end = requestedEnd > maxEnd ? maxEnd : requestedEnd;
         const start = clampTradingScheduleStart(requestedStart, end);
-        if (!start) {
+        if (!start || start >= end) {
             return [];
         }
 

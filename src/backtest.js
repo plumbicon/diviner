@@ -2,9 +2,10 @@
 import { Command } from "commander";
 import { loadDataset } from "./core/data-loader.js";
 import { loadStrategy } from "./core/strategy-loader.js";
-import { BacktestRunner } from "./core/runner.js";
+import { Engine } from "./core/engine.js";
+import { createSimulatedBroker } from "./core/simulated-broker.js";
+import { TemporalView } from "./core/temporal-view.js";
 import { encodeBacktestResult } from "./core/json-encoder.js";
-import { BacktestStrategyContext } from "./core/strategy-context.js";
 
 const program = new Command();
 
@@ -59,22 +60,28 @@ async function main() {
   const balance = parseNonNegativeAmount(options.balance, "--balance");
   const commission = parseFloat(options.commission);
 
-  const context = new BacktestStrategyContext({
-    data,
+  const broker = createSimulatedBroker({
+    candles: data,
+    metadata,
+    initialCash: balance,
+    commission,
+  });
+  const context = new TemporalView({
+    dataSource: broker.data,
     metadata,
     logger: (message) => process.stderr.write(`${message}\n`),
   });
-  const runner = new BacktestRunner({
-    data,
-    StrategyClass,
-    initialCash: balance,
-    commission,
-    context,
-  });
-  let result = await runner.run();
+  const strategy = new StrategyClass(data, balance, commission);
 
-  result.backtest_parameters.history_file = historyFileName;
-  result.backtest_parameters.strategy_file = options.strategy;
+  const engine = new Engine();
+  let result = await engine.runBacktest({
+    data,
+    strategy,
+    broker,
+    context,
+    initialCash: balance,
+    meta: { historyFile: historyFileName, strategyFile: options.strategy },
+  });
 
   // Если не указан --verbose, не выводим историю сделок
   if (!options.verbose) {

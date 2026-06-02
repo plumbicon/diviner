@@ -1,3 +1,5 @@
+import { evaluateStops } from "./stops.js";
+
 /**
  * Базовый класс для торговых стратегий
  */
@@ -57,105 +59,46 @@ export class Strategy {
   }
 
   /**
-   * Открыть длинную позицию (buy)
+   * Открыть длинную позицию (buy).
+   * Денежную механику ведёт исполнитель (execution adapter / Portfolio),
+   * стратегия лишь объявляет сигнал.
    */
   buy(size, sl, tp) {
-    if (this._position) return;
-
-    const price = this.data[this.dataIndex].close;
-    const actualSize = size || Math.floor((this.cash * 0.95) / price);
-    
-    if (actualSize <= 0) return;
-
-    const cost = actualSize * price * (1 + this.commission);
-    if (cost > this.cash) return;
-
-    this.cash -= cost;
-    this._position = {
-      entryTime: this.data[this.dataIndex].datetime,
-      entryPrice: price,
-      size: actualSize,
-      side: 'long',
-      sl,
-      tp
-    };
+    if (!this.execution) {
+      throw new Error('Strategy.buy requires an attached execution adapter');
+    }
+    return this.execution.buy(size, sl, tp);
   }
 
   /**
-   * Открыть короткую позицию (sell/short)
+   * Открыть короткую позицию (sell/short).
    */
   sell(size, sl, tp) {
-    if (this._position) return;
-
-    const price = this.data[this.dataIndex].close;
-    const actualSize = size || Math.floor((this.cash * 0.95) / price);
-    
-    if (actualSize <= 0) return;
-
-    const margin = actualSize * price * 0.25;
-    if (margin > this.cash) return;
-
-    this.cash -= margin;
-    this._position = {
-      entryTime: this.data[this.dataIndex].datetime,
-      entryPrice: price,
-      size: actualSize,
-      side: 'short',
-      sl,
-      tp
-    };
+    if (!this.execution) {
+      throw new Error('Strategy.sell requires an attached execution adapter');
+    }
+    return this.execution.sell(size, sl, tp);
   }
 
   /**
-   * Закрыть текущую позицию
+   * Закрыть текущую позицию.
    */
   closePosition() {
-    if (!this._position) return;
-
-    const price = this.data[this.dataIndex].close;
-    const pos = this._position;
-
-    if (pos.side === 'long') {
-      this.cash += pos.size * price * (1 - this.commission);
-    } else {
-      // Short: return margin + PnL - commission on exit
-      const pnl = pos.size * (pos.entryPrice - price);
-      const commission = pos.size * (pos.entryPrice + price) * this.commission;
-      this.cash += pos.size * pos.entryPrice * 0.25 + pnl - commission;
+    if (!this.execution) {
+      throw new Error('Strategy.closePosition requires an attached execution adapter');
     }
-
-    this._position = null;
+    return this.execution.closePosition();
   }
 
   /**
-   * Проверка и исполнение SL/TP
+   * Проверка и исполнение SL/TP. Условия триггера централизованы в evaluateStops().
    */
   checkStopLossTakeProfit() {
-    if (!this._position) return false;
-
     const close = this.data[this.dataIndex].close;
-    const pos = this._position;
-
-    if (pos.side === 'long') {
-      if (pos.sl && close <= pos.sl) {
-        this.closePosition();
-        return true;
-      }
-      if (pos.tp && close >= pos.tp) {
-        this.closePosition();
-        return true;
-      }
-    } else if (pos.side === 'short') {
-      if (pos.sl && close >= pos.sl) {
-        this.closePosition();
-        return true;
-      }
-      if (pos.tp && close <= pos.tp) {
-        this.closePosition();
-        return true;
-      }
+    if (evaluateStops(this._position, close)) {
+      this.closePosition();
+      return true;
     }
-
     return false;
   }
 

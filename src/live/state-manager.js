@@ -1,3 +1,5 @@
+import { evaluateStops } from "../core/stops.js";
+
 /**
  * State Manager - управление состоянием позиции
  * Обеспечивает синхронизацию между стратегией и реальным состоянием
@@ -125,41 +127,16 @@ export class StateManager {
      * @returns {boolean} - true если сработал SL или TP
      */
     checkStopLossTakeProfit(currentPrice) {
-        if (!this.position) {
-            return null;
+        const reason = evaluateStops(this.position, currentPrice);
+
+        if (reason && this.verbose) {
+            const { side, sl, tp } = this.position;
+            const label = reason === "sl" ? "Stop Loss" : "Take Profit";
+            const level = reason === "sl" ? sl : tp;
+            console.log(`[StateManager] ${label} triggered for ${side} at ${currentPrice} (${reason.toUpperCase()}: ${level})`);
         }
 
-        const { side, sl, tp } = this.position;
-
-        if (side === 'long') {
-            if (sl && currentPrice <= sl) {
-                if (this.verbose) {
-                    console.log(`[StateManager] Stop Loss triggered for long at ${currentPrice} (SL: ${sl})`);
-                }
-                return 'sl';
-            }
-            if (tp && currentPrice >= tp) {
-                if (this.verbose) {
-                    console.log(`[StateManager] Take Profit triggered for long at ${currentPrice} (TP: ${tp})`);
-                }
-                return 'tp';
-            }
-        } else if (side === 'short') {
-            if (sl && currentPrice >= sl) {
-                if (this.verbose) {
-                    console.log(`[StateManager] Stop Loss triggered for short at ${currentPrice} (SL: ${sl})`);
-                }
-                return 'sl';
-            }
-            if (tp && currentPrice <= tp) {
-                if (this.verbose) {
-                    console.log(`[StateManager] Take Profit triggered for short at ${currentPrice} (TP: ${tp})`);
-                }
-                return 'tp';
-            }
-        }
-
-        return null;
+        return reason;
     }
 
     /**

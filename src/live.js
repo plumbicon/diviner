@@ -65,6 +65,11 @@ program
     "--dry-run",
     "Dry run: strategy runs, but no real orders are sent",
     false,
+  )
+  .option(
+    "--close-on-exit",
+    "Close any open position when the live session stops (default: leave it open)",
+    false,
   );
 
 const logger = createLogger({ logPath: getLogPathFromArgv(process.argv) });
@@ -112,23 +117,11 @@ async function main() {
     }, 5000);
     forceExit.unref();
 
+    // Только просим поток завершиться: движок выйдет из цикла и вызовет
+    // broker.finalize() (закрытие сессии/позиции по флагу + сводка + client.close).
     if (broker) {
-      // Останавливает поток свечей и отменяет подписку.
-      await broker.data.close();
-      if (engine) {
-        try {
-          await engine.closeOpenPosition(broker);
-        } catch (error) {
-          console.error("[Main] Failed to close position on shutdown:", error.message);
-        }
-      }
+      await broker.data.requestStop();
     }
-    if (client) {
-      await client.close();
-    }
-
-    clearTimeout(forceExit);
-    await closeLogAndExit(0);
   };
 
   try {
@@ -175,7 +168,11 @@ async function main() {
       client,
       instrument,
       interval,
-      options: { verbose: options.verbose, dryRun: options.dryRun },
+      options: {
+        verbose: options.verbose,
+        dryRun: options.dryRun,
+        closeOnExit: Boolean(options.closeOnExit),
+      },
     });
 
     const context = new TemporalView({
@@ -200,13 +197,16 @@ async function main() {
 
     console.log("[Main] Live trading started. Waiting for candles...");
 
-    // 4. Запуск live-движка: он подписывается на поток и тактирует стратегию.
-    await engine.runLive({
+    // 4. Запуск единого движка: тактирует поток до requestStop, затем finalize.
+    await engine.run({
       broker,
       strategy,
       context,
       options: { verbose: options.verbose },
     });
+
+    // Поток остановлен и finalize отработал (закрытие сессии + сводка).
+    await closeLogAndExit(0);
   } catch (error) {
     console.error("[Main] Fatal error:", error.message);
     if (client) {

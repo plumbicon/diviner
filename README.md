@@ -38,9 +38,7 @@ diviner/
 │   │   └── logger.js            # Логирование
 │   ├── diviner.js               # Единая точка входа (--broker/--fetch/--convert)
 │   ├── fetch.js                 # Загрузка свечей через Tinkoff API
-│   ├── convert.js               # JSON → Parquet
-│   ├── backtest.js              # Тонкий шим → diviner --broker src/broker/simulated-broker.js
-│   └── live.js                  # Тонкий шим → diviner --broker src/broker/tinkoff-broker.js
+│   └── convert.js               # JSON → Parquet
 ├── data/                        # Исторические данные
 ├── package.json
 └── README.md

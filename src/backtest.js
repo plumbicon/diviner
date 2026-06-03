@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// Deprecated thin shim → `diviner --broker simulated`.
-// Kept for backwards compatibility (package.json bin, strategies/scripts/backtest-report.mjs).
+// Deprecated thin shim → `diviner --broker <simulated-broker>`.
+// Kept for backwards compatibility (scripts, strategies/scripts/backtest-report.mjs).
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const diviner = join(dirname(fileURLToPath(import.meta.url)), "diviner.js");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const diviner = join(scriptDir, "diviner.js");
+const broker = join(scriptDir, "broker", "simulated-broker.js");
 const child = spawn(
     process.execPath,
-    [diviner, "--broker", "simulated", ...process.argv.slice(2)],
+    [diviner, "--broker", broker, ...process.argv.slice(2)],
     { stdio: "inherit" },
 );
 child.on("error", (error) => {

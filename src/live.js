@@ -105,8 +105,16 @@ async function main() {
     isShuttingDown = true;
     console.log(message);
 
+    // Страховка: гарантированно выйти, даже если сетевое закрытие зависнет.
+    const forceExit = setTimeout(() => {
+      console.error("[Main] Forced exit: graceful shutdown timed out.");
+      process.exit(0);
+    }, 5000);
+    forceExit.unref();
+
     if (broker) {
-      broker.data.close();
+      // Останавливает поток свечей и отменяет подписку.
+      await broker.data.close();
       if (engine) {
         try {
           await engine.closeOpenPosition(broker);
@@ -119,6 +127,7 @@ async function main() {
       await client.close();
     }
 
+    clearTimeout(forceExit);
     await closeLogAndExit(0);
   };
 

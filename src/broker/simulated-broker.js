@@ -3,9 +3,9 @@ import { PerformanceMetrics } from "../core/metrics.js";
 import { loadDataset } from "../core/data-loader.js";
 import {
     DEFAULT_EXCHANGE,
-    MOSCOW_OFFSET_MS,
     buildCandleDerivedTradingSchedule,
     getCandleIntervalConfig,
+    getMoscowDateKey,
     toDate,
 } from "../core/market-data.js";
 
@@ -43,10 +43,12 @@ export async function createBroker(config = {}) {
 /**
  * Simulated data source for backtests.
  *
- * Owns the loaded candle listing and answers history requests off it. Daily
- * candles are aggregated here (not in a shared layer) so that minute parquet
- * files keep working as-is. Honours an `until` upper bound on data freshness so
- * aggregation never peeks past the current simulation moment (look-ahead guard).
+ * Owns the loaded 1m candle listing and answers history requests off it. This
+ * is the backtest broker, so aggregation to higher intervals (1h/1d) happens
+ * here, from the 1m base. Honours an `until` upper bound on data freshness so
+ * neither the slice nor the aggregation ever peeks past the current simulation
+ * moment (look-ahead guard) — the current hour/day is therefore aggregated only
+ * from the minutes seen so far, exactly as live would build them.
  */
 export class SimulatedDataSource {
     constructor({ candles = [], metadata = {}, portfolio = null, equity = null } = {}) {
@@ -100,16 +102,16 @@ export class SimulatedDataSource {
         const toTs = to ? toDate(to).getTime() : Infinity;
         const untilTs = until === Infinity ? Infinity : toDate(until).getTime();
 
-        const selected = this.candles.filter((candle) => {
-            const ts = candle.datetime.getTime();
-            return ts >= fromTs && ts < toTs && ts <= untilTs;
-        });
+        // Effective exclusive upper bound: the earlier of `to` and just past
+        // `until`, so the freshness guard and the requested window combine into
+        // one cut and a request "up to now" includes the current minute.
+        const upperExcl = Math.min(toTs, untilTs === Infinity ? Infinity : untilTs + 1);
+        const base = sliceAscending(this.candles, fromTs, upperExcl);
 
-        const intervalConfig = getCandleIntervalConfig(interval);
-        if (intervalConfig.label === "1d") {
-            return aggregateDailyCandles(selected);
-        }
-        return selected;
+        const label = getCandleIntervalConfig(interval).label;
+        if (label === "1h") return aggregateHourlyCandles(base);
+        if (label === "1d") return aggregateDailyCandles(base);
+        return base;
     }
 
     /**
@@ -229,18 +231,50 @@ export function createSimulatedBroker({
 }
 
 /**
+ * Aggregate 1m candles into hourly candles bucketed by UTC hour.
+ * @param {Array<object>} candles - Source 1m candles (ascending).
+ * @returns {Array<object>} Hourly candles.
+ */
+export function aggregateHourlyCandles(candles) {
+    const buckets = new Map();
+    for (const bar of candles) {
+        const key = Math.floor(bar.datetime.getTime() / 3_600_000) * 3_600_000;
+        const existing = buckets.get(key);
+        if (!existing) {
+            buckets.set(key, {
+                datetime: new Date(key),
+                open: bar.open,
+                high: bar.high,
+                low: bar.low,
+                close: bar.close,
+                volume: Number(bar.volume || 0),
+                isComplete: true,
+            });
+            continue;
+        }
+        existing.high = Math.max(existing.high, bar.high);
+        existing.low = Math.min(existing.low, bar.low);
+        existing.close = bar.close;
+        existing.volume += Number(bar.volume || 0);
+    }
+    return Array.from(buckets.values())
+        .sort((a, b) => a.datetime.getTime() - b.datetime.getTime());
+}
+
+/**
  * Aggregate intraday candles into Moscow-date daily candles.
- * @param {Array<object>} candles - Source candles.
- * @returns {Array<object>} Daily candles.
+ * @param {Array<object>} candles - Source candles (ascending).
+ * @returns {Array<object>} Daily candles (carry both datetime and dateKey).
  */
 export function aggregateDailyCandles(candles) {
     const grouped = new Map();
-
     for (const candle of candles) {
         const dateKey = getMoscowDateKey(candle.datetime);
-        if (!grouped.has(dateKey)) {
+        const existing = grouped.get(dateKey);
+        if (!existing) {
             grouped.set(dateKey, {
                 datetime: candle.datetime,
+                dateKey,
                 open: candle.open,
                 high: candle.high,
                 low: candle.low,
@@ -250,27 +284,39 @@ export function aggregateDailyCandles(candles) {
             });
             continue;
         }
-
-        const daily = grouped.get(dateKey);
-        daily.high = Math.max(daily.high, candle.high);
-        daily.low = Math.min(daily.low, candle.low);
-        daily.close = candle.close;
-        daily.volume += Number(candle.volume || 0);
+        existing.high = Math.max(existing.high, candle.high);
+        existing.low = Math.min(existing.low, candle.low);
+        existing.close = candle.close;
+        existing.volume += Number(candle.volume || 0);
     }
-
     return Array.from(grouped.values())
         .sort((a, b) => a.datetime.getTime() - b.datetime.getTime());
 }
 
 /**
- * Moscow calendar date key for a datetime.
- * @param {Date} datetime - Datetime.
- * @returns {string} Date key YYYY-MM-DD.
+ * Candles within [fromTs, toTs) via binary search (input ascending by time),
+ * so repeated per-bar history slices over the full listing stay O(log n + win).
+ * @param {Array<object>} candles - Source candles (ascending).
+ * @param {number} fromTs - Start (inclusive).
+ * @param {number} toTs - End (exclusive).
+ * @returns {Array<object>} Filtered candles.
  */
-export function getMoscowDateKey(datetime) {
-    const moscowDate = new Date(datetime.getTime() + MOSCOW_OFFSET_MS);
-    const year = moscowDate.getUTCFullYear();
-    const month = String(moscowDate.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(moscowDate.getUTCDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
+function sliceAscending(candles, fromTs, toTs) {
+    const n = candles.length;
+    if (n === 0) return [];
+
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (candles[mid].datetime.getTime() < fromTs) lo = mid + 1;
+        else hi = mid;
+    }
+
+    const out = [];
+    for (let i = lo; i < n; i += 1) {
+        if (candles[i].datetime.getTime() >= toTs) break;
+        out.push(candles[i]);
+    }
+    return out;
 }

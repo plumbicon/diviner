@@ -1,14 +1,17 @@
 import { getCandleIntervalConfig, toDate } from "./market-data.js";
 
 /**
- * Caching decorator over a data source's history.
+ * Caching decorator over a broker data source's history.
  *
  * It is режим-слепой: it wraps any object exposing getHistory/getTradingSchedule
- * /stream and only memoises history. To stay correct around the moving "now", it
- * caches only requests whose whole range is settled in the past (the last
- * candle is complete); anything reaching into the current interval is passed
- * straight through and never stored. Coverage is tracked per interval as a
- * single expanding range, refetched from the source on a miss.
+ * /stream and only memoises history. Aggregation is NOT its concern — the
+ * backtest broker aggregates 1m→1h/1d itself, and the live broker requests the
+ * needed intervals natively from the exchange; the cache simply remembers what
+ * each interval returned. To stay correct around the moving "now", it caches
+ * only requests whose whole range is settled in the past (the last candle is
+ * complete); anything reaching into the current interval is passed straight
+ * through and never stored. Coverage is tracked per interval as a single
+ * expanding range, refetched from the source on a miss.
  */
 export class MarketDataCache {
     constructor(dataSource) {

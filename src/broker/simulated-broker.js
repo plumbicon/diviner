@@ -1,13 +1,13 @@
-import { Portfolio } from "./portfolio.js";
-import { PerformanceMetrics } from "./metrics.js";
-import { loadDataset } from "./data-loader.js";
+import { Portfolio } from "../core/portfolio.js";
+import { PerformanceMetrics } from "../core/metrics.js";
+import { loadDataset } from "../core/data-loader.js";
 import {
     DEFAULT_EXCHANGE,
     MOSCOW_OFFSET_MS,
     buildCandleDerivedTradingSchedule,
     getCandleIntervalConfig,
     toDate,
-} from "./market-data.js";
+} from "../core/market-data.js";
 
 /**
  * Plugin option descriptors for the CLI (validated by the shared layer, п.3).

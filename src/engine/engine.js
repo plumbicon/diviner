@@ -1,4 +1,4 @@
-import { evaluateStops } from "./stops.js";
+import { evaluateStops } from "../core/stops.js";
 
 /**
  * Unified, режим-слепой engine.

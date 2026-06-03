@@ -2,8 +2,72 @@ import {
     TinkoffMarketDataProvider,
     buildInstrumentMetadata,
 } from "../core/market-data.js";
+import { TinkoffClient } from "./tinkoff-client.js";
 import { OrderManager } from "./order-manager.js";
 import { StateManager } from "./state-manager.js";
+
+/**
+ * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
+ */
+export const options = [
+    { flags: "--ticker <symbol>", description: "Instrument ticker (e.g. SBER)" },
+    { flags: "--account <id>", description: "Account ID" },
+    { flags: "--sandbox", description: "Sandbox mode (virtual money)", default: false },
+    { flags: "--dry-run", description: "Strategy runs, but no real orders are sent", default: false },
+    { flags: "--interval <minutes>", description: "Candle interval in minutes", default: "1" },
+    { flags: "--close-on-exit", description: "Close open position when the session stops", default: false },
+    { flags: "--order-retries <count>", description: "Retry count for transient order errors", default: "2" },
+];
+
+/**
+ * Plugin entry point: build a live T-Invest broker from CLI config.
+ * Creates and initialises the client and resolves the instrument.
+ * @param {object} config - Parsed CLI options.
+ * @returns {Promise<object>} Broker { data, exec, finalize, metadata, needsCache }.
+ */
+export async function createBroker(config = {}) {
+    const token = process.env.T_INVEST_TOKEN || "";
+    if (!token) {
+        throw new Error("T_INVEST_TOKEN environment variable is required");
+    }
+
+    const client = new TinkoffClient(token, {
+        sandbox: Boolean(config.sandbox),
+        accountId: config.account || null,
+        orderRetries: parseInt(config.orderRetries ?? "2", 10),
+        verbose: Boolean(config.verbose),
+    });
+    await client.init();
+
+    const instrument = await client.getInstrumentByTicker(config.ticker);
+    const interval = parseInt(config.interval ?? "1", 10);
+
+    const broker = createTinkoffBroker({
+        client,
+        instrument,
+        interval,
+        options: {
+            verbose: Boolean(config.verbose),
+            dryRun: Boolean(config.dryRun),
+            closeOnExit: Boolean(config.closeOnExit),
+        },
+    });
+
+    // History (TemporalView) goes through a cache; the engine still tactics the
+    // raw stream and calls requestStop on broker.data directly. CLI wraps for
+    // history when needsCache is set.
+    broker.needsCache = true;
+    broker.metadata = {
+        source: "tinkoff",
+        instrument: broker.instrumentMetadata,
+        interval,
+        intervalMinutes: interval,
+        intervalLabel: `${interval}m`,
+        timezone: "Europe/Moscow",
+    };
+    broker.client = client;
+    return broker;
+}
 
 /**
  * Live data source backed by the T-Invest API.

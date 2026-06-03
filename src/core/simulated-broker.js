@@ -1,5 +1,6 @@
 import { Portfolio } from "./portfolio.js";
 import { PerformanceMetrics } from "./metrics.js";
+import { loadDataset } from "./data-loader.js";
 import {
     DEFAULT_EXCHANGE,
     MOSCOW_OFFSET_MS,
@@ -7,6 +8,37 @@ import {
     getCandleIntervalConfig,
     toDate,
 } from "./market-data.js";
+
+/**
+ * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
+ */
+export const options = [
+    { flags: "--balance <amount>", description: "Initial balance", default: "10000" },
+    { flags: "--commission <rate>", description: "Commission rate", default: "0.0005" },
+];
+
+/**
+ * Plugin entry point: build a simulated broker from CLI config.
+ * Encapsulates loading the parquet listing (path or stdin buffer).
+ * @param {object} config - Parsed CLI options.
+ * @returns {Promise<object>} Broker { data, exec, finalize, metadata, needsCache }.
+ */
+export async function createBroker(config = {}) {
+    const dataset = await loadDataset(config.source);
+    const broker = createSimulatedBroker({
+        candles: dataset.candles,
+        metadata: dataset.metadata,
+        initialCash: Number(config.balance),
+        commission: Number(config.commission),
+        meta: {
+            historyFile: config.sourceName || "",
+            strategyFile: config.strategy || "",
+        },
+    });
+    broker.metadata = dataset.metadata;
+    broker.needsCache = false;
+    return broker;
+}
 
 /**
  * Simulated data source for backtests.

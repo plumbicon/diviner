@@ -18,10 +18,11 @@ diviner/
 │   ├── broker/
 │   │   ├── simulated-broker.js  # Брокер бэктеста (data + exec + finalize)
 │   │   ├── tinkoff-broker.js    # Брокер T-Invest (data + exec + finalize + утилиты)
-│   │   ├── tinkoff-client.js    # Клиент Tinkoff Invest API
-│   │   ├── order-manager.js     # Постановка/валидация ордеров
-│   │   ├── state-manager.js     # Состояние позиции
-│   │   └── sandbox-utils.js     # Аккаунт-утилиты sandbox (без стратегии)
+│   │   └── tinkoff/             # Транспорт и хелперы T-Invest
+│   │       ├── client.js        # Клиент Tinkoff Invest API
+│   │       ├── order-manager.js # Постановка/валидация ордеров
+│   │       ├── state-manager.js # Состояние позиции
+│   │       └── sandbox-utils.js # Аккаунт-утилиты sandbox (без стратегии)
 │   ├── core/                    # Общие слои и утилиты
 │   │   ├── strategy.js          # Базовый класс стратегии
 │   │   ├── strategy-loader.js   # Загрузчик стратегий по пути

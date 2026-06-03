@@ -1,4 +1,4 @@
-import { TinkoffClient } from "./tinkoff-client.js";
+import { TinkoffClient } from "./client.js";
 
 /**
  * Run sandbox account utilities that do not require a strategy:

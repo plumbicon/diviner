@@ -113,7 +113,7 @@ function registerSignals(broker) {
         return;
     }
     const handler = (signal) => {
-        console.log(`\n[Main] ${signal} received, shutting down...`);
+        console.log(`[Main] ${signal} received, shutting down...`);
         const force = setTimeout(() => process.exit(0), 5000);
         force.unref();
         broker.data.requestStop();

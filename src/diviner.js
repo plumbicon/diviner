@@ -161,8 +161,11 @@ async function runBrokerMode(brokerRef, rest) {
     const dataSource = broker.needsCache ? new MarketDataCache(broker.data) : broker.data;
     const context = new TemporalView({
         dataSource,
+        // Route strategy logs through console.error so the installed logger
+        // captures them (stderr + --log file). console.error (not log) keeps
+        // them off stdout, which carries the backtest JSON report.
         metadata: broker.metadata,
-        logger: (message) => process.stderr.write(`${message}\n`),
+        logger: (message) => console.error(message),
     });
 
     const initialData = broker.data.candles ?? [];

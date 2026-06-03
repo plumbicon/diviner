@@ -38,8 +38,8 @@ diviner/
 │   ├── diviner.js               # Единая точка входа (--broker/--fetch/--convert)
 │   ├── fetch.js                 # Загрузка свечей через Tinkoff API
 │   ├── convert.js               # JSON → Parquet
-│   ├── backtest.js              # Тонкий шим → diviner --broker simulated
-│   └── live.js                  # Тонкий шим → diviner --broker tinkoff
+│   ├── backtest.js              # Тонкий шим → diviner --broker src/broker/simulated-broker.js
+│   └── live.js                  # Тонкий шим → diviner --broker src/broker/tinkoff-broker.js
 ├── data/                        # Исторические данные
 ├── package.json
 └── README.md
@@ -74,24 +74,23 @@ export T_INVEST_TOKEN=<your-token>
 ## Единая точка входа
 
 ```bash
-diviner --broker <simulated|tinkoff|путь> --strategy <путь> [опции брокера]
+diviner --broker <путь> --strategy <путь> [опции брокера]
 diviner --fetch   [опции fetch]
 diviner --convert [опции convert]
 ```
 
-Ровно один из `--broker` / `--fetch` / `--convert` (иначе ошибка). Брокер — **плагин по пути**:
-встроенные алиасы `simulated`/`tinkoff` либо любой путь к файлу брокера (как `--strategy`).
-Опции брокера валидируются по его декларации (`export const options`), поэтому добавить брокера —
-это добавить файл, не трогая CLI.
+Ровно один из `--broker` / `--fetch` / `--convert` (иначе ошибка). Значение `--broker` — это
+**путь к файлу брокера** (как `--strategy` — путь к стратегии). Опции брокера валидируются по
+его декларации (`export const options`), поэтому добавить брокера — это добавить файл, не трогая CLI.
 
 Стратегия запускается тогда и только тогда, когда переданы `--strategy` и источник данных
 (parquet для `simulated`, `--ticker` для `tinkoff`). Без стратегии `tinkoff` выполняет
 аккаунт-утилиту, если она запрошена.
 
-## Бэктест (`--broker simulated`)
+## Бэктест (`--broker src/broker/simulated-broker.js`)
 
 ```bash
-diviner --broker simulated data/sber_2024.parquet --strategy path/to/strategy.js --balance 10000 --commission 0.0005
+diviner --broker src/broker/simulated-broker.js data/sber_2024.parquet --strategy path/to/strategy.js --balance 10000 --commission 0.0005
 ```
 
 | Опция | Описание | По умолчанию |
@@ -105,17 +104,17 @@ diviner --broker simulated data/sber_2024.parquet --strategy path/to/strategy.js
 Данные можно передать через pipe:
 
 ```bash
-cat data/sber_2024.parquet | diviner --broker simulated --strategy path/to/strategy.js
+cat data/sber_2024.parquet | diviner --broker src/broker/simulated-broker.js --strategy path/to/strategy.js
 ```
 
 Расписание торгов в backtest восстанавливается из самих свечей; дневные свечи (`interval: "1d"`)
 агрегируются внутри `simulated`-брокера из минутных. Отчёт печатается в stdout как JSON
 (`backtest_parameters`, `performance_metrics`, `trade_log`).
 
-## Live-трейдинг (`--broker tinkoff`)
+## Live-трейдинг (`--broker src/broker/tinkoff-broker.js`)
 
 ```bash
-T_INVEST_TOKEN=<token> diviner --broker tinkoff --strategy path/to/strategy.js --ticker SBER --sandbox --account <id> --interval 1
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --strategy path/to/strategy.js --ticker SBER --sandbox --account <id> --interval 1
 ```
 
 | Опция | Описание | По умолчанию |
@@ -143,10 +142,10 @@ T_INVEST_TOKEN=<token> diviner --broker tinkoff --strategy path/to/strategy.js -
 ### Аккаунт-утилиты (без стратегии)
 
 ```bash
-T_INVEST_TOKEN=<token> diviner --broker tinkoff --sandbox --account <id> --print-balance
-T_INVEST_TOKEN=<token> diviner --broker tinkoff --sandbox --create-account
-T_INVEST_TOKEN=<token> diviner --broker tinkoff --sandbox --account <id> --increase-balance 100000
-T_INVEST_TOKEN=<token> diviner --broker tinkoff --sandbox --list-sandboxes
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-balance
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --create-account
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --increase-balance 100000
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --list-sandboxes
 ```
 
 | Опция | Описание |

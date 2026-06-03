@@ -12,24 +12,18 @@ import { createLogger } from "./core/logger.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
-// Built-in broker aliases → module paths. Any other --broker value is treated
-// as a path (like --strategy), so adding a broker is just adding a file.
-const BROKER_ALIASES = {
-    simulated: "./broker/simulated-broker.js",
-    tinkoff: "./broker/tinkoff-broker.js",
-};
-
 const HELP = `Usage:
-  diviner --broker <simulated|tinkoff|path> --strategy <path> [broker options]
+  diviner --broker <path> --strategy <path> [broker options]
   diviner --fetch   [fetch options]
   diviner --convert [convert options]
 
 Exactly one of --broker / --fetch / --convert.
+--broker is a path to a broker module (like --strategy).
 
 Examples:
-  diviner --broker simulated data/SBER_2024_1m.parquet --strategy path/to/strategy.js --balance 10000
-  T_INVEST_TOKEN=<t> diviner --broker tinkoff --strategy path/to/strategy.js --ticker SBER --sandbox --account <id>
-  T_INVEST_TOKEN=<t> diviner --broker tinkoff --sandbox --account <id> --print-balance
+  diviner --broker src/broker/simulated-broker.js data/SBER_2024_1m.parquet --strategy path/to/strategy.js --balance 10000
+  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff-broker.js --strategy path/to/strategy.js --ticker SBER --sandbox --account <id>
+  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-balance
   T_INVEST_TOKEN=<t> diviner --fetch --security SBER --from-date 2024-01-01 --parquet > sber.parquet
   diviner --convert --input-json sber.json --output-parquet sber.parquet`;
 
@@ -71,12 +65,9 @@ function delegate(script, rest) {
 }
 
 /**
- * Resolve a broker reference (alias or path) to an importable module URL.
+ * Resolve a broker module path (relative to cwd, like --strategy) to a URL.
  */
 function resolveBrokerModule(ref) {
-    if (BROKER_ALIASES[ref]) {
-        return new URL(BROKER_ALIASES[ref], import.meta.url).href;
-    }
     return pathToFileURL(resolve(process.cwd(), ref)).href;
 }
 

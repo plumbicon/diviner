@@ -12,9 +12,7 @@
   "scripts": {
     "start": "node src/diviner.js",
     "fetch": "node src/fetch.js",
-    "convert": "node src/convert.js",
-    "backtest": "node src/backtest.js",
-    "live": "node src/live.js"
+    "convert": "node src/convert.js"
   },
   "keywords": [
     "trading",

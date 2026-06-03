@@ -5,6 +5,11 @@ import {
 import { TinkoffClient } from "./tinkoff-client.js";
 import { OrderManager } from "./order-manager.js";
 import { StateManager } from "./state-manager.js";
+import { runUtility, isUtilityRequest } from "./sandbox-utils.js";
+
+// Account utilities (no strategy) live in sandbox-utils; re-exported so the CLI
+// can call broker.runUtility(config) when no strategy is given (п.2).
+export { runUtility, isUtilityRequest };
 
 /**
  * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
@@ -17,6 +22,14 @@ export const options = [
     { flags: "--interval <minutes>", description: "Candle interval in minutes", default: "1" },
     { flags: "--close-on-exit", description: "Close open position when the session stops", default: false },
     { flags: "--order-retries <count>", description: "Retry count for transient order errors", default: "2" },
+    // Account utilities (run without a strategy):
+    { flags: "--list-sandboxes", description: "List sandbox accounts and exit", default: false },
+    { flags: "--create-account", description: "Create a new sandbox account", default: false },
+    { flags: "--remove-account", description: "Remove the sandbox account from --account", default: false },
+    { flags: "--print-balance", description: "Print sandbox balance and positions", default: false },
+    { flags: "--reset-positions", description: "Reset sandbox share positions (keep RUB)", default: false },
+    { flags: "--increase-balance <amount>", description: "Increase sandbox RUB balance by amount" },
+    { flags: "--log <path>", description: "Append all output to a log file" },
 ];
 
 /**
@@ -139,6 +152,9 @@ export class TinkoffDataSource {
             return;
         }
         this._lastTime = time;
+        if (this.verbose) {
+            console.log(`[Live] candle ${candle.datetime.toISOString()} close=${candle.close}`);
+        }
         this._queue.push(candle);
         if (this._notify) {
             const notify = this._notify;
@@ -229,7 +245,11 @@ export class TinkoffDataSource {
             try {
                 await this.client.unsubscribeCandles();
             } catch (error) {
-                console.error("[TinkoffDataSource] Failed to unsubscribe candles:", error.message);
+                // Cancelling an active subscription often returns a cancel status;
+                // expected during shutdown, so keep it quiet unless verbose.
+                if (this.verbose) {
+                    console.warn("[TinkoffDataSource] Unsubscribe note:", error.message);
+                }
             }
         }
     }

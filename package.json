@@ -7,9 +7,7 @@
   "bin": {
     "diviner": "./src/diviner.js",
     "diviner-fetch": "./src/fetch.js",
-    "diviner-convert": "./src/convert.js",
-    "diviner-backtest": "./src/backtest.js",
-    "diviner-live": "./src/live.js"
+    "diviner-convert": "./src/convert.js"
   },
   "scripts": {
     "start": "node src/diviner.js",

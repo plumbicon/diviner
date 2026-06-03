@@ -149,10 +149,12 @@ export class TinkoffDataSource {
     }
 
     /**
-     * Stop the stream and cancel the underlying candle subscription.
+     * Request the stream to end and cancel the underlying candle subscription.
+     * This is the live "stop signal": it makes stream() finish, so the engine
+     * leaves its loop and calls broker.finalize().
      * @returns {Promise<void>} Resolves once the subscription is torn down.
      */
-    async close() {
+    async requestStop() {
         this._closed = true;
         if (this._notify) {
             const notify = this._notify;
@@ -194,6 +196,7 @@ export class TinkoffExecutor {
         this.accountRubBalance = 0;
         this.currentCandle = null;
         this.orderQueue = Promise.resolve();
+        this.sessionTrades = [];
     }
 
     /**
@@ -372,6 +375,7 @@ export class TinkoffExecutor {
             if (executedLots !== size) {
                 this.stateManager.updatePositionSize(executedLots);
             }
+            this.sessionTrades.push({ kind: "open", direction, lots: executedLots, at: new Date() });
             console.log(`[TinkoffExecutor] Order executed: ${direction} ${executedLots}/${size} lots of ${this.instrument.ticker} (${summary.statusName})`);
             await this.refreshBalance();
         } catch (error) {
@@ -405,6 +409,7 @@ export class TinkoffExecutor {
             if (executedLots < position.size) {
                 this.stateManager.setPosition({ ...position, size: position.size - executedLots });
             }
+            this.sessionTrades.push({ kind: "close", side: position.side, lots: executedLots, at: new Date() });
             console.log(`[TinkoffExecutor] Close order executed: ${position.side} ${executedLots}/${position.size} lots of ${this.instrument.ticker} (${summary.statusName})`);
         } catch (error) {
             console.error("[TinkoffExecutor] Failed to close position:", error.message);
@@ -428,9 +433,35 @@ export class TinkoffExecutor {
  * @returns {{ data: TinkoffDataSource, exec: TinkoffExecutor, instrumentMetadata: object }} Broker.
  */
 export function createTinkoffBroker({ client, instrument, interval = 1, options = {} }) {
+    const data = new TinkoffDataSource({ client, instrument, interval, verbose: options.verbose });
+    const exec = new TinkoffExecutor({ client, instrument, options });
+
     return {
-        data: new TinkoffDataSource({ client, instrument, interval, verbose: options.verbose }),
-        exec: new TinkoffExecutor({ client, instrument, options }),
+        data,
+        exec,
         instrumentMetadata: buildInstrumentMetadata(instrument),
+        /**
+         * Wind down the live session: optionally close the open position (only
+         * with --close-on-exit), stop the stream/subscription, print a short
+         * summary, and close the client. Called by the engine once the stream
+         * ends (e.g. after requestStop on SIGINT).
+         */
+        async finalize() {
+            if (options.closeOnExit && exec.getPosition()) {
+                console.log("[Session] Closing open position on exit (--close-on-exit)...");
+                exec.closePosition();
+                await exec.drainOrders();
+            }
+
+            await data.requestStop();
+
+            const opens = exec.sessionTrades.filter((t) => t.kind === "open").length;
+            const closes = exec.sessionTrades.filter((t) => t.kind === "close").length;
+            const pos = exec.getPosition();
+            console.log(`[Session] Trades this session: ${opens} open / ${closes} close. Final RUB balance: ${exec.getBalance().toFixed(2)}.`);
+            console.log(`[Session] Open position at exit: ${pos ? `${pos.side} ${pos.size} lots` : "none"}.`);
+
+            await client.close();
+        },
     };
 }

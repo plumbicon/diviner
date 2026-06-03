@@ -11,6 +11,63 @@ import { PerformanceMetrics } from "./metrics.js";
  */
 export class Engine {
     /**
+     * Drive a strategy against a broker until its candle stream ends.
+     *
+     * The engine is режим-слеп: it tactics the stream, orchestrates SL/TP by
+     * price level, routes signals to broker.exec, and asks the broker to
+     * finalize once the stream is done. It does not know money, mode, or why the
+     * stream stopped. The stream ending is the universal stop signal — for
+     * backtest it exhausts the listing, for live the broker's requestStop()
+     * makes it end.
+     *
+     * @param {object} params - Run parameters.
+     * @param {object} params.broker - { data, exec, finalize? }.
+     * @param {object} params.strategy - Strategy instance.
+     * @param {object} params.context - Temporal view passed to the strategy.
+     * @param {object} [params.options] - { verbose }.
+     * @returns {Promise<*>} Whatever broker.finalize() returns (report or nothing).
+     */
+    async run({ broker, strategy, context, options = {} }) {
+        strategy.execution = broker.exec;
+        strategy.verbose = Boolean(options.verbose);
+        if (context) {
+            strategy.setContext(context);
+        }
+
+        await strategy.init();
+
+        let index = -1;
+        for await (const candle of broker.data.stream()) {
+            index += 1;
+            // Ensure the current candle is visible to the strategy at this index.
+            // Backtest pre-loads the whole listing; live grows it candle by candle.
+            if (strategy.data.length <= index) {
+                strategy.data.push(candle);
+            }
+
+            if (context) {
+                context.setNow(candle.datetime);
+            }
+            strategy.setDataIndex(index);
+            broker.exec.setCurrentCandle(candle);
+
+            if (evaluateStops(broker.exec.getPosition(), candle.close)) {
+                broker.exec.closePosition();
+            }
+
+            await strategy.next();
+            broker.exec.syncStrategyState(strategy);
+
+            if (options.verbose) {
+                const side = broker.exec.getPosition()?.side || "none";
+                console.log(`[Engine] candle ${candle.datetime.toISOString()} close=${candle.close} pos=${side}`);
+            }
+        }
+
+        return broker.finalize ? broker.finalize() : undefined;
+    }
+
+    /**
      * Run a backtest over a fully-loaded listing.
      * @param {object} params - Run parameters.
      * @param {Array<object>} params.data - Loaded candles.

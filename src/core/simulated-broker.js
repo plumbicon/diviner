@@ -1,4 +1,5 @@
 import { Portfolio } from "./portfolio.js";
+import { PerformanceMetrics } from "./metrics.js";
 import {
     DEFAULT_EXCHANGE,
     MOSCOW_OFFSET_MS,
@@ -16,18 +17,40 @@ import {
  * aggregation never peeks past the current simulation moment (look-ahead guard).
  */
 export class SimulatedDataSource {
-    constructor({ candles = [], metadata = {} } = {}) {
+    constructor({ candles = [], metadata = {}, portfolio = null, equity = null } = {}) {
         this.candles = candles;
         this.metadata = metadata || {};
+        this.portfolio = portfolio;
+        this.equity = equity;
     }
 
     /**
-     * Stream the listing candle-by-candle (drives the engine tick loop).
+     * Stream the listing candle-by-candle (drives the engine tick loop) and
+     * record an equity point per bar. A request for the next candle means the
+     * previous bar has been fully processed by the engine, so its equity is
+     * marked at that point (and the last bar after the loop ends).
      * @returns {AsyncGenerator<object>} Candle stream.
      */
     async *stream() {
-        for (const candle of this.candles) {
-            yield candle;
+        for (let i = 0; i < this.candles.length; i += 1) {
+            if (i > 0) {
+                this._markEquity(this.candles[i - 1]);
+            }
+            yield this.candles[i];
+        }
+        if (this.candles.length > 0) {
+            this._markEquity(this.candles[this.candles.length - 1]);
+        }
+    }
+
+    /**
+     * Append a mark-to-market equity point for a processed bar.
+     * @param {object} candle - Bar just processed.
+     * @private
+     */
+    _markEquity(candle) {
+        if (this.portfolio && this.equity) {
+            this.equity.push(this.portfolio.calculateEquity(candle));
         }
     }
 
@@ -131,12 +154,45 @@ export function createSimulatedBroker({
     metadata = {},
     initialCash = 10000,
     commission = 0.0005,
+    meta = {},
 } = {}) {
     const portfolio = new Portfolio({ cash: initialCash, commission });
+    const equity = [];
+    const data = new SimulatedDataSource({ candles, metadata, portfolio, equity });
+    const exec = new SimulatedExecutor({ portfolio });
+
     return {
-        data: new SimulatedDataSource({ candles, metadata }),
-        exec: new SimulatedExecutor({ portfolio }),
+        data,
+        exec,
         portfolio,
+        /**
+         * Build the backtest report. Closes any position still open on the last
+         * candle (so equity is not left marked-to-market in an open position),
+         * then compiles metrics. The engine calls this once the stream ends.
+         * @returns {object} Backtest report.
+         */
+        finalize() {
+            if (portfolio.position && candles.length > 0) {
+                const last = candles[candles.length - 1];
+                exec.setCurrentCandle(last);
+                exec.closePosition();
+                equity[equity.length - 1] = portfolio.calculateEquity(last);
+            }
+
+            return {
+                backtest_parameters: {
+                    history_file: meta.historyFile || "",
+                    strategy_file: meta.strategyFile || "",
+                },
+                performance_metrics: new PerformanceMetrics({
+                    data: candles,
+                    equity,
+                    trades: portfolio.trades,
+                    initialCash,
+                }).compile(),
+                trade_log: portfolio.trades,
+            };
+        },
     };
 }
 

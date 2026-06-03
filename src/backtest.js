@@ -65,6 +65,7 @@ async function main() {
     metadata,
     initialCash: balance,
     commission,
+    meta: { historyFile: historyFileName, strategyFile: options.strategy },
   });
   const context = new TemporalView({
     dataSource: broker.data,
@@ -74,14 +75,7 @@ async function main() {
   const strategy = new StrategyClass(data, balance, commission);
 
   const engine = new Engine();
-  let result = await engine.runBacktest({
-    data,
-    strategy,
-    broker,
-    context,
-    initialCash: balance,
-    meta: { historyFile: historyFileName, strategyFile: options.strategy },
-  });
+  let result = await engine.run({ broker, strategy, context });
 
   // Если не указан --verbose, не выводим историю сделок
   if (!options.verbose) {

@@ -13,8 +13,6 @@ Tinkoff Investments API.
 ```
 diviner/
 ├── src/
-│   ├── engine/
-│   │   └── engine.js            # Единый режим-слепой движок (run)
 │   ├── broker/
 │   │   ├── simulated-broker.js  # Брокер бэктеста (data + exec + finalize)
 │   │   ├── tinkoff-broker.js    # Брокер T-Invest (data + exec + finalize + утилиты)
@@ -24,6 +22,7 @@ diviner/
 │   │       ├── state-manager.js # Состояние позиции
 │   │       └── sandbox-utils.js # Аккаунт-утилиты sandbox (без стратегии)
 │   ├── core/                    # Общие слои и утилиты
+│   │   ├── engine.js            # Единый режим-слепой движок (run)
 │   │   ├── strategy.js          # Базовый класс стратегии
 │   │   ├── strategy-loader.js   # Загрузчик стратегий по пути
 │   │   ├── temporal-view.js     # Окно видимости (clamp по now, защита от look-ahead)

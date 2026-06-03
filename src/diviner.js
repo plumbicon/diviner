@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command } from "commander";
-import { Engine } from "./engine/engine.js";
+import { Engine } from "./core/engine.js";
 import { TemporalView } from "./core/temporal-view.js";
 import { MarketDataCache } from "./core/market-cache.js";
 import { loadStrategy } from "./core/strategy-loader.js";

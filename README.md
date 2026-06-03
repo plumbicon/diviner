@@ -1,38 +1,63 @@
 # Diviner
 
-**Diviner** — это экосистема для бэктестинга и live-трейдинга торговых стратегий на MOEX. Проект включает инструменты для загрузки данных, конвертации в Parquet, бэктестов и торговли в реальном времени через Tinkoff Investments API.
+**Diviner** — экосистема для бэктестинга и live-трейдинга торговых стратегий на MOEX:
+загрузка данных, конвертация в Parquet, бэктесты и торговля в реальном времени через
+Tinkoff Investments API.
+
+Архитектура построена вокруг одного принципа: **брокер — единственный носитель различия
+между backtest и live**. Движок один и слеп — он тактирует поток свечей, оркеструет SL/TP
+по уровням и передаёт сигналы брокеру, ничего не зная про деньги, режим и источник данных.
 
 ## Структура проекта
 
 ```
 diviner/
-├── src/                    # Исходный код
-│   ├── core/               # Ядро
-│   │   ├── runner.js       # Последовательный runner бэктеста
-│   │   ├── portfolio.js    # Симулируемый портфель
-│   │   ├── metrics.js      # Метрики доходности
-│   │   ├── broker.js       # Broker-интерфейс для исполнения
-│   │   ├── execution-adapter.js # Исполнение сигналов стратегии
-│   │   ├── engine.js       # Совместимый facade над BacktestRunner
-│   │   ├── strategy.js     # Базовый класс стратегии
-│   │   ├── data-loader.js  # Загрузка Parquet
-│   │   ├── strategy-loader.js # Загрузчик стратегий
-│   │   ├── logger.js       # Логирование
-│   │   └── json-encoder.js # JSON-энкодер результатов
-│   ├── live/               # Live-торговля
-│   │   ├── tinkoff-client.js  # Клиент Tinkoff Invest API
-│   │   ├── live-engine.js     # Движок live-торговли
-│   │   ├── order-manager.js   # Управление ордерами
-│   │   └── state-manager.js   # Управление состоянием позиции
-│   ├── diviner.js          # Единая точка входа с --mode
-│   ├── fetch.js            # Загрузка свечей через Tinkoff API
-│   ├── convert.js          # JSON → Parquet
-│   ├── backtest.js         # Запуск бэктеста
-│   └── live.js             # Live-торговля
-├── data/                   # Исторические данные
+├── src/
+│   ├── engine/
+│   │   └── engine.js            # Единый режим-слепой движок (run)
+│   ├── broker/
+│   │   ├── simulated-broker.js  # Брокер бэктеста (data + exec + finalize)
+│   │   ├── tinkoff-broker.js    # Брокер T-Invest (data + exec + finalize + утилиты)
+│   │   ├── tinkoff-client.js    # Клиент Tinkoff Invest API
+│   │   ├── order-manager.js     # Постановка/валидация ордеров
+│   │   ├── state-manager.js     # Состояние позиции
+│   │   └── sandbox-utils.js     # Аккаунт-утилиты sandbox (без стратегии)
+│   ├── core/                    # Общие слои и утилиты
+│   │   ├── strategy.js          # Базовый класс стратегии
+│   │   ├── strategy-loader.js   # Загрузчик стратегий по пути
+│   │   ├── temporal-view.js     # Окно видимости (clamp по now, защита от look-ahead)
+│   │   ├── market-cache.js      # Кэш истории (декоратор над data source)
+│   │   ├── stops.js             # evaluateStops — единая логика SL/TP
+│   │   ├── portfolio.js         # Симулируемый портфель
+│   │   ├── metrics.js           # Метрики доходности
+│   │   ├── market-data.js       # Провайдер свечей/расписания T-Invest
+│   │   ├── data-loader.js       # Загрузка Parquet
+│   │   ├── candle-parquet.js    # Чтение/запись Parquet свечей
+│   │   ├── json-encoder.js      # JSON-энкодер отчёта
+│   │   └── logger.js            # Логирование
+│   ├── diviner.js               # Единая точка входа (--broker/--fetch/--convert)
+│   ├── fetch.js                 # Загрузка свечей через Tinkoff API
+│   ├── convert.js               # JSON → Parquet
+│   ├── backtest.js              # Тонкий шим → diviner --broker simulated
+│   └── live.js                  # Тонкий шим → diviner --broker tinkoff
+├── data/                        # Исторические данные
 ├── package.json
 └── README.md
 ```
+
+### Слои
+
+```
+Strategy        логика + сигналы (buy/sell/close); тактируется извне
+Engine          один, слепой: init → for await broker.data.stream() → broker.finalize()
+TemporalView    обрезает историю по now (защита от look-ahead)
+Cache           декоратор над data source брокера (кэш истории; только live)
+Broker {data, exec, finalize}   единственный носитель различия live/backtest
+```
+
+Завершение потока — универсальный сигнал остановки: в backtest данные кончаются, в live
+брокер по SIGINT встраивает завершение в поток. После этого движок зовёт `broker.finalize()`:
+у `simulated` это сборка отчёта (`PerformanceMetrics`), у `tinkoff` — закрытие сессии и сводка.
 
 ## Установка
 
@@ -40,91 +65,121 @@ diviner/
 npm install
 ```
 
-Для команд, которые обращаются к T-Invest API, токен читается только из переменной окружения:
+Для команд, обращающихся к T-Invest API, токен читается только из переменной окружения:
 
 ```bash
 export T_INVEST_TOKEN=<your-token>
 ```
 
-## Быстрый старт
-
-### 1. Загрузка данных
+## Единая точка входа
 
 ```bash
-T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24 --parquet > sber_2024.parquet
+diviner --broker <simulated|tinkoff|путь> --strategy <путь> [опции брокера]
+diviner --fetch   [опции fetch]
+diviner --convert [опции convert]
 ```
 
-### 2. Запуск бэктеста
+Ровно один из `--broker` / `--fetch` / `--convert` (иначе ошибка). Брокер — **плагин по пути**:
+встроенные алиасы `simulated`/`tinkoff` либо любой путь к файлу брокера (как `--strategy`).
+Опции брокера валидируются по его декларации (`export const options`), поэтому добавить брокера —
+это добавить файл, не трогая CLI.
+
+Стратегия запускается тогда и только тогда, когда переданы `--strategy` и источник данных
+(parquet для `simulated`, `--ticker` для `tinkoff`). Без стратегии `tinkoff` выполняет
+аккаунт-утилиту, если она запрошена.
+
+## Бэктест (`--broker simulated`)
 
 ```bash
-diviner --mode backtest sber_2024.parquet --strategy path/to/your-strategy.js
-```
-
-### JSON-выгрузка с конвертацией
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24 > sber_2024.json
-diviner --mode convert --input-json sber_2024.json --output-parquet sber_2024.parquet
-```
-
-## Команды
-
-### `diviner` — единая точка входа
-
-```bash
-diviner --mode <backtest|live|fetch|convert> [опции выбранного режима]
-```
-
-`diviner` читает только `--mode`, а остальные флаги передаёт выбранному режиму без изменений.
-
-| Опция | Описание |
-|-------|----------|
-| `--mode backtest` | Запустить бэктест |
-| `--mode live` | Запустить live-торговлю или sandbox-утилиты |
-| `--mode fetch` | Загрузить свечи через Tinkoff API |
-| `--mode convert` | Конвертировать JSON → Parquet |
-
-Примеры:
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01
-diviner --mode backtest sber_2024.parquet --strategy path/to/your-strategy.js --balance 10000
-T_INVEST_TOKEN=<your-token> diviner --mode live --create-account --increase-balance 10000
-T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker SBER --sandbox --account <sandbox-account-id>
-diviner --mode convert --input-json sber_2024.json --output-parquet sber_2024.parquet
-```
-
-### `fetch` — Загрузка данных
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 24
+diviner --broker simulated data/sber_2024.parquet --strategy path/to/strategy.js --balance 10000 --commission 0.0005
 ```
 
 | Опция | Описание | По умолчанию |
 |-------|----------|-------------|
-| `--security` | Тикер бумаги | `SBER` |
-| `--ticker` | Alias для `--security` | — |
+| `--strategy` | Путь к файлу стратегии | — |
+| `--balance` | Начальный виртуальный баланс | `10000` |
+| `--commission` | Комиссия | `0.0005` |
+| `--verbose` | Включить полную историю сделок (`trade_log`) в отчёт | выкл |
+| `[source]` | Позиционный аргумент — путь к Parquet (или stdin) | — |
+
+Данные можно передать через pipe:
+
+```bash
+cat data/sber_2024.parquet | diviner --broker simulated --strategy path/to/strategy.js
+```
+
+Расписание торгов в backtest восстанавливается из самих свечей; дневные свечи (`interval: "1d"`)
+агрегируются внутри `simulated`-брокера из минутных. Отчёт печатается в stdout как JSON
+(`backtest_parameters`, `performance_metrics`, `trade_log`).
+
+## Live-трейдинг (`--broker tinkoff`)
+
+```bash
+T_INVEST_TOKEN=<token> diviner --broker tinkoff --strategy path/to/strategy.js --ticker SBER --sandbox --account <id> --interval 1
+```
+
+| Опция | Описание | По умолчанию |
+|-------|----------|-------------|
+| `--strategy` | Путь к файлу стратегии | — |
+| `--ticker` | Тикер инструмента | — |
+| `--account` | ID счёта | — |
+| `--sandbox` | Режим песочницы (виртуальные деньги) | выкл |
+| `--dry-run` | Стратегия работает, ордера не отправляются | выкл |
+| `--interval` | Интервал свечей в минутах (1, 5, 15, 60, 120, 240, 1440) | `1` |
+| `--close-on-exit` | Закрыть позицию при остановке сессии (по умолчанию — оставить) | выкл |
+| `--order-retries` | Повторы заявки при временных ошибках API | `2` |
+| `--verbose` | Логировать свечи и подробности | выкл |
+| `--log` | Дублировать вывод в файл | — |
+
+**Режимы:** `--sandbox` (виртуальные деньги), `--dry-run` (без отправки ордеров),
+реальный счёт (без флагов). По SIGINT движок выходит из цикла, брокер закрывает сессию
+(отписка, сводка по сделкам, по флагу `--close-on-exit` — закрытие позиции) и завершает работу.
+
+Особенности live: расчёт размера заявки от фактического RUB-баланса с учётом лотности;
+синхронизация позиции стратегии с фактической позицией на счёте; обработка только закрытых
+свечей с отбрасыванием дублей; авто-переподписка после сетевого разрыва с догрузкой
+пропущенных свечей; проверка SL/TP в реальном времени; кэш истории.
+
+### Аккаунт-утилиты (без стратегии)
+
+```bash
+T_INVEST_TOKEN=<token> diviner --broker tinkoff --sandbox --account <id> --print-balance
+T_INVEST_TOKEN=<token> diviner --broker tinkoff --sandbox --create-account
+T_INVEST_TOKEN=<token> diviner --broker tinkoff --sandbox --account <id> --increase-balance 100000
+T_INVEST_TOKEN=<token> diviner --broker tinkoff --sandbox --list-sandboxes
+```
+
+| Опция | Описание |
+|-------|----------|
+| `--list-sandboxes` | Список sandbox-счетов |
+| `--create-account` | Создать sandbox-счёт |
+| `--remove-account` | Удалить sandbox-счёт из `--account` |
+| `--print-balance` | Cash, стоимость long, обязательства short, оценочная equity |
+| `--reset-positions` | Обнулить sandbox-позиции по акциям, сохранив RUB-баланс |
+| `--increase-balance <amount>` | Пополнить RUB-баланс sandbox-счёта |
+
+## Загрузка данных (`--fetch`)
+
+```bash
+T_INVEST_TOKEN=<token> diviner --fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 1 --parquet > data/sber_2024.parquet
+```
+
+| Опция | Описание | По умолчанию |
+|-------|----------|-------------|
+| `--security` / `--ticker` | Тикер бумаги | `SBER` |
 | `--class-code` | Код класса инструмента | `TQBR` |
 | `--from-date` | Дата начала (YYYY-MM-DD) | — |
 | `--till-date` | Дата окончания (YYYY-MM-DD) | сегодня |
-| `--interval` | Интервал: 1=1m, 2=2m, 3=3m, 5=5m, 10=10m, 15=15m, 30=30m, 60=1h, 120=2h, 240=4h, 24=1d, 7=1w, 31=1M | `24` |
+| `--interval` | 1=1m, 5=5m, 15=15m, 60=1h, 240=4h, 24=1d, 7=1w, 31=1M, … | `24` |
 | `--parquet` | Писать Parquet в stdout вместо JSON | выкл |
-| `--request-delay-ms` | Пауза между API-запросами при длинной загрузке | `100` |
+| `--request-delay-ms` | Пауза между API-запросами | `100` |
 
-Даты интерпретируются как календарные дни в московском времени. Команда не фильтрует свечи по выходным и не задаёт источник свечей: выгружаются данные, которые Tinkoff API отдаёт по умолчанию. Без `--parquet` команда печатает JSON в формате, совместимом с `convert`.
+Даты — календарные дни в московском времени. Parquet хранит metadata инструмента и свечи.
 
-**Пример — сразу скачать Parquet:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode fetch --security SBER --from-date 2024-01-01 --till-date 2024-12-31 --interval 1 --parquet > data/sber_2024.parquet
-```
-
-Parquet-файл содержит metadata инструмента (`ticker`, `classCode`, `figi`, `instrumentUid`, `exchange`, `lot`) и сами свечи. Историческое расписание рядом с данными не записывается: backtest восстанавливает календарь торгов только из свечей текущего файла.
-
-### `convert` — Конвертация
+## Конвертация (`--convert`)
 
 ```bash
-diviner --mode convert --input-json sber_2024.json --output-parquet sber_2024.parquet
+diviner --convert --input-json sber_2024.json --output-parquet sber_2024.parquet
 ```
 
 | Опция | Описание |
@@ -132,203 +187,31 @@ diviner --mode convert --input-json sber_2024.json --output-parquet sber_2024.pa
 | `--input-json` | Путь к JSON (или stdin) |
 | `--output-parquet` | Путь к Parquet (или stdout) |
 
-### `backtest` — Бэктест
-
-```bash
-diviner --mode backtest sber_2024.parquet --strategy path/to/your-strategy.js
-```
-
-| Опция | Описание | По умолчанию |
-|-------|----------|-------------|
-| `--strategy` | Путь к файлу стратегии | — |
-| `--balance` | Начальный баланс | `10000` |
-| `--commission` | Комиссия | `0.0001` |
-| `--verbose` | Выводить полную историю сделок | выкл |
-
-`--balance` относится только к бэктесту и задаёт стартовый виртуальный баланс стратегии.
-
-Данные можно передать через pipe:
-
-```bash
-cat sber_2024.parquet | diviner --mode backtest --strategy path/to/your-strategy.js
-```
-
-**Пример с --verbose:**
-
-```bash
-diviner --mode backtest sber_2024.parquet --strategy path/to/your-strategy.js --verbose
-```
-
-Без флага `--verbose` история сделок (`trade_log`) будет пустым массивом, что уменьшает размер вывода.
-
-В backtest расписание не читается из Parquet metadata и не запрашивается через T-Invest API: backtest-движок без предупреждений восстанавливает его из самих свечей. Календарь отдаёт стратегии только факт торгового дня, время открытия и время закрытия.
-
-Стратегии получают свечи и расписание через `StrategyContext`: сама стратегия не читает переменные окружения, не знает тикер, инструмент, биржу и режим запуска.
-
-Внутри backtest разделён на несколько слоёв: `BacktestRunner` прогоняет свечи, `Portfolio` хранит cash/позицию/сделки, `BacktestBroker` исполняет операции портфеля, `ExecutionAdapter` подключает broker к API стратегии, а `PerformanceMetrics` собирает отчёт.
-
-### `live` — Live-трейдинг
-
-Торговля в реальном времени через Tinkoff Investments API. Поддерживается sandbox и реальный счёт.
-
-**Архитектура:**
-- `tinkoff-client.js` - клиент Tinkoff API с валидацией параметров
-- `live-engine.js` - движок live-торговли с синхронизацией состояния
-- `order-manager.js` - управление ордерами с проверкой параметров
-- `state-manager.js` - управление состоянием позиции
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker AFKS --sandbox --account <sandbox-account-id>
-```
-
-| Опция | Описание | По умолчанию |
-|-------|----------|-------------|
-| `--strategy` | Путь к файлу стратегии | — |
-| `--ticker` | Тикер бумаги | — |
-| `--account` | ID счёта для live-торговли и команд, работающих с конкретным sandbox-счётом | — |
-| `--sandbox` | Режим песочницы | выкл |
-| `--list-sandboxes` | Вывести список sandbox-счетов и завершиться | выкл |
-| `--create-account` | Создать новый sandbox-счёт и завершиться | выкл |
-| `--remove-account` | Удалить sandbox-счёт из `--account` и завершиться | выкл |
-| `--print-balance` | Вывести cash, стоимость long-акций, обязательства по short-акциям и оценочную equity sandbox-счёта | выкл |
-| `--reset-positions` | Обнулить sandbox-позиции по акциям без изменения RUB-баланса, если это возможно через API | выкл |
-| `--log` | Дублировать весь вывод в указанный файл | — |
-| `--increase-balance` | Увеличить RUB-баланс sandbox-счёта на указанную сумму | — |
-| `--interval` | Интервал свечей: 1, 5, 15, 60, 120, 240, 1440 | `1` |
-| `--commission` | Комиссия | `0.0001` |
-| `--order-retries` | Количество повторов заявки при временных ошибках API (`INTERNAL`, `RESOURCE_EXHAUSTED`, `UNAVAILABLE`) | `2` |
-| `--verbose` | Логировать всю информацию включая свечи | выкл |
-| `--dry-run` | Dry run: стратегия работает, ордера не отправляются | выкл |
-
-**Режимы:**
-
-- **Sandbox** (`--sandbox`): виртуальные деньги, безопасно для тестирования
-- **Dry-run** (`--dry-run`): стратегия работает, ордера не отправляются
-- **Live**: реальные торги (без флагов)
-
-**Особенности новой системы:**
-- Валидация всех параметров ордеров перед отправкой в API
-- Синхронизация состояния стратегии с фактической позицией по инструменту на счёте перед подпиской на live-свечи
-- Стратегии получают историю и расписание через `StrategyContext`; источник данных выбирает backtest/live-движок
-- Сигналы стратегии исполняются через общий `ExecutionAdapter`: в backtest он работает с `BacktestBroker`/`Portfolio`, в live — с `LiveBroker`, `OrderManager` и `StateManager`
-- Подписка обрабатывает только закрытые свечи и игнорирует дубли/старые свечи
-- Market-data stream автоматически переподписывается после сетевого разрыва или `CANCELLED` и догружает закрытые свечи, пропущенные во время разрыва
-- Расчёт размера заявки по умолчанию учитывает лотность инструмента
-- Live-режим рассчитывает размер заявки от фактического RUB-баланса счёта
-- Market-заявки проверяются по статусу исполнения и количеству исполненных лотов
-- Увеличение RUB-баланса sandbox-счёта через `--increase-balance`
-- Создание и удаление sandbox-счетов через `--create-account` и `--remove-account`
-- Обнуление sandbox-позиций по акциям через `--reset-positions` с сохранением RUB-баланса
-- Повторная отправка заявки с тем же `orderId` при временных ошибках API
-- Проверка SL/TP в реальном времени
-- Graceful shutdown с закрытием позиций
-- Все сообщения live-команды печатаются с ISO-временем в начале строки
-- Логи можно дублировать в файл через `--log`
-
-**Пример — тестирование в sandbox:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker AFKS --sandbox --account <sandbox-account-id> --dry-run
-```
-
-**Пример — sandbox с реальными заявками в песочнице:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --create-account --increase-balance 10000 --print-balance
-T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker SBER --sandbox --account <sandbox-account-id> --verbose
-```
-
-Первая команда создаст sandbox-счёт и пополнит его на `10000` RUB. Вторая запустит стратегию на созданном счёте.
-
-**Пример — запись логов в файл:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --strategy path/to/your-strategy.js --ticker SBER --sandbox --account <sandbox-account-id> --log logs/diviner-live.log
-```
-
-**Пример — список sandbox-счетов:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --list-sandboxes
-```
-
-**Пример — создать sandbox-счёт:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --create-account
-```
-
-**Пример — удалить sandbox-счёт:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --remove-account --account <sandbox-account-id>
-```
-
-**Пример — баланс sandbox-счёта:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --print-balance --account <sandbox-account-id>
-```
-
-Пример вывода:
-
-```text
-[Sandbox] Balance for account: <sandbox-account-id>
-[Sandbox] Cash: 19370.43 RUB
-[Sandbox] Blocked cash: empty
-[Sandbox] Long shares value: empty
-[Sandbox] Short shares liability: 9368.50 RUB
-[Sandbox] Estimated equity: 10001.93 RUB
-[Sandbox] Short share: ticker=SBER figi=BBG004730N88 quantity=-290 lots=29 price=32.31 RUB value=9368.50 RUB
-```
-
-`Cash` — реальные деньги на счёте. `Long shares value` — текущая рыночная стоимость акций в long. `Short shares liability` — текущая стоимость акций, которые нужно выкупить для закрытия short. `Estimated equity` считается как `Cash + Long shares value - Short shares liability`.
-
-Если открытых позиций по акциям нет, команда дополнительно выведет `Open share positions: none`.
-
-**Пример — увеличить баланс sandbox-счёта без запуска стратегии:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --increase-balance 10000 --account <sandbox-account-id>
-```
-
-Команда увеличит RUB-баланс указанного sandbox-счёта на `10000`. T-Invest sandbox API предоставляет метод `SandboxPayIn` для пополнения счёта, но не метод установки произвольного баланса.
-
-**Пример — обнулить позиции по акциям и отдельно увеличить RUB-баланс:**
-
-```bash
-T_INVEST_TOKEN=<your-token> diviner --mode live --account <sandbox-account-id> --reset-positions --increase-balance 10000
-```
-
-При совместном использовании `--increase-balance` применяется до `--reset-positions`, а `--reset-positions` сохраняет текущий RUB-баланс. Если на счёте есть long-позиции по акциям, команда откажется выполнять сброс: T-Invest sandbox не предоставляет API для удаления бумаг без сделки, продажа меняет RUB-баланс, а списание лишних RUB через `SandboxPayIn` отклоняется API.
-
 ## Стратегии
 
-### Создание своей стратегии
-
-Стратегия наследуется от базового класса `Strategy`:
+Стратегия наследуется от `Strategy` и реализует `init()` и `next()`:
 
 ```javascript
 import { Strategy } from '../core/strategy.js';
 
 export class MyStrategy extends Strategy {
   init() {
-    // Инициализация индикаторов
+    // Инициализация
   }
 
   next() {
     // Логика на каждом баре
-    if (/* условие для покупки */) {
-      this.buy();
-    }
-    if (/* условие для продажи */) {
-      this.sell();
-    }
+    if (/* условие входа */) this.sell(undefined, slPrice, tpPrice);
+    if (/* условие выхода */) this.closePosition();
   }
 }
 ```
 
-### Методы стратегии
+Стратегия не читает переменные окружения, не знает тикер, биржу и режим запуска — историю
+и расписание она получает через контекст (`this.context.getCandles` / `getTradingSchedule`),
+а исполнение делегирует брокеру. SL/TP считаются движком централизованно (`evaluateStops`).
+
+### Методы и свойства
 
 | Метод | Описание |
 |-------|----------|
@@ -336,14 +219,13 @@ export class MyStrategy extends Strategy {
 | `this.sell(size?, sl?, tp?)` | Открыть короткую позицию |
 | `this.closePosition()` | Закрыть текущую позицию |
 | `this.I(calculator, ...args)` | Создать индикатор |
-
-### Свойства стратегии
+| `this.context.getCandles({ from, to, interval })` | История свечей (с защитой от look-ahead) |
+| `this.context.getTradingSchedule({ from, to })` | Расписание торгов |
 
 | Свойство | Описание |
 |----------|----------|
-| `this.data` | Массив свечей |
+| `this.data` | Массив свечей (в live растёт по мере поступления) |
 | `this.position` | Текущая позиция |
-| `this.cash` | Доступные средства |
 
 ---
 *Проект спроектирован в соответствии с принципами UNIX-way и KISS.*

@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { TinkoffClient } from "./live/tinkoff-client.js";
-import { LiveEngine } from "./live/live-engine.js";
+import { Engine } from "./core/engine.js";
+import { createTinkoffBroker } from "./live/tinkoff-broker.js";
+import { TemporalView } from "./core/temporal-view.js";
+import { MarketDataCache } from "./core/market-cache.js";
+import { loadStrategy } from "./core/strategy-loader.js";
 import { createLogger } from "./core/logger.js";
 
 const program = new Command();
@@ -89,6 +93,7 @@ async function main() {
   console.log("----------------------------");
 
   let client;
+  let broker;
   let engine;
   let isShuttingDown = false;
 
@@ -100,8 +105,15 @@ async function main() {
     isShuttingDown = true;
     console.log(message);
 
-    if (engine) {
-      await engine.close();
+    if (broker) {
+      broker.data.close();
+      if (engine) {
+        try {
+          await engine.closeOpenPosition(broker);
+        } catch (error) {
+          console.error("[Main] Failed to close position on shutdown:", error.message);
+        }
+      }
     }
     if (client) {
       await client.close();
@@ -146,48 +158,45 @@ async function main() {
       );
     }
 
-    // 3. Инициализация Live Engine
-    engine = new LiveEngine(client, options.strategy, {
-      commission: parseFloat(options.commission),
-      interval: parseInt(options.interval, 10),
-      verbose: options.verbose,
-      dryRun: options.dryRun,
+    // 3. Сборка единого стека: TinkoffBroker { data, exec } + Cache + TemporalView + Engine
+    const interval = parseInt(options.interval, 10);
+    const StrategyClass = await loadStrategy(options.strategy);
+
+    broker = createTinkoffBroker({
+      client,
+      instrument,
+      interval,
+      options: { verbose: options.verbose, dryRun: options.dryRun },
     });
 
-    await engine.init(instrument);
-
-    await engine.syncWithAccountPosition();
-
-    // 4. Подписка на свечи
-    await client.subscribeCandles(
-      instrument,
-      parseInt(options.interval, 10),
-      async (candle) => {
-        if (options.verbose) {
-          console.log(
-            `[Main] New candle: ${candle.datetime.toISOString()} O:${candle.open} H:${candle.high} L:${candle.low} C:${candle.close}`,
-          );
-        }
-
-        await engine.onCandle(candle);
+    const context = new TemporalView({
+      dataSource: new MarketDataCache(broker.data),
+      metadata: {
+        source: "tinkoff",
+        instrument: broker.instrumentMetadata,
+        interval,
+        intervalMinutes: interval,
+        intervalLabel: `${interval}m`,
+        timezone: "Europe/Moscow",
       },
-      {
-        waitingClose: true,
-        onReconnectCatchUp: async () => {
-          await engine.catchUpMissedCandles();
-        },
-      },
-    );
+      logger: (message) => console.log(message),
+    });
+
+    const strategy = new StrategyClass([], 0, parseFloat(options.commission));
+    engine = new Engine();
+
+    // Обработка сигналов завершения (до запуска цикла тактирования)
+    process.on("SIGINT", () => shutdown("\n[Main] Shutting down..."));
+    process.on("SIGTERM", () => shutdown("\n[Main] Received SIGTERM, shutting down..."));
 
     console.log("[Main] Live trading started. Waiting for candles...");
 
-    // Обработка сигналов завершения
-    process.on("SIGINT", async () => {
-      await shutdown("\n[Main] Shutting down...");
-    });
-
-    process.on("SIGTERM", async () => {
-      await shutdown("\n[Main] Received SIGTERM, shutting down...");
+    // 4. Запуск live-движка: он подписывается на поток и тактирует стратегию.
+    await engine.runLive({
+      broker,
+      strategy,
+      context,
+      options: { verbose: options.verbose },
     });
   } catch (error) {
     console.error("[Main] Fatal error:", error.message);

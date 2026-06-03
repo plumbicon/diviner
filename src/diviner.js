@@ -158,6 +158,10 @@ async function runBrokerMode(brokerRef, rest) {
     const broker = await mod.createBroker(config);
     const StrategyClass = await loadStrategy(config.strategy);
 
+    // Live wraps its data source in a cache so repeated history requests to the
+    // exchange are memoised; the backtest source is already in-memory. Either
+    // way the strategy sees one history path (context.getCandles) and the
+    // broker underneath owns aggregation (backtest) or native fetch (live).
     const dataSource = broker.needsCache ? new MarketDataCache(broker.data) : broker.data;
     const context = new TemporalView({
         dataSource,

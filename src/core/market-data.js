@@ -575,6 +575,15 @@ export function toNullableIso(value) {
     return toDate(value).toISOString();
 }
 
+/**
+ * Moscow calendar date key (YYYY-MM-DD) for a datetime.
+ * @param {Date} datetime - Datetime.
+ * @returns {string} Date key.
+ */
+export function getMoscowDateKey(datetime) {
+    return getMoscowDateParts(datetime).dateKey;
+}
+
 function getMoscowDateParts(datetime) {
     const moscowDate = new Date(datetime.getTime() + MOSCOW_OFFSET_MS);
     const year = moscowDate.getUTCFullYear();

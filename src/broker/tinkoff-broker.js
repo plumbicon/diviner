@@ -2,10 +2,10 @@ import {
     TinkoffMarketDataProvider,
     buildInstrumentMetadata,
 } from "../core/market-data.js";
-import { TinkoffClient } from "./tinkoff-client.js";
-import { OrderManager } from "./order-manager.js";
-import { StateManager } from "./state-manager.js";
-import { runUtility, isUtilityRequest } from "./sandbox-utils.js";
+import { TinkoffClient } from "./tinkoff/client.js";
+import { OrderManager } from "./tinkoff/order-manager.js";
+import { StateManager } from "./tinkoff/state-manager.js";
+import { runUtility, isUtilityRequest } from "./tinkoff/sandbox-utils.js";
 
 // Account utilities (no strategy) live in sandbox-utils; re-exported so the CLI
 // can call broker.runUtility(config) when no strategy is given (п.2).

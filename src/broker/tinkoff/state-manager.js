@@ -1,4 +1,4 @@
-import { evaluateStops } from "../core/stops.js";
+import { evaluateStops } from "../../core/stops.js";
 
 /**
  * State Manager - управление состоянием позиции

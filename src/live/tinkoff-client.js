@@ -1159,6 +1159,14 @@ export class TinkoffClient {
    * Закрытие соединения
    */
   async close() {
+    await this.unsubscribeCandles();
+  }
+
+  /**
+   * Остановить подписку на свечи и реконнект, не затрагивая остальной клиент.
+   * Идемпотентно. Вызывается владельцем подписки (TinkoffDataSource) при close().
+   */
+  async unsubscribeCandles() {
     this.isClosing = true;
     this.candleSubscription = null;
 

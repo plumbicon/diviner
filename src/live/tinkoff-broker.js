@@ -149,14 +149,22 @@ export class TinkoffDataSource {
     }
 
     /**
-     * Stop the stream.
+     * Stop the stream and cancel the underlying candle subscription.
+     * @returns {Promise<void>} Resolves once the subscription is torn down.
      */
-    close() {
+    async close() {
         this._closed = true;
         if (this._notify) {
             const notify = this._notify;
             this._notify = null;
             notify();
+        }
+        if (typeof this.client?.unsubscribeCandles === "function") {
+            try {
+                await this.client.unsubscribeCandles();
+            } catch (error) {
+                console.error("[TinkoffDataSource] Failed to unsubscribe candles:", error.message);
+            }
         }
     }
 }

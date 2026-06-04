@@ -24,18 +24,26 @@ export const options = [
  * @returns {Promise<object>} Broker { data, exec, finalize, metadata, needsCache }.
  */
 export async function createBroker(config = {}) {
-    const dataset = await loadDataset(config.source);
+    const dataset  = await loadDataset(config.source);
+    const metadata = { ...dataset.metadata };
+    // Parquet files from older pipelines may lack a ticker field; fall back to
+    // the filename prefix (e.g. "AFKS_2025_1m.parquet" → ticker="AFKS").
+    if (!metadata.ticker && config.sourceName) {
+        const base  = String(config.sourceName).split(/[\\/]/).pop();
+        const match = base.match(/^([A-Z0-9]+)_/);
+        if (match) metadata.ticker = match[1];
+    }
     const broker = createSimulatedBroker({
-        candles: dataset.candles,
-        metadata: dataset.metadata,
+        candles:     dataset.candles,
+        metadata,
         initialCash: Number(config.balance),
-        commission: Number(config.commission),
+        commission:  Number(config.commission),
         meta: {
             historyFile: config.sourceName || "",
             strategyFile: config.strategy || "",
         },
     });
-    broker.metadata = dataset.metadata;
+    broker.metadata = metadata;
     broker.needsCache = false;
     return broker;
 }

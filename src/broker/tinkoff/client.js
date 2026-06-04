@@ -328,12 +328,16 @@ export class TinkoffClient {
       longShares,
       shortShares,
     });
+    const positionsValue = this._calculatePositionsValue({ longShares, shortShares });
+    const freeCash = this._calculateCurrencyDiff(estimatedEquity, positionsValue);
 
     return {
       cash,
       blockedCash,
       longShares,
       shortShares,
+      positionsValue,
+      freeCash,
       estimatedEquity,
     };
   }
@@ -359,6 +363,34 @@ export class TinkoffClient {
         continue;
       }
       this._addCurrencyValue(totals, position.currency, position.marketValue);
+    }
+    return this._currencyMapToArray(totals);
+  }
+
+  /**
+   * @private
+   */
+  _calculatePositionsValue({ longShares, shortShares }) {
+    const totals = new Map();
+    for (const item of longShares) {
+      this._addCurrencyValue(totals, item.currency, item.value);
+    }
+    for (const item of shortShares) {
+      this._addCurrencyValue(totals, item.currency, item.value);
+    }
+    return this._currencyMapToArray(totals);
+  }
+
+  /**
+   * @private
+   */
+  _calculateCurrencyDiff(a, b) {
+    const totals = new Map();
+    for (const item of a) {
+      this._addCurrencyValue(totals, item.currency, item.value);
+    }
+    for (const item of b) {
+      this._addCurrencyValue(totals, item.currency, -item.value);
     }
     return this._currencyMapToArray(totals);
   }

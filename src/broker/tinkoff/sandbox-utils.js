@@ -136,11 +136,11 @@ function printSandboxAccounts(accounts) {
 
 function printSandboxBalance(balance) {
     console.log(`[Sandbox] Balance for account: ${balance.accountId}`);
-    printCurrencyValues("[Sandbox] Cash", balance.totals?.cash || balance.money);
-    printCurrencyValues("[Sandbox] Blocked cash", balance.totals?.blockedCash || []);
-    printCurrencyValues("[Sandbox] Long shares value", balance.totals?.longShares || []);
-    printCurrencyValues("[Sandbox] Short shares liability", balance.totals?.shortShares || []);
-    printCurrencyValues("[Sandbox] Estimated equity", balance.totals?.estimatedEquity || []);
+    printCurrencyValues("[Sandbox] Equity", balance.totals?.estimatedEquity || []);
+    printCurrencyValues("[Sandbox]   Free cash", balance.totals?.freeCash || []);
+    printNonZeroCurrencyValues("[Sandbox] Blocked cash", balance.totals?.blockedCash || []);
+    printNonZeroCurrencyValues("[Sandbox] Long positions", balance.totals?.longShares || []);
+    printNonZeroCurrencyValues("[Sandbox] Short debt", balance.totals?.shortShares || []);
 
     for (const blocked of balance.blocked) {
         if (blocked.value !== 0) {
@@ -175,6 +175,13 @@ function printCurrencyValues(label, values) {
         console.log(`${label}: empty`);
         return;
     }
+    for (const item of printable) {
+        console.log(`${label}: ${formatCurrency(item.value, item.currency)}`);
+    }
+}
+
+function printNonZeroCurrencyValues(label, values) {
+    const printable = values.filter((item) => Number.isFinite(item.value) && item.value !== 0);
     for (const item of printable) {
         console.log(`${label}: ${formatCurrency(item.value, item.currency)}`);
     }

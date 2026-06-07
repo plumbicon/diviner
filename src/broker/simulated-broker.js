@@ -3,11 +3,14 @@ import { PerformanceMetrics } from "../core/metrics.js";
 import { loadDataset } from "../core/data-loader.js";
 import {
     DEFAULT_EXCHANGE,
+    MOSCOW_OFFSET_MS,
     buildCandleDerivedTradingSchedule,
     getCandleIntervalConfig,
     getMoscowDateKey,
     toDate,
 } from "../core/market-data.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
@@ -35,6 +38,7 @@ export async function createBroker(config = {}) {
     }
     const broker = createSimulatedBroker({
         candles:     dataset.candles,
+        series:      dataset.series,
         metadata,
         initialCash: Number(config.balance),
         commission:  Number(config.commission),
@@ -51,19 +55,30 @@ export async function createBroker(config = {}) {
 /**
  * Simulated data source for backtests.
  *
- * Owns the loaded 1m candle listing and answers history requests off it. This
- * is the backtest broker, so aggregation to higher intervals (1h/1d) happens
- * here, from the 1m base. Honours an `until` upper bound on data freshness so
- * neither the slice nor the aggregation ever peeks past the current simulation
- * moment (look-ahead guard) — the current hour/day is therefore aggregated only
- * from the minutes seen so far, exactly as live would build them.
+ * Owns the loaded candle listing and answers history requests off it. The base
+ * (smallest) interval is streamed to drive the engine. Higher intervals (1h/1d)
+ * are served two ways:
+ *   1. If the file stored that interval (multi-interval parquet), the exact
+ *      stored candles are returned — so daily/hourly closes match the official
+ *      values the live API serves (e.g. the closing-auction daily close, which
+ *      can differ from the last 1m print on illiquid names).
+ *   2. Otherwise they are aggregated from the base interval (legacy behaviour).
+ *
+ * Both paths honour an `until` upper bound on data freshness so nothing peeks
+ * past the current simulation moment (look-ahead guard): aggregation only sees
+ * minutes up to now, and a stored higher-interval candle is withheld until its
+ * period has fully elapsed (period end ≤ until) — exactly as live would have it.
  */
 export class SimulatedDataSource {
-    constructor({ candles = [], metadata = {}, portfolio = null, equity = null } = {}) {
+    constructor({ candles = [], series = null, metadata = {}, portfolio = null, equity = null } = {}) {
         this.candles = candles;
+        this.series = series instanceof Map ? series : null;
         this.metadata = metadata || {};
         this.portfolio = portfolio;
         this.equity = equity;
+        this.baseMinutes = this.series && this.series.size > 0
+            ? Math.min(...this.series.keys())
+            : (Number(this.metadata.intervalMinutes) || 1);
     }
 
     /**
@@ -114,11 +129,26 @@ export class SimulatedDataSource {
         // `until`, so the freshness guard and the requested window combine into
         // one cut and a request "up to now" includes the current minute.
         const upperExcl = Math.min(toTs, untilTs === Infinity ? Infinity : untilTs + 1);
-        const base = sliceAscending(this.candles, fromTs, upperExcl);
 
-        const label = getCandleIntervalConfig(interval).label;
-        if (label === "1h") return aggregateHourlyCandles(base);
-        if (label === "1d") return aggregateDailyCandles(base);
+        const config = getCandleIntervalConfig(interval);
+        const minutes = config.minutes;
+
+        // Stored higher-interval series (multi-interval file): return the exact
+        // candles, but withhold any whose period has not fully elapsed by `until`
+        // so a forming day/hour never leaks its final close (look-ahead guard).
+        const stored = this.series?.get(minutes);
+        if (stored && minutes !== this.baseMinutes) {
+            const slice = sliceAscending(stored, fromTs, upperExcl);
+            if (untilTs === Infinity) return slice;
+            return slice.filter(
+                (candle) => candlePeriodEnd(candle.datetime.getTime(), minutes) <= untilTs,
+            );
+        }
+
+        // Fallback: aggregate from the base interval (legacy single-interval file).
+        const base = sliceAscending(this.candles, fromTs, upperExcl);
+        if (config.label === "1h") return aggregateHourlyCandles(base);
+        if (config.label === "1d") return aggregateDailyCandles(base);
         return base;
     }
 
@@ -193,6 +223,7 @@ export class SimulatedExecutor {
  */
 export function createSimulatedBroker({
     candles = [],
+    series = null,
     metadata = {},
     initialCash = 10000,
     commission = 0.0005,
@@ -200,7 +231,7 @@ export function createSimulatedBroker({
 } = {}) {
     const portfolio = new Portfolio({ cash: initialCash, commission });
     const equity = [];
-    const data = new SimulatedDataSource({ candles, metadata, portfolio, equity });
+    const data = new SimulatedDataSource({ candles, series, metadata, portfolio, equity });
     const exec = new SimulatedExecutor({ portfolio });
 
     return {
@@ -299,6 +330,28 @@ export function aggregateDailyCandles(candles) {
     }
     return Array.from(grouped.values())
         .sort((a, b) => a.datetime.getTime() - b.datetime.getTime());
+}
+
+/**
+ * Time (ms) at which a stored candle's period is fully elapsed — i.e. its close
+ * is final and may be served without look-ahead. Daily (and longer) candles are
+ * stamped at UTC midnight but represent a Moscow calendar day, so their period
+ * ends at the next Moscow midnight, not UTC midnight + 24h (which would be 3h
+ * late and hide a finalized close during the first hours of the next day).
+ * Sub-daily candles use their plain begin + length.
+ * @param {number} startTs - Candle begin (ms).
+ * @param {number} minutes - Interval length in minutes.
+ * @returns {number} Period-end timestamp (ms).
+ */
+function candlePeriodEnd(startTs, minutes) {
+    if (minutes % 1440 === 0) {
+        // Floor to Moscow midnight, then advance by the number of days covered.
+        const days = minutes / 1440;
+        const local = startTs + MOSCOW_OFFSET_MS;
+        const localMidnight = Math.floor(local / DAY_MS) * DAY_MS;
+        return localMidnight + days * DAY_MS - MOSCOW_OFFSET_MS;
+    }
+    return startTs + minutes * 60_000;
 }
 
 /**

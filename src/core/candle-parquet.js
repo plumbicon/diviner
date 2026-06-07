@@ -12,6 +12,12 @@ export const candleSchema = new parquet.ParquetSchema({
     low: { type: "DOUBLE" },
     close: { type: "DOUBLE" },
     volume: { type: "INT64" },
+    // Interval length in minutes (1, 60, 1440, …). Optional so a single-interval
+    // file can omit it (legacy/back-compat: readers treat such rows as the base
+    // interval from metadata). A multi-interval file tags every row, letting the
+    // backtest serve the exact stored candles for each interval instead of
+    // re-aggregating 1m — so daily/hourly closes match what the live API returns.
+    interval: { type: "INT64", optional: true },
 });
 
 /**
@@ -109,11 +115,55 @@ export async function writeCandleRecordsAsParquet(
     }
 
     for (const record of records) {
-        await writer.appendRow(record);
+        const row = {
+            datetime: record.datetime,
+            open: record.open,
+            high: record.high,
+            low: record.low,
+            close: record.close,
+            volume: record.volume,
+        };
+        // Only stamp the interval when the record carries one (multi-interval
+        // files); single-interval files leave the column unset for back-compat.
+        if (Number.isFinite(record.interval)) {
+            row.interval = record.interval;
+        }
+        await writer.appendRow(row);
     }
 
     await writer.close();
     return null;
+}
+
+/**
+ * Write several candle intervals into one Parquet file, tagging each row with
+ * its interval length in minutes. The backtest broker can then serve the exact
+ * stored candles per interval instead of aggregating the 1m base — so daily and
+ * hourly closes match the official values the live API returns.
+ *
+ * @param {Map<number, Array<object>>|Array<{minutes: number, records: Array<object>}>} series
+ *   Candle records grouped by interval minutes.
+ * @param {string|null} outputPath - Output path; when omitted, returns a buffer.
+ * @param {object} metadata - JSON-serializable dataset metadata.
+ * @returns {Promise<Buffer|null>} Parquet buffer for stdout mode.
+ */
+export async function writeCandleSeriesAsParquet(series, outputPath = null, metadata = {}) {
+    const entries = series instanceof Map
+        ? [...series.entries()]
+        : series.map((item) => [item.minutes, item.records]);
+
+    const all = [];
+    for (const [minutes, records] of entries) {
+        const intervalMinutes = Number(minutes);
+        for (const record of records) {
+            all.push({ ...record, interval: intervalMinutes });
+        }
+    }
+
+    all.sort((a, b) =>
+        a.datetime.getTime() - b.datetime.getTime() || a.interval - b.interval);
+
+    return writeCandleRecordsAsParquet(all, outputPath, metadata);
 }
 
 /**

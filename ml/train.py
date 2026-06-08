@@ -235,16 +235,36 @@ def features_for_day(day_df, window_local_positions, daily_info):
 # ── Dataset builder ───────────────────────────────────────────────────────────
 
 def build_dataset():
-    all_X, all_y, all_meta = [], [], []
+    """Build the training matrix with a fixed, low memory ceiling.
+
+    Memory strategy (vs the old list-of-lists + dict-per-row approach, which cost
+    ~3.7 KB/sample): each ticker is reduced to compact ``float32`` / ``int`` chunks
+    as soon as it is processed, and its source DataFrame plus the transient Python
+    rows are freed before the next ticker. The chunks are then copied into a single
+    pre-allocated array and released one by one, so peak RSS stays near one copy of
+    the float32 matrix (~160 B/sample + LightGBM later) instead of scaling with the
+    Python-object overhead. This lets a 16 GB machine hold ~1,300–1,600 ticker-years.
+
+    Returns:
+        X            : float32 ndarray (N, 40) — feature matrix.
+        y            : int8 ndarray (N,)       — TP/SL labels.
+        ts           : int64 ndarray (N,)      — entry time, ns since epoch (UTC).
+        ticker_ids   : int16 ndarray (N,)      — index into ``ticker_names``.
+        ticker_names : list[str]               — trained tickers, in id order.
+    """
+    feat_chunks, y_chunks, ts_chunks, tid_chunks = [], [], [], []
+    ticker_names = []
 
     for ticker in TICKERS:
-        print(f'  {ticker}:', end=' ', flush=True)
+        path = DATA_DIR / f'{ticker}_{YEAR}_1m.parquet'
+        if not path.exists():
+            print(f'  {ticker}: SKIP (no data file)', flush=True)
+            continue
+
         df          = load_ticker(ticker)
         daily_stats = build_daily_stats(df)
 
-        in_window = (df['msk_min'] >= WINDOW_START_MIN) & (df['msk_min'] <= WINDOW_END_MIN)
-        n_entered = 0
-
+        tk_rows, tk_y, tk_ts = [], [], []   # transient — one ticker at a time
         for date, day_df in df.groupby('msk_date', sort=True):
             info = daily_stats.get(date)
             if not info or info['prevClose'] <= 0:
@@ -262,80 +282,127 @@ def build_dataset():
             labels     = labels_for_day(day_closes, entry_pos)
             feats      = features_for_day(day_df, entry_pos, info)
 
-            win_rows = day_df.iloc[entry_pos]
-            for i, (_, row) in enumerate(win_rows.iterrows()):
-                all_X.append(feats[i])
-                all_y.append(int(labels[i]))
-                all_meta.append({
-                    'ticker':   ticker,
-                    'datetime': _to_iso_z(row['datetime']),
-                    'utc_ts':   row['datetime'],
-                })
-            n_entered += len(entry_pos)
+            # ns since epoch (UTC). `.values` drops tz → datetime64; force ns.
+            entry_ns = day_df['datetime'].values[entry_pos] \
+                .astype('datetime64[ns]').astype('int64')
 
-        pos_rate = (sum(all_y[-n_entered:]) / n_entered) if n_entered else 0
-        print(f'{n_entered} candles, pos={pos_rate:.1%}', flush=True)
+            tk_rows.extend(feats)
+            tk_y.extend(int(v) for v in labels)
+            tk_ts.extend(entry_ns.tolist())
 
-    X    = pd.DataFrame(all_X, columns=FEATURE_NAMES)
-    y    = np.array(all_y, dtype=np.int8)
-    meta = pd.DataFrame(all_meta)
-    meta['utc_ts'] = pd.to_datetime(meta['utc_ts'], utc=True)
-    return X, y, meta
+        if not tk_rows:
+            print(f'  {ticker}: 0 candles', flush=True)
+            del df, daily_stats
+            continue
+
+        # Collapse this ticker to compact arrays, then free the Python rows.
+        Xc = np.asarray(tk_rows, dtype=np.float32)
+        yc = np.asarray(tk_y,    dtype=np.int8)
+        tc = np.asarray(tk_ts,   dtype=np.int64)
+        tid = len(ticker_names)
+        ticker_names.append(ticker)
+
+        feat_chunks.append(Xc)
+        y_chunks.append(yc)
+        ts_chunks.append(tc)
+        tid_chunks.append(np.full(len(Xc), tid, dtype=np.int16))
+
+        print(f'  {ticker}: {len(Xc)} candles, pos={yc.mean():.1%}', flush=True)
+        del df, daily_stats, tk_rows, tk_y, tk_ts
+
+    if not feat_chunks:
+        raise RuntimeError('No data collected for any ticker.')
+
+    # Assemble into pre-allocated arrays, releasing each chunk right after the copy
+    # so committed memory stays ~one dataset instead of doubling (np.concatenate
+    # would briefly hold both source and destination).
+    N = sum(len(c) for c in feat_chunks)
+    X          = np.empty((N, len(FEATURE_NAMES)), dtype=np.float32)
+    y          = np.empty(N, dtype=np.int8)
+    ts         = np.empty(N, dtype=np.int64)
+    ticker_ids = np.empty(N, dtype=np.int16)
+
+    off = 0
+    for i in range(len(feat_chunks)):
+        k = len(feat_chunks[i])
+        X[off:off + k]          = feat_chunks[i]; feat_chunks[i] = None
+        y[off:off + k]          = y_chunks[i];    y_chunks[i]    = None
+        ts[off:off + k]         = ts_chunks[i];   ts_chunks[i]   = None
+        ticker_ids[off:off + k] = tid_chunks[i];  tid_chunks[i]  = None
+        off += k
+
+    return X, y, ts, ticker_ids, ticker_names
 
 
-def _to_iso_z(ts):
-    t  = ts if hasattr(ts, 'strftime') else pd.Timestamp(ts, tz='UTC')
+def _iso_from_ns(ns):
+    """Format an int64 ns-since-epoch (UTC) timestamp as the lookup key suffix."""
+    t  = pd.Timestamp(int(ns), tz='UTC')
     ms = t.microsecond // 1000
     return t.strftime('%Y-%m-%dT%H:%M:%S') + f'.{ms:03d}Z'
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
-def train_model(X, y, meta):
-    train_mask = meta['utc_ts'] < TRAIN_CUTOFF
+def train_model(X, y, ts):
+    cutoff     = TRAIN_CUTOFF.value          # int64 ns since epoch (UTC)
+    train_mask = ts < cutoff
     test_mask  = ~train_mask
-    X_tr, y_tr = X[train_mask], y[train_mask]
-    X_te, y_te = X[test_mask],  y[test_mask]
+    n_tr, n_te = int(train_mask.sum()), int(test_mask.sum())
 
-    print(f'\nTrain : {train_mask.sum():,} samples  pos={y_tr.mean():.1%}')
-    print(f'Test  : {test_mask.sum():,} samples  pos={y_te.mean():.1%}')
+    print(f'\nTrain : {n_tr:,} samples  pos={y[train_mask].mean():.1%}')
+    print(f'Test  : {n_te:,} samples  pos={y[test_mask].mean():.1%}')
 
-    model = lgb.LGBMClassifier(
-        n_estimators      = 1000,
-        learning_rate     = 0.02,
-        num_leaves        = 31,
-        min_child_samples = 40,
-        subsample         = 0.7,
-        colsample_bytree  = 0.7,
-        reg_alpha         = 0.2,
-        reg_lambda        = 0.2,
-        scale_pos_weight  = float((y_tr == 0).sum()) / float((y_tr == 1).sum()),
-        random_state      = 42,
-        verbose           = -1,
-        metric            = 'auc',
+    pos = int((y[train_mask] == 1).sum())
+    params = {
+        'objective':        'binary',
+        'metric':           'auc',
+        'learning_rate':    0.02,
+        'num_leaves':       31,
+        'min_child_samples': 40,
+        'bagging_fraction': 0.7,
+        'bagging_freq':     1,
+        'feature_fraction': 0.7,
+        'lambda_l1':        0.2,
+        'lambda_l2':        0.2,
+        'scale_pos_weight': (n_tr - pos) / pos if pos else 1.0,
+        'seed':             42,
+        'verbose':          -1,
+        'num_threads':      0,
+    }
+
+    # Build binned Datasets from masked temporaries. free_raw_data=True lets
+    # LightGBM drop the raw float copy after binning, so the full float32 X is
+    # never duplicated. Each X[mask] temporary is GC'd once its Dataset is built.
+    ds_tr = lgb.Dataset(X[train_mask], label=y[train_mask],
+                        feature_name=list(FEATURE_NAMES), free_raw_data=True)
+    ds_te = lgb.Dataset(X[test_mask], label=y[test_mask],
+                        reference=ds_tr, free_raw_data=True)
+
+    model = lgb.train(
+        params, ds_tr,
+        num_boost_round = 1000,
+        valid_sets      = [ds_te],
+        valid_names     = ['test'],
+        callbacks       = [lgb.early_stopping(100, verbose=False)],
     )
-    model.fit(
-        X_tr, y_tr,
-        eval_set   = [(X_te, y_te)],
-        eval_metric = 'auc',
-        callbacks  = [
-            lgb.early_stopping(100, verbose=False, first_metric_only=True),
-            lgb.log_evaluation(period=-1),
-        ],
-    )
+    del ds_tr, ds_te
+    best_it = model.best_iteration or model.num_trees()
 
-    proba_te = model.predict_proba(X_te)[:, 1]
-    pred_te  = model.predict(X_te)
+    X_te     = X[test_mask]
+    y_te     = y[test_mask]
+    proba_te = model.predict(X_te, num_iteration=best_it)
+    pred_te  = (proba_te >= 0.5).astype(int)
     auc      = roc_auc_score(y_te, proba_te)
 
-    print(f'\nHold-out ROC-AUC : {auc:.4f}')
+    print(f'\nHold-out ROC-AUC : {auc:.4f}  (best_iteration={best_it})')
     print(f'Proba range      : [{proba_te.min():.3f}, {proba_te.max():.3f}]  '
           f'mean={proba_te.mean():.3f}')
     print('\nClassification report (Oct–Dec 2025):')
     print(classification_report(y_te, pred_te, digits=3, zero_division=0))
 
     print('Feature importances (top 15):')
-    pairs = sorted(zip(FEATURE_NAMES, model.feature_importances_), key=lambda x: -x[1])
+    pairs = sorted(zip(FEATURE_NAMES, model.feature_importance(importance_type='split')),
+                   key=lambda x: -x[1])
     for name, imp in pairs[:15]:
         print(f'  {name:<26s} {imp}')
 
@@ -357,7 +424,7 @@ def train_model(X, y, meta):
 
 
 def find_threshold(model, X_te, y_te, target_precision=0.60):
-    proba     = model.predict_proba(X_te)[:, 1]
+    proba     = model.predict(X_te, num_iteration=model.best_iteration or model.num_trees())
     best_thresh, best_f1 = 0.5, 0.0
     for t in np.arange(0.30, 0.90, 0.01):
         preds = (proba >= t).astype(int)
@@ -373,13 +440,18 @@ def find_threshold(model, X_te, y_te, target_precision=0.60):
     return round(float(best_thresh), 2)
 
 
-def build_lookup(model, X, meta, threshold):
-    proba    = model.predict_proba(X)[:, 1]
-    pos_mask = proba >= threshold
-    return [
-        f"{row['ticker']}_{row['datetime']}"
-        for _, row in meta[pos_mask].iterrows()
-    ]
+def build_lookup(model, X, ts, ticker_ids, ticker_names, threshold, chunk=2_000_000):
+    # Predict in contiguous slices (X[s:e] is a view, not a copy) so scoring the
+    # full matrix never allocates a second copy of it.
+    best_it = model.best_iteration or model.num_trees()
+    out = []
+    for s in range(0, len(X), chunk):
+        e     = min(s + chunk, len(X))
+        proba = model.predict(X[s:e], num_iteration=best_it)
+        for j in np.where(proba >= threshold)[0]:
+            i = s + int(j)
+            out.append(f"{ticker_names[ticker_ids[i]]}_{_iso_from_ns(ts[i])}")
+    return out
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -392,23 +464,23 @@ def main():
     print()
 
     print('Building dataset (all morning window candles)…')
-    X, y, meta = build_dataset()
+    X, y, ts, ticker_ids, ticker_names = build_dataset()
     print(f'\nTotal   : {len(X):,} samples  pos={y.mean():.1%}')
     print(f'Features: {len(FEATURE_NAMES)}')
 
     print('\nTraining LightGBM…')
-    model, auc = train_model(X, y, meta)
+    model, auc = train_model(X, y, ts)
 
     model_path = ML_DIR / 'model.txt'
-    model.booster_.save_model(str(model_path))
+    model.save_model(str(model_path))
     print(f'\nModel   → {model_path}')
 
-    train_mask = meta['utc_ts'] < TRAIN_CUTOFF
-    threshold  = find_threshold(model, X[~train_mask], y[~train_mask])
+    test_mask = ts >= TRAIN_CUTOFF.value
+    threshold = find_threshold(model, X[test_mask], y[test_mask])
     print(f'Threshold (prec≥60%): {threshold:.2f}')
 
     print('\nBuilding predictions lookup…')
-    positives = build_lookup(model, X, meta, threshold)
+    positives = build_lookup(model, X, ts, ticker_ids, ticker_names, threshold)
 
     ticker_counts = {}
     for p in positives:
@@ -418,7 +490,7 @@ def main():
         print(f'  {t}: {c} signals')
 
     lookup = {
-        'tickers':        TICKERS,
+        'tickers':        ticker_names,
         'year':           YEAR,
         'tp_pct':         TP_PCT,
         'sl_pct':         SL_PCT,

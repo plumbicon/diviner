@@ -1,3 +1,11 @@
+// Moscow UTC+3 offset for daily return bucketing
+const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+function mskDateKey(datetime) {
+    const d = new Date(datetime.getTime() + MSK_OFFSET_MS);
+    return d.toISOString().slice(0, 10);
+}
+
 /**
  * Build a backtest performance report from portfolio equity and trades.
  */
@@ -56,6 +64,18 @@ export class PerformanceMetrics {
         const avgTradesPerDay = durationDays > 0 ? this.trades.length / durationDays : 0;
         const exposureTimePct = this.calculateExposureTimePct();
 
+        const maxDrawdownPct = equityPeak > 0 ? (maxDrawdown / equityPeak) * 100 : 0;
+        const annualizedReturnPct = durationDays > 0
+            ? totalReturnPct * (365 / durationDays)
+            : 0;
+        const sharpe = this.calculateSharpe();
+        const calmar = maxDrawdownPct > 0
+            ? round(annualizedReturnPct / maxDrawdownPct)
+            : (annualizedReturnPct > 0 ? null : 0);
+        const returnOnMaxDD = maxDrawdownPct > 0
+            ? round(totalReturnPct / maxDrawdownPct)
+            : (totalReturnPct > 0 ? null : 0);
+
         return {
             start,
             end,
@@ -66,8 +86,12 @@ export class PerformanceMetrics {
             equityDrawdown: round(equityDrawdown),
             return: round(totalReturn),
             returnPct: round(totalReturnPct),
+            annualizedReturnPct: round(annualizedReturnPct),
             maxDrawdown: round(maxDrawdown),
-            maxDrawdownPct: round((maxDrawdown / equityPeak) * 100),
+            maxDrawdownPct: round(maxDrawdownPct),
+            sharpe,
+            calmar,
+            returnOnMaxDD,
             buyAndHoldReturn: round(buyAndHoldReturn),
             buyAndHoldReturnPct: round(buyAndHoldReturnPct),
             tradesCount: this.trades.length,
@@ -136,6 +160,44 @@ export class PerformanceMetrics {
         }, 0);
 
         return (barsWithPosition / this.data.length) * 100;
+    }
+
+    /**
+     * Annualised Sharpe ratio (risk-free rate = 0) from daily equity returns.
+     * Groups per-candle equity values by Moscow date and takes the last value
+     * per day as the day's closing equity, then computes daily log-returns.
+     * @returns {number} Sharpe ratio, or 0 if insufficient data.
+     */
+    calculateSharpe() {
+        if (this.equity.length < 2 || this.data.length < 2) return 0;
+
+        // Last equity value per Moscow calendar day
+        const dailyEquity = new Map();
+        for (let i = 0; i < this.data.length; i++) {
+            const dk = mskDateKey(this.data[i].datetime);
+            dailyEquity.set(dk, this.equity[i] ?? this.initialCash);
+        }
+
+        const values = [...dailyEquity.values()];
+        if (values.length < 2) return 0;
+
+        // Daily simple returns
+        const returns = [];
+        for (let i = 1; i < values.length; i++) {
+            const prev = values[i - 1];
+            if (prev > 0) returns.push((values[i] - prev) / prev);
+        }
+        if (returns.length < 2) return 0;
+
+        const n = returns.length;
+        const mean = returns.reduce((s, r) => s + r, 0) / n;
+        // Population std dev (consistent with the Sharpe literature)
+        const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / n;
+        const std = Math.sqrt(variance);
+        if (std === 0) return 0;
+
+        // Annualise assuming 252 trading days
+        return round((mean / std) * Math.sqrt(252));
     }
 
     average(values) {

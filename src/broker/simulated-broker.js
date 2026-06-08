@@ -3,11 +3,13 @@ import { PerformanceMetrics } from "../core/metrics.js";
 import { loadDataset } from "../core/data-loader.js";
 import {
     DEFAULT_EXCHANGE,
+    MOSCOW_OFFSET_MS,
     buildCandleDerivedTradingSchedule,
     getCandleIntervalConfig,
-    getMoscowDateKey,
     toDate,
 } from "../core/market-data.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
@@ -15,6 +17,7 @@ import {
 export const options = [
     { flags: "--balance <amount>", description: "Initial balance", default: "10000" },
     { flags: "--commission <rate>", description: "Commission rate", default: "0.0005" },
+    { flags: "--fill-next-open", description: "Fill orders at the open of the next candle (more realistic than current-close fill)" },
 ];
 
 /**
@@ -34,10 +37,12 @@ export async function createBroker(config = {}) {
         if (match) metadata.ticker = match[1];
     }
     const broker = createSimulatedBroker({
-        candles:     dataset.candles,
+        candles:       dataset.candles,
+        series:        dataset.series,
         metadata,
-        initialCash: Number(config.balance),
-        commission:  Number(config.commission),
+        initialCash:   Number(config.balance),
+        commission:    Number(config.commission),
+        fillOnNextOpen: Boolean(config.fillNextOpen),
         meta: {
             historyFile: config.sourceName || "",
             strategyFile: config.strategy || "",
@@ -51,19 +56,33 @@ export async function createBroker(config = {}) {
 /**
  * Simulated data source for backtests.
  *
- * Owns the loaded 1m candle listing and answers history requests off it. This
- * is the backtest broker, so aggregation to higher intervals (1h/1d) happens
- * here, from the 1m base. Honours an `until` upper bound on data freshness so
- * neither the slice nor the aggregation ever peeks past the current simulation
- * moment (look-ahead guard) — the current hour/day is therefore aggregated only
- * from the minutes seen so far, exactly as live would build them.
+ * Owns the loaded candle listing and answers history requests off it. The base
+ * (smallest) interval is streamed to drive the engine.
+ *
+ * Every interval the strategy can request (1m, 1d, …) must be physically stored
+ * in the multi-interval parquet file — there is NO aggregation. The broker only
+ * ever returns the exact candles fetched from the API, so daily/hourly closes
+ * match the official values the live API serves (e.g. the closing-auction daily
+ * close, which can differ from the last 1m print on illiquid names). If the
+ * strategy asks for an interval the file does not contain, getHistory throws so
+ * the gap is obvious — re-fetch the listing with that interval (--merge-into).
+ *
+ * Requests honour an `until` upper bound on data freshness so nothing peeks past
+ * the current simulation moment (look-ahead guard): a higher-interval candle is
+ * withheld until its period has fully elapsed (period end ≤ until) — exactly as
+ * live would have it. The base interval is the bar stream itself, so the current
+ * bar is included (it is the one being processed).
  */
 export class SimulatedDataSource {
-    constructor({ candles = [], metadata = {}, portfolio = null, equity = null } = {}) {
+    constructor({ candles = [], series = null, metadata = {}, portfolio = null, equity = null } = {}) {
         this.candles = candles;
+        this.series = series instanceof Map ? series : null;
         this.metadata = metadata || {};
         this.portfolio = portfolio;
         this.equity = equity;
+        this.baseMinutes = this.series && this.series.size > 0
+            ? Math.min(...this.series.keys())
+            : (Number(this.metadata.intervalMinutes) || 1);
     }
 
     /**
@@ -98,6 +117,12 @@ export class SimulatedDataSource {
 
     /**
      * History for the requested interval, clamped by `until`.
+     *
+     * Served exclusively from the stored series — no aggregation. The requested
+     * interval must exist in the parquet file; otherwise this throws so a missing
+     * interval surfaces immediately rather than silently producing aggregated
+     * (and therefore inaccurate) candles.
+     *
      * @param {object} params - Request.
      * @param {Date|string} [params.from] - Start (inclusive).
      * @param {Date|string} [params.to] - End (exclusive).
@@ -114,12 +139,36 @@ export class SimulatedDataSource {
         // `until`, so the freshness guard and the requested window combine into
         // one cut and a request "up to now" includes the current minute.
         const upperExcl = Math.min(toTs, untilTs === Infinity ? Infinity : untilTs + 1);
-        const base = sliceAscending(this.candles, fromTs, upperExcl);
 
-        const label = getCandleIntervalConfig(interval).label;
-        if (label === "1h") return aggregateHourlyCandles(base);
-        if (label === "1d") return aggregateDailyCandles(base);
-        return base;
+        const config = getCandleIntervalConfig(interval);
+        const minutes = config.minutes;
+
+        const stored = this.series?.get(minutes);
+        if (!stored) {
+            const available = [...(this.series?.keys() || [])]
+                .sort((a, b) => a - b)
+                .join(", ");
+            throw new Error(
+                `Backtest data has no ${config.label} (${minutes}m) candles. `
+                + `The parquet file stores only interval(s) [${available}m]. `
+                + `Re-fetch the listing with this interval, e.g.: `
+                + `node src/fetch.js --security <TICKER> --from-date <YYYY-MM-DD> `
+                + `--till-date <YYYY-MM-DD> --interval ${config.label} --merge-into <file>`,
+            );
+        }
+
+        const slice = sliceAscending(stored, fromTs, upperExcl);
+
+        // The base interval IS the bar stream: upperExcl already includes the
+        // current bar (the one being processed), so return it as-is. Higher
+        // intervals need the look-ahead guard so a still-forming day/hour never
+        // leaks its final close before its period has fully elapsed.
+        if (minutes === this.baseMinutes || untilTs === Infinity) {
+            return slice;
+        }
+        return slice.filter(
+            (candle) => candlePeriodEnd(candle.datetime.getTime(), minutes) <= untilTs,
+        );
     }
 
     /**
@@ -140,31 +189,112 @@ export class SimulatedDataSource {
 
 /**
  * Simulated executor backed by a {@link Portfolio}. Translates strategy
- * buy/sell/close signals into simulated fills at the current candle close.
+ * buy/sell/close signals into simulated fills.
+ *
+ * Two fill modes:
+ *   fillOnNextOpen=false (default): fills at the close of the candle that
+ *     triggered the signal — the classic zero-slippage assumption.
+ *   fillOnNextOpen=true: buffers the order and fills at the *open* of the
+ *     next candle, which better represents the real latency of transmitting
+ *     a market order after a bar closes.
+ *
+ * In next-open mode orders are settled inside setCurrentCandle() at the
+ * start of each new tick, before stop evaluation or strategy logic runs.
+ * The portfolio position is NOT updated until settlement, so the strategy
+ * correctly observes its state during the signal tick.
+ *
+ * Edge case — end of data: any pending order from the last tick is settled
+ * at the last candle's close (no next candle available). See finalize().
  */
 export class SimulatedExecutor {
-    constructor({ portfolio }) {
+    /**
+     * @param {object} params
+     * @param {Portfolio} params.portfolio
+     * @param {boolean} [params.fillOnNextOpen=false]
+     */
+    constructor({ portfolio, fillOnNextOpen = false }) {
         this.portfolio = portfolio;
+        this.fillOnNextOpen = fillOnNextOpen;
         this.currentCandle = null;
+        // Pending order buffered for next-open settlement:
+        // { type: 'close' | 'open-long' | 'open-short', size?, sl?, tp? }
+        this._pending = null;
     }
 
     /**
      * Set the candle used as the fill reference for the current tick.
+     * In next-open mode, settles any order buffered by the previous tick
+     * at this candle's open price — before stop evaluation runs.
      * @param {object} candle - Current candle.
      */
     setCurrentCandle(candle) {
+        if (this.fillOnNextOpen && this._pending && candle) {
+            this._settleAt(candle.open, candle.datetime);
+        }
         this.currentCandle = candle;
     }
 
+    /**
+     * Execute a pending order at the given price/time (used for next-open settlement
+     * and for the end-of-data flush in finalize).
+     * @param {number} price - Fill price.
+     * @param {Date} datetime - Fill timestamp.
+     */
+    _settleAt(price, datetime) {
+        const p = this._pending;
+        this._pending = null;
+        // Synthetic fill candle: all price fields equal the fill price so that
+        // Portfolio (which uses candle.close internally) records the right value.
+        const fc = {
+            datetime: datetime instanceof Date ? datetime : new Date(datetime),
+            open: price, high: price, low: price, close: price,
+            volume: 0,
+        };
+        if (p.type === "close") {
+            if (this.portfolio.position) {
+                this.portfolio.closePosition({ candle: fc });
+            }
+        } else if (p.type === "open-short") {
+            if (!this.portfolio.position) {
+                this.portfolio.openShort({ candle: fc, size: p.size, sl: p.sl, tp: p.tp });
+            }
+        } else if (p.type === "open-long") {
+            if (!this.portfolio.position) {
+                this.portfolio.openLong({ candle: fc, size: p.size, sl: p.sl, tp: p.tp });
+            }
+        }
+    }
+
     buy(size, sl, tp) {
+        if (this.fillOnNextOpen) {
+            // Buffer if no position and no existing pending order.
+            if (!this.portfolio.position && !this._pending) {
+                this._pending = { type: "open-long", size, sl, tp };
+            }
+            return null;
+        }
         return this.portfolio.openLong({ candle: this.currentCandle, size, sl, tp });
     }
 
     sell(size, sl, tp) {
+        if (this.fillOnNextOpen) {
+            if (!this.portfolio.position && !this._pending) {
+                this._pending = { type: "open-short", size, sl, tp };
+            }
+            return null;
+        }
         return this.portfolio.openShort({ candle: this.currentCandle, size, sl, tp });
     }
 
     closePosition() {
+        if (this.fillOnNextOpen) {
+            // Guard: only buffer once; ignore duplicate close signals on the same tick
+            // (e.g. SL/TP fires then strategy also tries to exit by schedule).
+            if (this.portfolio.position && !this._pending) {
+                this._pending = { type: "close" };
+            }
+            return null;
+        }
         return this.portfolio.closePosition({ candle: this.currentCandle });
     }
 
@@ -193,15 +323,17 @@ export class SimulatedExecutor {
  */
 export function createSimulatedBroker({
     candles = [],
+    series = null,
     metadata = {},
     initialCash = 10000,
     commission = 0.0005,
+    fillOnNextOpen = false,
     meta = {},
 } = {}) {
     const portfolio = new Portfolio({ cash: initialCash, commission });
     const equity = [];
-    const data = new SimulatedDataSource({ candles, metadata, portfolio, equity });
-    const exec = new SimulatedExecutor({ portfolio });
+    const data = new SimulatedDataSource({ candles, series, metadata, portfolio, equity });
+    const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen });
 
     return {
         data,
@@ -211,20 +343,33 @@ export function createSimulatedBroker({
          * Build the backtest report. Closes any position still open on the last
          * candle (so equity is not left marked-to-market in an open position),
          * then compiles metrics. The engine calls this once the stream ends.
+         *
+         * In next-open mode a pending order from the last tick is settled at the
+         * last candle's close (no next candle available to open at).
          * @returns {object} Backtest report.
          */
         finalize() {
-            if (portfolio.position && candles.length > 0) {
+            if (candles.length > 0) {
                 const last = candles[candles.length - 1];
-                exec.setCurrentCandle(last);
-                exec.closePosition();
-                equity[equity.length - 1] = portfolio.calculateEquity(last);
+
+                // Flush any order buffered on the last tick: no next candle,
+                // so settle at last candle's close.
+                if (exec._pending) {
+                    exec._settleAt(last.close, last.datetime);
+                }
+
+                // Close any remaining open position at the last candle's close.
+                if (portfolio.position) {
+                    portfolio.closePosition({ candle: last });
+                    equity[equity.length - 1] = portfolio.calculateEquity(last);
+                }
             }
 
             return {
                 backtest_parameters: {
                     history_file: meta.historyFile || "",
                     strategy_file: meta.strategyFile || "",
+                    fill_mode: fillOnNextOpen ? "next-open" : "current-close",
                 },
                 performance_metrics: new PerformanceMetrics({
                     data: candles,
@@ -239,66 +384,25 @@ export function createSimulatedBroker({
 }
 
 /**
- * Aggregate 1m candles into hourly candles bucketed by UTC hour.
- * @param {Array<object>} candles - Source 1m candles (ascending).
- * @returns {Array<object>} Hourly candles.
+ * Time (ms) at which a stored candle's period is fully elapsed — i.e. its close
+ * is final and may be served without look-ahead. Daily (and longer) candles are
+ * stamped at UTC midnight but represent a Moscow calendar day, so their period
+ * ends at the next Moscow midnight, not UTC midnight + 24h (which would be 3h
+ * late and hide a finalized close during the first hours of the next day).
+ * Sub-daily candles use their plain begin + length.
+ * @param {number} startTs - Candle begin (ms).
+ * @param {number} minutes - Interval length in minutes.
+ * @returns {number} Period-end timestamp (ms).
  */
-export function aggregateHourlyCandles(candles) {
-    const buckets = new Map();
-    for (const bar of candles) {
-        const key = Math.floor(bar.datetime.getTime() / 3_600_000) * 3_600_000;
-        const existing = buckets.get(key);
-        if (!existing) {
-            buckets.set(key, {
-                datetime: new Date(key),
-                open: bar.open,
-                high: bar.high,
-                low: bar.low,
-                close: bar.close,
-                volume: Number(bar.volume || 0),
-                isComplete: true,
-            });
-            continue;
-        }
-        existing.high = Math.max(existing.high, bar.high);
-        existing.low = Math.min(existing.low, bar.low);
-        existing.close = bar.close;
-        existing.volume += Number(bar.volume || 0);
+function candlePeriodEnd(startTs, minutes) {
+    if (minutes % 1440 === 0) {
+        // Floor to Moscow midnight, then advance by the number of days covered.
+        const days = minutes / 1440;
+        const local = startTs + MOSCOW_OFFSET_MS;
+        const localMidnight = Math.floor(local / DAY_MS) * DAY_MS;
+        return localMidnight + days * DAY_MS - MOSCOW_OFFSET_MS;
     }
-    return Array.from(buckets.values())
-        .sort((a, b) => a.datetime.getTime() - b.datetime.getTime());
-}
-
-/**
- * Aggregate intraday candles into Moscow-date daily candles.
- * @param {Array<object>} candles - Source candles (ascending).
- * @returns {Array<object>} Daily candles (carry both datetime and dateKey).
- */
-export function aggregateDailyCandles(candles) {
-    const grouped = new Map();
-    for (const candle of candles) {
-        const dateKey = getMoscowDateKey(candle.datetime);
-        const existing = grouped.get(dateKey);
-        if (!existing) {
-            grouped.set(dateKey, {
-                datetime: candle.datetime,
-                dateKey,
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-                volume: Number(candle.volume || 0),
-                isComplete: true,
-            });
-            continue;
-        }
-        existing.high = Math.max(existing.high, candle.high);
-        existing.low = Math.min(existing.low, candle.low);
-        existing.close = candle.close;
-        existing.volume += Number(candle.volume || 0);
-    }
-    return Array.from(grouped.values())
-        .sort((a, b) => a.datetime.getTime() - b.datetime.getTime());
+    return startTs + minutes * 60_000;
 }
 
 /**

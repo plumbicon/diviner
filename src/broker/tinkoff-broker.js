@@ -1,10 +1,13 @@
 import {
     TinkoffMarketDataProvider,
     buildInstrumentMetadata,
+    getMoscowDateKey,
 } from "../core/market-data.js";
+import { join } from "node:path";
 import { TinkoffClient } from "./tinkoff/client.js";
 import { OrderManager } from "./tinkoff/order-manager.js";
 import { StateManager } from "./tinkoff/state-manager.js";
+import { PositionStore } from "./tinkoff/position-store.js";
 import { runUtility, isUtilityRequest } from "./tinkoff/sandbox-utils.js";
 
 // Account utilities (no strategy) live in sandbox-utils; re-exported so the CLI
@@ -22,6 +25,8 @@ export const options = [
     { flags: "--interval <minutes>", description: "Candle interval in minutes", default: "1" },
     { flags: "--close-on-exit", description: "Close open position when the session stops", default: false },
     { flags: "--order-retries <count>", description: "Retry count for transient order errors", default: "2" },
+    { flags: "--stall-timeout <minutes>", description: "Exit if no candle arrives for N minutes during a trading session (0 disables). Raise for illiquid instruments whose no-trade gaps are long.", default: "30" },
+    { flags: "--state-file <path>", description: "Path to persist software SL/TP across restarts (default: .diviner-state/<account>_<ticker>.json)" },
     // Account utilities (run without a strategy):
     { flags: "--list-sandboxes", description: "List sandbox accounts and exit", default: false },
     { flags: "--create-account", description: "Create a new sandbox account", default: false },
@@ -63,6 +68,8 @@ export async function createBroker(config = {}) {
             verbose: Boolean(config.verbose),
             dryRun: Boolean(config.dryRun),
             closeOnExit: Boolean(config.closeOnExit),
+            stallTimeoutMin: parseInt(config.stallTimeout ?? "30", 10),
+            stateFile: config.stateFile || null,
         },
     });
 
@@ -91,7 +98,7 @@ export async function createBroker(config = {}) {
  * trading schedule are answered by {@link TinkoffMarketDataProvider}.
  */
 export class TinkoffDataSource {
-    constructor({ client, instrument, interval = 1, verbose = false }) {
+    constructor({ client, instrument, interval = 1, verbose = false, stallTimeoutMin = 30 }) {
         this.client = client;
         this.instrument = instrument;
         this.interval = interval;
@@ -107,6 +114,25 @@ export class TinkoffDataSource {
         this._closed = false;
         this._lastTime = null;
         this._catchUpFrom = null;
+
+        // Stall watchdog: a silently-frozen gRPC stream (TCP killed without RST)
+        // delivers no candles and raises no error, so the built-in reconnect never
+        // fires. We detect the gap in wall-clock time and force-reconnect the
+        // subscription in-process, preserving in-memory SL/TP and strategy state.
+        // Only if the reconnect itself fails do we fall back to process.exit(1).
+        //
+        // Liquidity-aware: a long silence on an illiquid instrument is normal
+        // (KZOS can go 60–90min without a trade), so before reconnecting we probe
+        // REST to confirm a completed candle was actually missed. If REST shows
+        // none, the stream is healthy and the market is just quiet — no reconnect.
+        this._stallTimeoutMs = Math.max(0, Number(stallTimeoutMin) || 0) * 60 * 1000;
+        this._lastCandleWall = Date.now();
+        this._stallTimer = null;
+        // dateKey (MSK) -> { isTradingDay, openTs, closeTs }. Populated from the
+        // exchange trading schedule so the watchdog respects weekend sessions and
+        // holidays instead of assuming a fixed weekday calendar.
+        this._scheduleCache = new Map();
+        this._loadingSchedule = false;
     }
 
     /**
@@ -124,6 +150,7 @@ export class TinkoffDataSource {
                 onReconnectCatchUp: () => this._catchUpMissed(),
             },
         );
+        this._startStallWatchdog();
 
         while (!this._closed) {
             if (this._queue.length === 0) {
@@ -152,6 +179,7 @@ export class TinkoffDataSource {
             return;
         }
         this._lastTime = time;
+        this._lastCandleWall = Date.now();
         if (this.verbose) {
             console.log(`[Live] candle ${candle.datetime.toISOString()} close=${candle.close}`);
         }
@@ -160,6 +188,225 @@ export class TinkoffDataSource {
             const notify = this._notify;
             this._notify = null;
             notify();
+        }
+    }
+
+    /**
+     * Start the stall watchdog. Checks once a minute whether candles have gone
+     * silent for longer than the timeout while the market is open; if so, and a
+     * REST probe confirms a completed candle was missed, force-reconnects the
+     * subscription in-process (state preserved). A quiet but healthy stream is
+     * left untouched.
+     * @private
+     */
+    _startStallWatchdog() {
+        if (this._stallTimeoutMs <= 0 || this._stallTimer) {
+            return;
+        }
+        this._lastCandleWall = Date.now();
+        // Warm the schedule cache up front so the first checks have data even if
+        // the network later degrades.
+        this._loadScheduleAround(new Date()).catch(() => {});
+        this._stallTimer = setInterval(() => {
+            this._checkStall().catch((error) => {
+                if (this.verbose) {
+                    console.warn("[TinkoffDataSource] Stall check error:", error.message);
+                }
+            });
+        }, 60 * 1000);
+        this._stallTimer.unref?.();
+    }
+
+    /**
+     * Reconnect only if the stream is genuinely stalled. While the exchange is in
+     * session and candles have been silent past the timeout, probe REST: if a
+     * completed candle was missed, the stream is dead — force-reconnect; if none
+     * was missed, the market is merely quiet (illiquid name) and the stream is
+     * left alone. Outside a session, silence is normal, so the clock is reset and
+     * nothing is reported.
+     * @param {Date} [now] - Current time (injectable for tests).
+     * @private
+     */
+    async _checkStall(now = new Date()) {
+        if (this._closed) {
+            return;
+        }
+        const nowMs = now.getTime();
+        const inSession = await this._isWithinTradingSession(now);
+        if (!inSession) {
+            this._lastCandleWall = nowMs;
+            return;
+        }
+        const silentMs = nowMs - this._lastCandleWall;
+        if (silentMs < this._stallTimeoutMs) {
+            return;
+        }
+
+        // Silence exceeded the timeout. Tell a dead stream apart from an illiquid
+        // instrument that simply hasn't traded by probing REST for a completed
+        // candle the stream should have delivered.
+        const missed = await this._hasMissedCandle(now);
+        // Reset either way so a persistent quiet period re-probes once per timeout
+        // window rather than every minute.
+        this._lastCandleWall = nowMs;
+        if (!missed) {
+            if (this.verbose) {
+                console.log(
+                    `[TinkoffDataSource] No candle for ${Math.round(silentMs / 60000)}min, but REST shows `
+                    + `none missed — stream healthy, market quiet (no reconnect).`,
+                );
+            }
+            return;
+        }
+
+        console.warn(
+            `[TinkoffDataSource] Candle stream stalled: a completed candle was missed after `
+            + `${Math.round(silentMs / 60000)}min of silence. Reconnecting stream (SL/TP preserved in memory).`,
+        );
+        this._forceReconnect().catch((error) => {
+            console.error("[TinkoffDataSource] Force-reconnect failed, exiting for systemd restart:", error.message);
+            process.exit(1);
+        });
+    }
+
+    /**
+     * Probe REST for a completed candle newer than the last one the stream
+     * delivered — evidence the live subscription is actually stalled rather than
+     * the instrument simply being quiet. Uses the same completeness criteria as
+     * {@link _catchUpMissed}. If the probe itself fails (e.g. network down), the
+     * stream health can't be confirmed, so it returns true to preserve the
+     * reconnect safety net.
+     * @param {Date} [now] - Current time.
+     * @returns {Promise<boolean>} True if a completed candle was missed.
+     * @private
+     */
+    async _hasMissedCandle(now = new Date()) {
+        const intervalMs = (Number(this.interval) || 1) * 60 * 1000;
+        const lowerBound = this._lastTime ?? this._catchUpFrom?.getTime() ?? null;
+        if (lowerBound === null) {
+            return false;
+        }
+        const from = new Date(lowerBound + 1);
+        if (from >= now) {
+            return false;
+        }
+
+        let candles;
+        try {
+            candles = await this.provider.getCandles({
+                from,
+                to: now,
+                interval: this.interval,
+                includeWeekend: true,
+            });
+        } catch (error) {
+            if (this.verbose) {
+                console.warn("[TinkoffDataSource] Stall probe failed, assuming stalled:", error.message);
+            }
+            return true;
+        }
+
+        return candles.some((candle) => (
+            candle.isComplete !== false
+            && candle.datetime instanceof Date
+            && candle.datetime.getTime() > lowerBound
+            && candle.datetime.getTime() + intervalMs <= now.getTime()
+        ));
+    }
+
+    /**
+     * Reconnect the candle subscription without restarting the process.
+     *
+     * The stream() generator stays alive (it just awaits _notify), so the engine
+     * loop is unaffected and in-memory state (SL/TP, strategy position) is fully
+     * preserved. We tear down the dead gRPC channel, back-fill any missed closed
+     * candles, and start a fresh subscription — the generator then picks up from
+     * the first new candle that arrives.
+     * @private
+     */
+    async _forceReconnect() {
+        if (this._closed) {
+            return;
+        }
+        try {
+            // Back-fill closed candles that arrived while the stream was frozen.
+            await this._catchUpMissed();
+        } catch (error) {
+            if (this.verbose) {
+                console.warn("[TinkoffDataSource] Catch-up before reconnect failed:", error.message);
+            }
+        }
+        // _startCandleStream internally calls _unsubscribeCurrentCandleStream first,
+        // so the dead subscription is torn down cleanly before we re-subscribe.
+        await this.client._startCandleStream();
+        console.log("[TinkoffDataSource] Candle stream reconnected (process kept alive).");
+    }
+
+    /**
+     * Whether `now` falls inside an exchange trading session, per the schedule
+     * fetched from T-Invest (so weekend sessions and holidays are honoured). If
+     * the schedule for today is not cached, a best-effort load is attempted; when
+     * no schedule is available at all, falls back to a broad Moscow window
+     * (06:50–23:50, any weekday) so a stall is still caught during plausible
+     * trading times.
+     * @param {Date} now - Current time.
+     * @returns {Promise<boolean>} True if within a session.
+     * @private
+     */
+    async _isWithinTradingSession(now) {
+        const dateKey = getMoscowDateKey(now);
+        if (!this._scheduleCache.has(dateKey)) {
+            await this._loadScheduleAround(now);
+        }
+        const entry = this._scheduleCache.get(dateKey);
+        if (entry) {
+            if (!entry.isTradingDay) {
+                return false;
+            }
+            const ts = now.getTime();
+            if (entry.openTs && entry.closeTs) {
+                return ts >= entry.openTs && ts <= entry.closeTs;
+            }
+            return true; // trading day, but session bounds unknown
+        }
+        // No schedule available (e.g. network down): broad daily window.
+        const msk = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+        const minutes = msk.getUTCHours() * 60 + msk.getUTCMinutes();
+        return minutes >= 6 * 60 + 50 && minutes <= 23 * 60 + 50;
+    }
+
+    /**
+     * Best-effort fetch of the trading schedule around `now`, populating the
+     * cache. Failures are swallowed — the caller falls back to the clock window.
+     * @param {Date} now - Reference time.
+     * @private
+     */
+    async _loadScheduleAround(now) {
+        if (this._loadingSchedule) {
+            return;
+        }
+        this._loadingSchedule = true;
+        try {
+            const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            const to = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+            const days = await this.getTradingSchedule({ from, to });
+            for (const day of days || []) {
+                const dk = day.dateKey || day.date?.slice(0, 10);
+                if (!dk) {
+                    continue;
+                }
+                this._scheduleCache.set(dk, {
+                    isTradingDay: Boolean(day.isTradingDay),
+                    openTs: day.startTime ? new Date(day.startTime).getTime() : null,
+                    closeTs: day.endTime ? new Date(day.endTime).getTime() : null,
+                });
+            }
+        } catch (error) {
+            if (this.verbose) {
+                console.warn("[TinkoffDataSource] Schedule load for watchdog failed:", error.message);
+            }
+        } finally {
+            this._loadingSchedule = false;
         }
     }
 
@@ -236,6 +483,10 @@ export class TinkoffDataSource {
      */
     async requestStop() {
         this._closed = true;
+        if (this._stallTimer) {
+            clearInterval(this._stallTimer);
+            this._stallTimer = null;
+        }
         if (this._notify) {
             const notify = this._notify;
             this._notify = null;
@@ -276,6 +527,14 @@ export class TinkoffExecutor {
             dryRun: this.dryRun,
         });
         this.stateManager = new StateManager({ verbose: this.verbose });
+
+        // Software SL/TP persistence (sandbox has no exchange stop orders), so the
+        // levels survive the watchdog/systemd restarts and aren't lost when the
+        // position is re-synced from the account.
+        const accountId = client?.accountId || "acc";
+        const stateFile = options.stateFile
+            || join(process.cwd(), ".diviner-state", `${accountId}_${instrument.ticker}.json`);
+        this.store = new PositionStore(stateFile, { verbose: this.verbose });
 
         this.accountRubBalance = 0;
         this.currentCandle = null;
@@ -343,6 +602,16 @@ export class TinkoffExecutor {
             sl,
             tp,
         });
+        // Persist SL/TP so a restart re-attaches them to the re-synced position.
+        this.store.save({
+            figi: this.instrument.figi,
+            ticker: this.instrument.ticker,
+            side,
+            size: actualSize,
+            entryPrice: this.currentCandle?.close ?? null,
+            sl: sl ?? null,
+            tp: tp ?? null,
+        });
         this._enqueue(() => this._executeOrder(side === "long" ? "buy" : "sell", actualSize));
         return this.stateManager.getPosition();
     }
@@ -355,6 +624,7 @@ export class TinkoffExecutor {
             return null;
         }
         const closed = this.stateManager.closePosition();
+        this.store.clear();
         this._enqueue(() => this._closeRealPosition(closed));
         return closed;
     }
@@ -379,24 +649,36 @@ export class TinkoffExecutor {
 
         if (!position) {
             this.stateManager.reset();
+            this.store.clear();   // account is flat → drop any stale persisted SL/TP
             if (this.verbose) {
                 console.log(`[TinkoffExecutor] Account position for ${this.instrument.ticker}: none`);
             }
             return;
         }
 
+        // Restore SL/TP persisted at open, if it matches the live account position.
+        const saved   = this.store.load();
+        const matched = saved
+            && saved.figi === this.instrument.figi
+            && saved.side === position.side;
+
         this.stateManager.setPosition({
             side: position.side,
             size: position.lots,
-            entryPrice: position.averagePrice || position.currentPrice || 0,
+            entryPrice: (matched && saved.entryPrice) || position.averagePrice || position.currentPrice || 0,
             entryTime: new Date(),
-            sl: null,
-            tp: null,
+            sl: matched ? (saved.sl ?? null) : null,
+            tp: matched ? (saved.tp ?? null) : null,
             source: "account",
         });
         console.warn(
             `[TinkoffExecutor] Existing account position detected: ${position.side} ${position.quantity} of ${this.instrument.ticker} (~${position.lots} lots). State synced.`,
         );
+        if (matched) {
+            console.warn(`[TinkoffExecutor] SL/TP restored from state file: sl=${saved.sl} tp=${saved.tp}`);
+        } else {
+            console.warn(`[TinkoffExecutor] No matching persisted SL/TP — position UNPROTECTED until the strategy re-sets levels.`);
+        }
     }
 
     /**
@@ -517,7 +799,13 @@ export class TinkoffExecutor {
  * @returns {{ data: TinkoffDataSource, exec: TinkoffExecutor, instrumentMetadata: object }} Broker.
  */
 export function createTinkoffBroker({ client, instrument, interval = 1, options = {} }) {
-    const data = new TinkoffDataSource({ client, instrument, interval, verbose: options.verbose });
+    const data = new TinkoffDataSource({
+        client,
+        instrument,
+        interval,
+        verbose: options.verbose,
+        stallTimeoutMin: options.stallTimeoutMin,
+    });
     const exec = new TinkoffExecutor({ client, instrument, options });
 
     return {

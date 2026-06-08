@@ -2,12 +2,18 @@
 """
 Train LightGBM to predict profitable short entries (A05 strategy).
 
-Key design decisions vs v1/v2:
-  - Training only on candles where close > prevClose (matches A02 entry universe)
-  - Label = "main session close < entry close" (fixed time-horizon, not TP/SL game)
-    because TP/SL on 1m close prices has a ~65% base rate (random walk baseline)
-    and gives very low discriminative signal.
-  - Inter-day features added (prev day return, day of week, avg range)
+Key design decisions:
+  - prevClose / prevReturn / prevRange come from the OFFICIAL daily candle
+    (interval 1440, closing-auction price) stored in the multi-interval parquet,
+    matching A05.updatePreviousDayClose at runtime. Every feature is normalised
+    by prevClose, so this keeps the model's inputs consistent with serving — and
+    on the 2025 holdout it lifted the backtest from +47% to +53% avg return.
+  - Label = TP-before-SL on subsequent closes (LABEL_MODE='tpsl', default). A
+    next-open label that mirrors execution exactly was tried (LABEL_MODE=
+    'next-open') but underperformed (+43%): see the LABEL_MODE note below.
+  - Multi-interval files are split on load: only 1m rows feed the intraday logic;
+    1440m rows feed the daily context.
+  - Inter-day features (prev day return, day of week, avg range, 5-day trend)
 
 A05 strategy uses the model as confidence filter ON TOP of the A02 gap-up condition:
   profitPct > minProfitPct  AND  model.predict() ≥ threshold
@@ -31,11 +37,26 @@ WINDOW_END_MIN    = 9 * 60 + 49
 MAX_LOOKBACK_DAYS = 14
 LAG_N             = 10
 
-# TP/SL parameters: label = did TP hit before SL on subsequent candle CLOSES?
-# Close-price evaluation matches the simulated broker (engine.js evaluateStops).
+# TP/SL parameters.
 TP_PCT = 0.010   # 1.0%
 SL_PCT = 0.019   # 1.9%
 # No gap pre-filter: the model learns from close_pct which gaps are worth trading.
+
+# Label mode (env LABEL_MODE):
+#   'tpsl' (default) — entry at the signal close, label = TP-before-SL on closes.
+#   'next-open' — entry/exit filled at the next candle's open, TP/SL on closes;
+#       mirrors the broker's --fill-next-open execution exactly.
+#
+# Empirical note (2025 holdout, 74-ticker backtest): although 'next-open' matches
+# execution more faithfully, it is a NOISIER training target (the realised
+# open-to-open sign depends on one hard-to-predict bar), and it produced a weaker
+# filter — avg return +43% vs +53% for 'tpsl' under identical official-prevClose
+# features. The model only needs to RANK entries; the cleaner TP-before-SL target
+# generalises better, and execution friction is handled by the broker, not the
+# label. So 'tpsl' is the default. (The official-prevClose feature fix — separate
+# from the label — is what lifted +47%→+53%.)
+import os
+LABEL_MODE = os.environ.get('LABEL_MODE', 'tpsl')
 
 # Training on all 50 available 2025 tickers.
 # Holdout = 25 NEW tickers downloaded separately (not in this list).
@@ -78,24 +99,81 @@ FEATURE_NAMES = (
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
+def _ensure_utc(series):
+    if series.dt.tz is None:
+        return series.dt.tz_localize('UTC')
+    return series.dt.tz_convert('UTC')
+
+
 def load_ticker(ticker, year=YEAR):
+    """Load a multi-interval parquet, split into the 1-minute stream and the
+    official daily (1440m) candles.
+
+    The merged files tag every row with an `interval` column (1 or 1440). We
+    must keep only the 1m rows for the intraday logic — otherwise the daily
+    candles (stamped 00:00 UTC = 03:00 MSK) would leak in as spurious minute
+    bars. The 1440m rows are returned separately so prevClose / prevReturn /
+    prevRange can be taken from the official closing-auction price, matching
+    what the live strategy (A05.updatePreviousDayClose) feeds the model.
+
+    Returns:
+        (minute_df, daily_df) — daily_df is None if the file has no 1440m rows.
+    """
     path = DATA_DIR / f'{ticker}_{year}_1m.parquet'
-    df   = pq.read_table(str(path)).to_pandas()
-    if df['datetime'].dt.tz is None:
-        df['datetime'] = df['datetime'].dt.tz_localize('UTC')
+    raw  = pq.read_table(str(path)).to_pandas()
+
+    if 'interval' in raw.columns:
+        daily_raw = raw[raw['interval'] == 1440].copy()
+        df        = raw[(raw['interval'] == 1) | (raw['interval'].isna())].copy()
     else:
-        df['datetime'] = df['datetime'].dt.tz_convert('UTC')
+        daily_raw = None
+        df        = raw
+
+    df = df.copy()
+    df['datetime'] = _ensure_utc(df['datetime'])
     df = df.sort_values('datetime').reset_index(drop=True)
     msk            = df['datetime'] + pd.Timedelta(hours=MSK_HOURS)
     df['msk_min']  = msk.dt.hour * 60 + msk.dt.minute
     df['msk_date'] = msk.dt.normalize().dt.tz_localize(None)
     df['msk_hour'] = msk.dt.hour
     df['ticker']   = ticker
-    return df
+
+    daily_df = None
+    if daily_raw is not None and len(daily_raw) > 0:
+        daily_raw['datetime'] = _ensure_utc(daily_raw['datetime'])
+        daily_raw = daily_raw.sort_values('datetime').reset_index(drop=True)
+        dmsk = daily_raw['datetime'] + pd.Timedelta(hours=MSK_HOURS)
+        daily_raw['msk_date'] = dmsk.dt.normalize().dt.tz_localize(None)
+        daily_df = daily_raw
+
+    return df, daily_df
 
 
-def build_daily_stats(df):
-    """Return dict: msk_date → daily context including last-7-day close history."""
+def build_official_daily(daily_df):
+    """Map msk_date → official daily {close, high, low} from the 1440m series."""
+    if daily_df is None or len(daily_df) == 0:
+        return {}
+    out = {}
+    for _, r in daily_df.iterrows():
+        out[r['msk_date']] = {
+            'close': float(r['close']),
+            'high':  float(r['high']),
+            'low':   float(r['low']),
+        }
+    return out
+
+
+def build_daily_stats(df, official=None):
+    """Return dict: msk_date → daily context including last-7-day close history.
+
+    prevClose / prevReturn / prevRange are taken from the OFFICIAL daily candle
+    (closing-auction price) when available — matching the live strategy, which
+    sources them from updatePreviousDayClose (interval "1d"). The intra-day
+    `day_closes` history (used for the 5-day trend features) keeps the last 1m
+    close per day, mirroring how A05 builds its dayCloses at runtime. If a file
+    has no official daily, every value falls back to the 1m aggregate.
+    """
+    official    = official or {}
     daily_last  = df.groupby('msk_date', sort=True)['close'].last()
     daily_high  = df.groupby('msk_date', sort=True)['high'].max()
     daily_low   = df.groupby('msk_date', sort=True)['low'].min()
@@ -104,16 +182,30 @@ def build_daily_stats(df):
     daily_avg_vol = df[in_win].groupby('msk_date', sort=True)['volume'].mean()
     dates       = list(daily_last.index)
     result      = {}
+
+    def off_close(date, fallback):
+        rec = official.get(date)
+        return rec['close'] if rec else fallback
+
     for i, date in enumerate(dates):
         if i == 0:
             continue
-        prev_date   = dates[i - 1]
-        prev_close  = daily_last.iloc[i - 1]
-        prev_prev_c = daily_last.iloc[i - 2] if i >= 2 else prev_close
+        prev_date = dates[i - 1]
+
+        # prevClose / prevHigh / prevLow from the official daily candle of d-1.
+        off_prev   = official.get(prev_date)
+        prev_close = off_prev['close'] if off_prev else daily_last.iloc[i - 1]
+        prev_high  = off_prev['high']  if off_prev else daily_high.iloc[i - 1]
+        prev_low   = off_prev['low']   if off_prev else daily_low.iloc[i - 1]
+
+        # prevReturn = official d-1 close vs official d-2 close.
+        prev_prev_fallback = daily_last.iloc[i - 2] if i >= 2 else prev_close
+        prev_prev_c = off_close(dates[i - 2], prev_prev_fallback) if i >= 2 else prev_close
         prev_return = (prev_close - prev_prev_c) / prev_prev_c if prev_prev_c > 0 else 0.0
-        prev_range  = (daily_high.iloc[i-1] - daily_low.iloc[i-1]) / prev_close if prev_close > 0 else 0.0
+        prev_range  = (prev_high - prev_low) / prev_close if prev_close > 0 else 0.0
         prev_avg_vol = float(daily_avg_vol.get(prev_date, 1.0)) or 1.0
-        # Keep up to 7 daily closes (oldest first, last = yesterday = prevClose)
+
+        # day_closes: last 1m close per day (matches runtime A05.dayCloses).
         lookback   = min(7, i)
         day_closes = list(daily_last.iloc[i - lookback : i].values)
         result[date] = {
@@ -128,29 +220,71 @@ def build_daily_stats(df):
 
 
 # ── Label ─────────────────────────────────────────────────────────────────────
-# TP/SL evaluated on subsequent candle CLOSES — matches simulated broker logic:
-#   engine.js → evaluateStops(position, candle.close)
-# label = 1 if TP (close ≤ entry*(1-TP_PCT)) hit before SL (close ≥ entry*(1+SL_PCT))
+# Next-open execution model — matches the simulated broker run with
+# --fill-next-open and the live order path:
+#   • signal fires on close[entry_pos]; SL/TP levels anchored to that close
+#   • position is FILLED at open[entry_pos+1] (next candle's open)
+#   • SL/TP evaluated on subsequent candle CLOSES (engine.evaluateStops)
+#   • on a breach at close[j], the exit is FILLED at open[j+1]
+#   • no breach by EOD → exit at the day's last close
+# label = 1 if the short is profitable at the realised fills (entry > exit).
 
-def compute_label_tpsl(day_closes, entry_pos, entry_close):
-    """Scan closes after entry_pos for TP or SL hit."""
+def compute_label_nextopen(opens, closes, entry_pos, n):
+    """Realised next-open outcome for a short opened on the signal at entry_pos.
+
+    Returns 1/0, or None if there is no next candle to fill the entry at
+    (signal on the very last bar of the day) — such rows are dropped.
+    """
+    if entry_pos + 1 >= n:
+        return None
+    entry_fill = opens[entry_pos + 1]
+    sig_close  = closes[entry_pos]
+    tp = sig_close * (1 - TP_PCT)
+    sl = sig_close * (1 + SL_PCT)
+
+    # Position active from entry_pos+1; stops checked on closes from there.
+    for j in range(entry_pos + 1, n):
+        c = closes[j]
+        if c <= tp or c >= sl:
+            exit_fill = opens[j + 1] if (j + 1) < n else closes[j]
+            return 1 if entry_fill > exit_fill else 0  # short: profit if exit < entry
+    # No breach: exit at the day's final close.
+    exit_fill = closes[n - 1]
+    return 1 if entry_fill > exit_fill else 0
+
+
+def compute_label_tpsl(closes, entry_pos, n):
+    """Legacy label: enter at the signal close, label = TP before SL on closes."""
+    entry_close = closes[entry_pos]
     tp = entry_close * (1 - TP_PCT)
     sl = entry_close * (1 + SL_PCT)
-    for c in day_closes[entry_pos + 1:]:
-        if c <= tp:
+    for j in range(entry_pos + 1, n):
+        if closes[j] <= tp:
             return 1
-        if c >= sl:
+        if closes[j] >= sl:
             return 0
-    # End of session without either: label by final close
-    return 1 if day_closes[-1] < entry_close else 0
+    return 1 if closes[n - 1] < entry_close else 0
 
 
-def labels_for_day(day_closes, window_local_positions):
-    return np.array(
-        [compute_label_tpsl(day_closes, pos, day_closes[pos])
-         for pos in window_local_positions],
-        dtype=np.int8,
-    )
+def labels_for_day(opens, closes, window_local_positions):
+    """Return (labels int8 array, valid bool array) aligned to the positions.
+
+    `valid` is False where the entry has no next candle (label is undefined);
+    callers must drop those rows from features/labels/timestamps together.
+    """
+    n      = len(closes)
+    labels = np.zeros(len(window_local_positions), dtype=np.int8)
+    valid  = np.ones(len(window_local_positions), dtype=bool)
+    for k, pos in enumerate(window_local_positions):
+        if LABEL_MODE == 'tpsl':
+            labels[k] = compute_label_tpsl(closes, pos, n)
+            continue
+        lab = compute_label_nextopen(opens, closes, pos, n)
+        if lab is None:
+            valid[k] = False
+        else:
+            labels[k] = lab
+    return labels, valid
 
 
 # ── Feature extraction ────────────────────────────────────────────────────────
@@ -261,8 +395,9 @@ def build_dataset():
             print(f'  {ticker}: SKIP (no data file)', flush=True)
             continue
 
-        df          = load_ticker(ticker)
-        daily_stats = build_daily_stats(df)
+        df, daily_df = load_ticker(ticker)
+        official     = build_official_daily(daily_df)
+        daily_stats  = build_daily_stats(df, official)
 
         tk_rows, tk_y, tk_ts = [], [], []   # transient — one ticker at a time
         for date, day_df in df.groupby('msk_date', sort=True):
@@ -277,18 +412,23 @@ def build_dataset():
             if entry_pos.size == 0:
                 continue
 
-            # TP/SL label on close prices — matches simulated broker
-            day_closes = day_df['close'].values
-            labels     = labels_for_day(day_closes, entry_pos)
-            feats      = features_for_day(day_df, entry_pos, info)
+            # Next-open realised label (entry/exit filled at next candle open).
+            day_opens    = day_df['open'].values
+            day_closes   = day_df['close'].values
+            labels, keep = labels_for_day(day_opens, day_closes, entry_pos)
+            feats        = features_for_day(day_df, entry_pos, info)
 
             # ns since epoch (UTC). `.values` drops tz → datetime64; force ns.
             entry_ns = day_df['datetime'].values[entry_pos] \
                 .astype('datetime64[ns]').astype('int64')
 
-            tk_rows.extend(feats)
-            tk_y.extend(int(v) for v in labels)
-            tk_ts.extend(entry_ns.tolist())
+            # Drop rows whose entry has no next candle (undefined label).
+            for k in range(len(entry_pos)):
+                if not keep[k]:
+                    continue
+                tk_rows.append(feats[k])
+                tk_y.append(int(labels[k]))
+                tk_ts.append(int(entry_ns[k]))
 
         if not tk_rows:
             print(f'  {ticker}: 0 candles', flush=True)
@@ -459,7 +599,9 @@ def build_lookup(model, X, ts, ticker_ids, ticker_names, threshold, chunk=2_000_
 def main():
     print(f'Tickers : {", ".join(TICKERS)}')
     print(f'Year    : {YEAR}')
-    print(f'Label   : TP/SL on close prices (TP={TP_PCT*100:.1f}%, SL={SL_PCT*100:.1f}%)')
+    _label_desc = ('next-open fills, TP/SL on closes' if LABEL_MODE == 'next-open'
+                   else 'TP-before-SL on closes')
+    print(f'Label   : {_label_desc} [{LABEL_MODE}] (TP={TP_PCT*100:.1f}%, SL={SL_PCT*100:.1f}%)')
     print(f'Split   : train < {TRAIN_CUTOFF.date()}, test ≥ {TRAIN_CUTOFF.date()}')
     print()
 

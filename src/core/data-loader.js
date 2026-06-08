@@ -11,8 +11,16 @@ export async function loadData(pathOrBuffer) {
 
 /**
  * Загрузить свечи и metadata из Parquet файла.
+ *
+ * Файл может содержать несколько интервалов (минутные, дневные и т.п.): каждая
+ * строка тогда помечена колонкой `interval` (длина в минутах). Свечи группируются
+ * по интервалу в `series` (Map<minutes, candles[]>). `candles` — базовый
+ * (наименьший) интервал: он стримится движком и сохраняет обратную совместимость.
+ * Файлы старого формата без колонки `interval` трактуются как один базовый
+ * интервал, взятый из `metadata.intervalMinutes` (по умолчанию 1).
+ *
  * @param {string|Buffer} pathOrBuffer - Путь к Parquet или Buffer.
- * @returns {Promise<{ candles: Array<object>, metadata: object }>} Dataset.
+ * @returns {Promise<{ candles: Array<object>, series: Map<number, Array<object>>, metadata: object }>} Dataset.
  */
 export async function loadDataset(pathOrBuffer) {
   let reader;
@@ -24,8 +32,11 @@ export async function loadDataset(pathOrBuffer) {
   }
 
   try {
+    const metadata = parseDivinerMetadata(reader.getMetadata?.() || {});
+    const baseMinutesMeta = Number(metadata.intervalMinutes) || 1;
+
     const cursor = reader.getCursor();
-    const candles = [];
+    const series = new Map();
     let row;
 
     while (row = await cursor.next()) {
@@ -50,15 +61,24 @@ export async function loadDataset(pathOrBuffer) {
         close: Number(row.close ?? row.Close ?? 0),
         volume: Number(row.volume ?? row.Volume ?? 0),
       };
-      candles.push(candle);
+
+      const minutes = row.interval != null ? Number(row.interval) : baseMinutesMeta;
+      let bucket = series.get(minutes);
+      if (!bucket) {
+        bucket = [];
+        series.set(minutes, bucket);
+      }
+      bucket.push(candle);
     }
 
-    candles.sort((a, b) => a.datetime.getTime() - b.datetime.getTime());
+    for (const bucket of series.values()) {
+      bucket.sort((a, b) => a.datetime.getTime() - b.datetime.getTime());
+    }
 
-    return {
-      candles,
-      metadata: parseDivinerMetadata(reader.getMetadata?.() || {}),
-    };
+    const baseMinutes = series.size > 0 ? Math.min(...series.keys()) : baseMinutesMeta;
+    const candles = series.get(baseMinutes) || [];
+
+    return { candles, series, metadata };
   } finally {
     await reader.close();
   }

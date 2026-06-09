@@ -451,8 +451,19 @@ export class TinkoffDataSource {
 
         if (closed.length > 0) {
             console.log(`[TinkoffDataSource] Catching up ${closed.length} missed candle(s).`);
-            for (const candle of closed) {
-                this._enqueue(candle);
+            // Replay every missed candle so the strategy's running state (per-bar
+            // volume windows, day-boundary detection, return windows) stays
+            // contiguous — skipping candles would corrupt those features. But only
+            // the freshest candle may actually trade: on the older ones close is
+            // stale, so an order would fill far from the modeled price. Mark all
+            // but the last as no-trade (warm-up only).
+            const lastIdx = closed.length - 1;
+            for (let i = 0; i < closed.length; i += 1) {
+                closed[i].isCatchUp = true;
+                if (i < lastIdx) {
+                    closed[i].noTrade = true;
+                }
+                this._enqueue(closed[i]);
             }
         }
     }
@@ -515,12 +526,25 @@ export class TinkoffDataSource {
  * executor — same surface the engine and strategy use.
  */
 export class TinkoffExecutor {
-    constructor({ client, instrument, options = {} }) {
+    constructor({ client, instrument, interval = 1, options = {} }) {
         this.client = client;
         this.instrument = instrument;
         this.options = options;
         this.verbose = Boolean(options.verbose);
         this.dryRun = Boolean(options.dryRun);
+
+        // Stale-entry guard: refuse to OPEN a position on a candle that is far
+        // older than wall-clock — the tell-tale of a back-filled candle replayed
+        // after a stream outage. The real market order would fill at the current
+        // (reconnect) price, nowhere near the modeled candle close, silently
+        // wiping out the trade's edge. Exits are unaffected: an already-open
+        // position must still be closed when its SL/TP is hit, even on a stale
+        // candle. A freshly completed candle is ~1 interval old when processed,
+        // so the default leaves comfortable margin for normal network jitter.
+        const intervalMs = (Number(interval) || 1) * 60 * 1000;
+        this.maxEntryAgeMs = Number.isFinite(options.maxEntryAgeMs)
+            ? options.maxEntryAgeMs
+            : intervalMs * 2 + 30_000;
 
         this.orderManager = new OrderManager(client, {
             verbose: this.verbose,
@@ -584,6 +608,34 @@ export class TinkoffExecutor {
                 console.log(`[TinkoffExecutor] ${side.toUpperCase()} skipped: position already open`);
             }
             return null;
+        }
+
+        // Warm-up candle replayed during catch-up (all but the freshest): it
+        // updates strategy state but must not trade — its close is already stale.
+        if (this.currentCandle?.noTrade) {
+            if (this.verbose) {
+                console.log(`[TinkoffExecutor] ${side.toUpperCase()} skipped: warm-up (back-filled) candle, decision deferred to the freshest candle`);
+            }
+            return null;
+        }
+
+        // Backstop: drop entries triggered on a candle that is stale by wall-clock
+        // even if it slipped past the warm-up marker — the real order would fill at
+        // the reconnect price, not the modeled candle close.
+        const candleTime = this.currentCandle?.datetime instanceof Date
+            ? this.currentCandle.datetime.getTime()
+            : null;
+        if (candleTime !== null) {
+            const ageMs = Date.now() - candleTime;
+            if (ageMs > this.maxEntryAgeMs) {
+                console.warn(
+                    `[TinkoffExecutor] ${side.toUpperCase()} skipped: candle is `
+                    + `${Math.round(ageMs / 1000)}s old (> ${Math.round(this.maxEntryAgeMs / 1000)}s) — `
+                    + `likely back-filled after a stream outage. Entry would fill far from the `
+                    + `modeled price ${this.currentCandle?.close}, so the trade is dropped.`,
+                );
+                return null;
+            }
         }
 
         const actualSize = size || this._defaultOrderLots(this.currentCandle?.close);
@@ -806,7 +858,7 @@ export function createTinkoffBroker({ client, instrument, interval = 1, options 
         verbose: options.verbose,
         stallTimeoutMin: options.stallTimeoutMin,
     });
-    const exec = new TinkoffExecutor({ client, instrument, options });
+    const exec = new TinkoffExecutor({ client, instrument, interval, options });
 
     return {
         data,

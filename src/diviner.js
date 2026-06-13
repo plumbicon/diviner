@@ -24,6 +24,7 @@ Examples:
   diviner --broker src/broker/simulated-broker.js data/SBER_2024_1m.parquet --strategy path/to/strategy.js --balance 10000
   T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff-broker.js --strategy path/to/strategy.js --ticker SBER --sandbox --account <id>
   T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-balance
+  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-history [--history-from 2026-06-01]
   T_INVEST_TOKEN=<t> diviner --fetch --security SBER --from-date 2024-01-01 --parquet > sber.parquet
   diviner --convert --input-json sber.json --output-parquet sber.parquet`;
 

@@ -233,6 +233,75 @@ export class TinkoffClient {
   }
 
   /**
+   * История операций по счёту за период. Работает и в sandbox, и в боевом
+   * контуре (выбор сервиса по this.sandbox). Возвращает плоский, отсортированный
+   * по времени список с разрешённым из FIGI тикером.
+   *
+   * @param {string|null} accountId - ID счёта; если не указан — первый sandbox.
+   * @param {object} [range] - { from?: Date, to?: Date }. По умолчанию — 6 месяцев.
+   * @returns {Promise<{accountId:string, from:Date, to:Date, operations:Array}>}
+   */
+  async getOperationsHistory(accountId = this.accountId, { from, to } = {}) {
+    const resolvedAccountId = this.sandbox
+      ? (accountId || await this._getFirstSandboxAccountId())
+      : (accountId || this.accountId);
+    if (!resolvedAccountId) {
+      throw new Error("accountId is required to fetch operations history.");
+    }
+
+    const fromDate = from || new Date(Date.now() - 183 * 24 * 60 * 60 * 1000);
+    const toDate = to || new Date();
+    const request = { accountId: resolvedAccountId, from: fromDate, to: toDate };
+
+    try {
+      const { operations } = this.sandbox
+        ? await this.api.sandbox.getSandboxOperations(request)
+        : await this.api.operations.getOperations(request);
+
+      const tickerCache = new Map();
+      const items = [];
+      for (const op of operations) {
+        items.push({
+          date: op.date || null,
+          type: op.type,
+          figi: op.figi || null,
+          ticker: op.figi ? await this._resolveTickerByFigi(op.figi, tickerCache) : null,
+          quantity: op.quantity,
+          payment: this.api.helpers.toNumber(op.payment) || 0,
+          currency: (op.currency || "").toUpperCase(),
+        });
+      }
+      items.sort((a, b) => (a.date?.getTime() || 0) - (b.date?.getTime() || 0));
+
+      return { accountId: resolvedAccountId, from: fromDate, to: toDate, operations: items };
+    } catch (error) {
+      throw new Error(`Failed to get operations history: ${this._formatApiError(error)}`);
+    }
+  }
+
+  /**
+   * @private
+   * FIGI → тикер с кэшем. При сбое возвращает null (печатается голый FIGI).
+   */
+  async _resolveTickerByFigi(figi, cache) {
+    if (cache.has(figi)) {
+      return cache.get(figi);
+    }
+    let ticker = null;
+    try {
+      const { instrument } = await this.api.instruments.getInstrumentBy({
+        idType: InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI,
+        id: figi,
+      });
+      ticker = instrument?.ticker || null;
+    } catch {
+      ticker = null;
+    }
+    cache.set(figi, ticker);
+    return ticker;
+  }
+
+  /**
    * @private
    */
   _formatMoneyPositions(moneyPositions) {

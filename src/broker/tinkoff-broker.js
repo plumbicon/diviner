@@ -32,6 +32,8 @@ export const options = [
     { flags: "--create-account", description: "Create a new sandbox account", default: false },
     { flags: "--remove-account", description: "Remove the sandbox account from --account", default: false },
     { flags: "--print-balance", description: "Print sandbox balance and positions", default: false },
+    { flags: "--print-history", description: "Print operations history for --account and exit", default: false },
+    { flags: "--history-from <date>", description: "Start date (YYYY-MM-DD) for --print-history (default: 6 months ago)" },
     { flags: "--reset-positions", description: "Reset sandbox share positions (keep RUB)", default: false },
     { flags: "--increase-balance <amount>", description: "Increase sandbox RUB balance by amount" },
     { flags: "--log <path>", description: "Append all output to a log file" },

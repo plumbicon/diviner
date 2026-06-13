@@ -62,6 +62,10 @@ export async function runUtility(config = {}) {
         if (config.printBalance) {
             printSandboxBalance(await client.getSandboxBalance(accountId));
         }
+
+        if (config.printHistory) {
+            printOperationsHistory(await client.getOperationsHistory(accountId, parseHistoryRange(config)));
+        }
     } catch (error) {
         console.error("[Main] Fatal error:", error.message);
         return 1;
@@ -83,6 +87,7 @@ export function isUtilityRequest(config = {}) {
         || config.createAccount
         || config.removeAccount
         || config.printBalance
+        || config.printHistory
         || (config.resetPositions && !config.strategy)
         || (hasIncreaseBalance(config) && !config.strategy),
     );
@@ -95,11 +100,15 @@ function hasIncreaseBalance(config) {
 function validateUtilityOptions(config) {
     const accountSpecific = config.removeAccount
         || config.printBalance
+        || config.printHistory
         || config.resetPositions
         || hasIncreaseBalance(config);
 
     if (accountSpecific && !config.createAccount && !config.account) {
         throw new Error("option '--account <id>' is required for account-specific sandbox commands");
+    }
+    if (config.printHistory && config.historyFrom && !/^\d{4}-\d{2}-\d{2}$/.test(config.historyFrom)) {
+        throw new Error("option '--history-from' must be a date in YYYY-MM-DD format");
     }
     if (
         config.removeAccount
@@ -119,6 +128,37 @@ function parseNonNegativeAmount(value, optionName) {
         throw new Error(`option '${optionName}' must be a non-negative number`);
     }
     return amount;
+}
+
+function parseHistoryRange(config) {
+    if (!config.historyFrom) {
+        return {};
+    }
+    return { from: new Date(`${config.historyFrom}T00:00:00Z`) };
+}
+
+function printOperationsHistory({ accountId, from, to, operations }) {
+    const day = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : "?");
+    console.log(`[History] Account ${accountId}  (${day(from)} .. ${day(to)})`);
+    if (operations.length === 0) {
+        console.log("[History] No operations in the selected window.");
+        return;
+    }
+
+    let net = 0;
+    let fees = 0;
+    for (const op of operations) {
+        net += op.payment;
+        if (/комисси|fee|commission/i.test(op.type)) {
+            fees += op.payment;
+        }
+        const when = op.date ? op.date.toISOString() : "?";
+        const instr = op.ticker || op.figi || "-";
+        const qty = op.quantity ? ` qty=${op.quantity}` : "";
+        const amount = `${op.payment >= 0 ? "+" : ""}${op.payment.toFixed(2)} ${op.currency}`;
+        console.log(`[History] ${when}  ${String(op.type).padEnd(34)} ${amount.padStart(16)}  ${instr}${qty}`);
+    }
+    console.log(`[History] Operations: ${operations.length}  | fees: ${fees.toFixed(2)}  | net flow: ${net.toFixed(2)}`);
 }
 
 function printSandboxAccounts(accounts) {

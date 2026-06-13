@@ -796,7 +796,7 @@ export class TinkoffClient {
 
       if (this.verbose) {
         console.log(
-          `[TinkoffClient] Posting order: ${direction} ${validatedQuantity} lots at ${price || "market"}`,
+          `[TinkoffClient] Posting order: ${direction} ${validatedQuantity} lots at ${price || "market"} (orderId=${orderId})`,
         );
       }
 

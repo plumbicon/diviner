@@ -330,7 +330,10 @@ export function createSimulatedBroker({
     fillOnNextOpen = false,
     meta = {},
 } = {}) {
-    const portfolio = new Portfolio({ cash: initialCash, commission });
+    // Lot size from the dataset's instrument metadata, so default order sizing
+    // floors to whole lots like the live broker (e.g. ALRS lot=10).
+    const lot = Number(metadata?.instrument?.lot) || 1;
+    const portfolio = new Portfolio({ cash: initialCash, commission, lot });
     const equity = [];
     const data = new SimulatedDataSource({ candles, series, metadata, portfolio, equity });
     const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen });

@@ -109,6 +109,12 @@ cat data/sber_2024.parquet | diviner --broker src/broker/simulated-broker.js --s
 агрегируются внутри `simulated`-брокера из минутных. Отчёт печатается в stdout как JSON
 (`backtest_parameters`, `performance_metrics`, `trade_log`).
 
+**Размер позиции по умолчанию** (когда стратегия не задаёт `size`): 95% доступного кэша,
+округлённые вниз до целого числа **лотов** инструмента (`floor(cash·0.95 / (price·lot))·lot`).
+Размер лота берётся из метаданных parquet (`instrument.lot`), поэтому бэктест сайзит так же,
+как живой брокер (например, ALRS с lot=10 — кратно 10 акциям). Это совпадает с
+`_defaultOrderLots` в live-брокере.
+
 ## Live-трейдинг (`--broker src/broker/tinkoff-broker.js`)
 
 ```bash
@@ -125,6 +131,7 @@ T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --strategy 
 | `--interval` | Интервал свечей в минутах (1, 5, 15, 60, 120, 240, 1440) | `1` |
 | `--close-on-exit` | Закрыть позицию при остановке сессии (по умолчанию — оставить) | выкл |
 | `--order-retries` | Повторы заявки при временных ошибках API | `2` |
+| `--order-tag` | Короткая метка в ключе идемпотентности ордера для сопоставления с логами (см. ниже) | `div` |
 | `--verbose` | Логировать свечи и подробности | выкл |
 | `--log` | Дублировать вывод в файл | — |
 
@@ -137,10 +144,32 @@ T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --strategy 
 свечей с отбрасыванием дублей; авто-переподписка после сетевого разрыва с догрузкой
 пропущенных свечей; проверка SL/TP в реальном времени; кэш истории.
 
+### Идентификация ордеров
+
+Каждому ордеру присваивается осмысленный **ключ идемпотентности** (поле API `order_id`),
+чтобы потом сопоставлять сделки с логами стратегии. Формат (очищается до `[A-Za-z0-9_-]`,
+жёстко обрезается до лимита API в **36 символов**):
+
+```
+<tag>-<ticker>-<O|C><B|S>-<yyMMddHHmmss>
+напр. a05-ALRS-OS-260613040100  = открытие шорта по ALRS на свече 2026-06-13 04:01:00 (UTC)
+```
+
+`O`/`C` — открытие/закрытие, `B`/`S` — buy/sell, метка задаётся через `--order-tag`.
+Время берётся из текущей свечи; хвост-таймстамп держит ключ уникальным (брокер дедуплицирует
+ключи идемпотентности ~1 месяц).
+
+> **Важно:** это **не комментарий к сделке**. T-Invest API не имеет поля для произвольного
+> текста у операции. Ключ возвращается как `order_request_id` и виден через
+> `getOrderState` / `getOrders` / стрим статусов, но **не попадает** в историю операций
+> (`getOperations`) и брокерский отчёт — там только биржевой `order_id`. Для богатых
+> метаданных (сигнал, gap, вероятность модели) ведите собственный лог по этому ключу.
+
 ### Аккаунт-утилиты (без стратегии)
 
 ```bash
 T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-balance
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-history --history-from 2026-06-01
 T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --create-account
 T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --increase-balance 100000
 T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --list-sandboxes
@@ -152,6 +181,8 @@ T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox -
 | `--create-account` | Создать sandbox-счёт |
 | `--remove-account` | Удалить sandbox-счёт из `--account` |
 | `--print-balance` | Cash, стоимость long, обязательства short, оценочная equity |
+| `--print-history` | История операций счёта (FIGI→тикер, сводка комиссий и чистого потока) |
+| `--history-from <date>` | Дата начала (YYYY-MM-DD) для `--print-history` (по умолчанию — 6 месяцев назад) |
 | `--reset-positions` | Обнулить sandbox-позиции по акциям, сохранив RUB-баланс |
 | `--increase-balance <amount>` | Пополнить RUB-баланс sandbox-счёта |
 

@@ -12,7 +12,8 @@
   "scripts": {
     "start": "node src/diviner.js",
     "fetch": "node src/fetch.js",
-    "convert": "node src/convert.js"
+    "convert": "node src/convert.js",
+    "test": "node --test"
   },
   "keywords": [
     "trading",

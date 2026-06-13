@@ -2,12 +2,29 @@
  * Simulated trading portfolio for backtests.
  */
 export class Portfolio {
-    constructor({ cash = 10000, commission = 0.0005 } = {}) {
+    constructor({ cash = 10000, commission = 0.0005, lot = 1 } = {}) {
         this.initialCash = cash;
         this.cash = cash;
         this.commission = commission;
+        // Exchange lot size. Default order sizing floors to whole lots so the
+        // backtest matches the live broker, which can only trade in multiples of
+        // `lot` (e.g. ALRS lot=10). Carried from the dataset's instrument
+        // metadata; defaults to 1 (one share per lot) when unknown.
+        this.lot = Number.isFinite(Number(lot)) && Number(lot) > 0 ? Number(lot) : 1;
         this.position = null;
         this.trades = [];
+    }
+
+    /**
+     * Default position size (in shares) for a given price: 95% of cash, floored
+     * to a whole number of exchange lots. Mirrors the live broker's
+     * `_defaultOrderLots`. @private
+     * @param {number} price - Entry price per share.
+     * @returns {number} Size in shares (a multiple of `this.lot`).
+     */
+    _defaultSize(price) {
+        const lots = Math.floor((this.cash * 0.95) / (price * this.lot));
+        return lots * this.lot;
     }
 
     /**
@@ -21,7 +38,7 @@ export class Portfolio {
         }
 
         const price = candle.close;
-        const actualSize = size || Math.floor((this.cash * 0.95) / price);
+        const actualSize = size || this._defaultSize(price);
         if (actualSize <= 0) {
             return null;
         }
@@ -55,7 +72,7 @@ export class Portfolio {
         }
 
         const price = candle.close;
-        const actualSize = size || Math.floor((this.cash * 0.95) / price);
+        const actualSize = size || this._defaultSize(price);
         if (actualSize <= 0) {
             return null;
         }

@@ -25,6 +25,7 @@ export const options = [
     { flags: "--interval <minutes>", description: "Candle interval in minutes", default: "1" },
     { flags: "--close-on-exit", description: "Close open position when the session stops", default: false },
     { flags: "--order-retries <count>", description: "Retry count for transient order errors", default: "2" },
+    { flags: "--order-tag <tag>", description: "Short label embedded in each order's idempotency key for log correlation (e.g. strategy name). Default: \"div\"", default: "div" },
     { flags: "--stall-timeout <minutes>", description: "Exit if no candle arrives for N minutes during a trading session (0 disables). Raise for illiquid instruments whose no-trade gaps are long.", default: "30" },
     { flags: "--state-file <path>", description: "Path to persist software SL/TP across restarts (default: .diviner-state/<account>_<ticker>.json)" },
     // Account utilities (run without a strategy):
@@ -72,6 +73,7 @@ export async function createBroker(config = {}) {
             closeOnExit: Boolean(config.closeOnExit),
             stallTimeoutMin: parseInt(config.stallTimeout ?? "30", 10),
             stateFile: config.stateFile || null,
+            orderTag: config.orderTag || "div",
         },
     });
 
@@ -520,6 +522,40 @@ export class TinkoffDataSource {
 }
 
 /**
+ * Build a human-meaningful idempotency key for an order, so it can later be
+ * correlated with strategy logs.
+ *
+ * Layout (sanitised to [A-Za-z0-9_-], hard-capped at the API's 36-char limit):
+ *   <tag>-<ticker>-<O|C><B|S>-<yyMMddHHmmss>   (timestamp in UTC)
+ * e.g. `a05-ALRS-OS-260613040100` = open short on ALRS for the 2026-06-13
+ * 04:01:00 candle.
+ *
+ * IMPORTANT — what this id is and isn't:
+ *  - It is the API's `order_id` / `order_request_id` (idempotency key). It is
+ *    echoed back by PostOrder and visible via getOrderState / getOrders / the
+ *    order-state stream, so you can match an order to the candle that triggered
+ *    it.
+ *  - It is NOT a free-text comment and does NOT appear in the operations
+ *    history (getOperations) or broker report — those carry only the exchange
+ *    order id. The T-Invest API has no per-operation comment field.
+ *  - The broker dedups idempotency keys for ~1 month, so the trailing timestamp
+ *    keeps each order unique; same-second retries intentionally reuse the key.
+ *
+ * @param {object} params - { tag, ticker, action: 'open'|'close', direction:
+ *                            'buy'|'sell', at?: Date }
+ * @returns {string} Idempotency key, length <= 36.
+ */
+export function buildOrderId({ tag, ticker, action, direction, at = new Date() }) {
+    const iso = (at instanceof Date && !Number.isNaN(at.getTime()) ? at : new Date()).toISOString();
+    const ts = iso.slice(2, 4) + iso.slice(5, 7) + iso.slice(8, 10)
+        + iso.slice(11, 13) + iso.slice(14, 16) + iso.slice(17, 19);
+    const a = action === "close" ? "C" : "O";
+    const d = direction === "sell" ? "S" : "B";
+    const raw = `${tag || "div"}-${ticker || "x"}-${a}${d}-${ts}`;
+    return raw.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 36);
+}
+
+/**
  * Live executor backed by the T-Invest order pipeline.
  *
  * Translates strategy buy/sell/close signals into real (or dry-run) orders via
@@ -534,6 +570,8 @@ export class TinkoffExecutor {
         this.options = options;
         this.verbose = Boolean(options.verbose);
         this.dryRun = Boolean(options.dryRun);
+        // Short label embedded in every order's idempotency key (see buildOrderId).
+        this.orderTag = options.orderTag || "div";
 
         // Stale-entry guard: refuse to OPEN a position on a candle that is far
         // older than wall-clock — the tell-tale of a back-filled candle replayed
@@ -778,6 +816,15 @@ export class TinkoffExecutor {
      * Place a real open order and reconcile on partial fills.
      * @private
      */
+    /**
+     * Build the idempotency key for an order from the current candle's time and
+     * the configured tag. @private
+     */
+    _buildOrderId(action, direction) {
+        const at = this.currentCandle?.datetime instanceof Date ? this.currentCandle.datetime : new Date();
+        return buildOrderId({ tag: this.orderTag, ticker: this.instrument?.ticker, action, direction, at });
+    }
+
     async _executeOrder(direction, size) {
         try {
             const result = await this.orderManager.postMarketOrder({
@@ -785,6 +832,7 @@ export class TinkoffExecutor {
                 instrumentId: this.instrument.uid || this.instrument.figi,
                 quantity: size,
                 direction,
+                orderId: this._buildOrderId("open", direction),
             });
             const summary = this.client.getOrderExecutionSummary(result);
             const executedLots = summary.lotsExecuted || size;
@@ -818,6 +866,7 @@ export class TinkoffExecutor {
                 instrumentId: this.instrument.uid || this.instrument.figi,
                 quantity: position.size,
                 currentSide: position.side,
+                orderId: this._buildOrderId("close", position.side === "long" ? "sell" : "buy"),
             });
             const summary = this.client.getOrderExecutionSummary(result);
             const executedLots = summary.lotsExecuted || position.size;

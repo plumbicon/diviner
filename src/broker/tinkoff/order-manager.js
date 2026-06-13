@@ -14,7 +14,7 @@ export class OrderManager {
    * @private
    */
   _validateOrderParams(params) {
-    const { figi, instrumentId, quantity, price, direction } = params;
+    const { figi, instrumentId, quantity, price, direction, orderId } = params;
     const resolvedInstrumentId = instrumentId || figi;
 
     if (!resolvedInstrumentId || typeof resolvedInstrumentId !== "string") {
@@ -46,6 +46,9 @@ export class OrderManager {
       quantity: validatedQuantity,
       price: price !== undefined && price !== null ? price : null,
       direction,
+      // Idempotency key (API order_id). Optional; client.postOrder falls back to
+      // a random UUID when absent. See buildOrderId in tinkoff-broker.js.
+      orderId: orderId || undefined,
     };
   }
 
@@ -78,6 +81,7 @@ export class OrderManager {
         quantity: validated.quantity,
         direction: validated.direction,
         orderType: "market",
+        orderId: validated.orderId,
       });
       return result;
     } catch (error) {
@@ -119,6 +123,7 @@ export class OrderManager {
         direction: validated.direction,
         price: validated.price,
         orderType: "limit",
+        orderId: validated.orderId,
       });
       return result;
     } catch (error) {
@@ -131,7 +136,7 @@ export class OrderManager {
    * @param {object} params - { figi, quantity, currentSide }
    */
   async closePosition(params) {
-    const { figi, instrumentId, quantity, currentSide } = params;
+    const { figi, instrumentId, quantity, currentSide, orderId } = params;
     const closeDirection = currentSide === "long" ? "sell" : "buy";
 
     if (this.verbose) {
@@ -145,6 +150,7 @@ export class OrderManager {
       instrumentId,
       quantity,
       direction: closeDirection,
+      orderId,
     });
   }
 }

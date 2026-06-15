@@ -4,6 +4,7 @@ import {
     getMoscowDateKey,
 } from "../core/market-data.js";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { TinkoffClient } from "./tinkoff/client.js";
 import { OrderManager } from "./tinkoff/order-manager.js";
 import { StateManager } from "./tinkoff/state-manager.js";
@@ -541,9 +542,15 @@ export class TinkoffDataSource {
  *  - The broker dedups idempotency keys for ~1 month, so the trailing timestamp
  *    keeps each order unique; same-second retries intentionally reuse the key.
  *
+ * The API (and the sandbox especially) validates order_id as a UUID, so the
+ * human-readable key above is used only as the *seed* for a deterministic
+ * UUIDv5. Same seed → same UUID, which preserves the idempotency property
+ * (same-second retries reuse the id, broker dedups for ~1 month) while
+ * satisfying the strict UUID format requirement.
+ *
  * @param {object} params - { tag, ticker, action: 'open'|'close', direction:
  *                            'buy'|'sell', at?: Date }
- * @returns {string} Idempotency key, length <= 36.
+ * @returns {string} Deterministic UUIDv5 idempotency key.
  */
 export function buildOrderId({ tag, ticker, action, direction, at = new Date() }) {
     const iso = (at instanceof Date && !Number.isNaN(at.getTime()) ? at : new Date()).toISOString();
@@ -552,7 +559,15 @@ export function buildOrderId({ tag, ticker, action, direction, at = new Date() }
     const a = action === "close" ? "C" : "O";
     const d = direction === "sell" ? "S" : "B";
     const raw = `${tag || "div"}-${ticker || "x"}-${a}${d}-${ts}`;
-    return raw.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 36);
+    const h = createHash("sha1").update(raw).digest("hex");
+    const variant = ((parseInt(h.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0");
+    return [
+        h.slice(0, 8),
+        h.slice(8, 12),
+        `5${h.slice(13, 16)}`,
+        `${variant}${h.slice(18, 20)}`,
+        h.slice(20, 32),
+    ].join("-");
 }
 
 /**

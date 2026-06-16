@@ -117,41 +117,91 @@ def _ensure_utc(series):
 
 
 def load_symbol(symbol, year=YEAR):
-    """Load 1m parquet for a symbol, return DataFrame with UTC day columns."""
+    """Load multi-interval parquet (1m + 1D), return (minute_df, daily_df).
+
+    Mirrors train.py's load_ticker: splits on the `interval` column so that
+    the official 1D candle provides prevClose/prevReturn/prevRange, exactly
+    as A05 uses the MOEX closing-auction price from the 1440m series.
+    """
     path = data_path(symbol, year)
     raw  = pq.read_table(str(path)).to_pandas()
-    df   = raw.copy()
+
+    if "interval" in raw.columns:
+        daily_raw = raw[raw["interval"] == 1440].copy()
+        df        = raw[(raw["interval"] == 1) | (raw["interval"].isna())].copy()
+    else:
+        daily_raw = None
+        df        = raw.copy()
+
     df["datetime"] = _ensure_utc(df["datetime"])
     df = df.sort_values("datetime").reset_index(drop=True)
-    # UTC-day session boundaries (crypto has no timezone offset to add)
     df["utc_min"]  = df["datetime"].dt.hour * 60 + df["datetime"].dt.minute
     df["utc_date"] = df["datetime"].dt.normalize().dt.tz_localize(None)
     df["symbol"]   = symbol
-    return df
+
+    daily_df = None
+    if daily_raw is not None and len(daily_raw) > 0:
+        daily_raw = daily_raw.copy()
+        daily_raw["datetime"] = _ensure_utc(daily_raw["datetime"])
+        daily_raw = daily_raw.sort_values("datetime").reset_index(drop=True)
+        # UTC-midnight 1D candle: use the candle date as the trading day key
+        daily_raw["utc_date"] = daily_raw["datetime"].dt.normalize().dt.tz_localize(None)
+        daily_df = daily_raw
+
+    return df, daily_df
+
+
+def build_official_daily(daily_df):
+    """Map utc_date → {close, high, low} from the 1D candle series.
+    Equivalent to train.py's build_official_daily for MOEX 1440m rows.
+    """
+    if daily_df is None or len(daily_df) == 0:
+        return {}
+    out = {}
+    for _, r in daily_df.iterrows():
+        out[r["utc_date"]] = {
+            "close": float(r["close"]),
+            "high":  float(r["high"]),
+            "low":   float(r["low"]),
+        }
+    return out
 
 
 # ── Daily context ─────────────────────────────────────────────────────────────
 
-def build_daily_stats(df):
-    """Build per-UTC-day context dict matching the A05 daily_stats shape."""
+def build_daily_stats(df, official=None):
+    """Build per-UTC-day context dict.
+
+    prevClose/prevReturn/prevRange come from the official 1D candle when
+    available (mirrors A05's use of the MOEX closing-auction 1440m row).
+    Falls back to the last 1m close of the day if 1D data is missing.
+    day_closes uses last 1m close per day (matches A05.dayCloses at runtime).
+    """
+    official      = official or {}
     daily_last    = df.groupby("utc_date", sort=True)["close"].last()
     daily_high    = df.groupby("utc_date", sort=True)["high"].max()
     daily_low     = df.groupby("utc_date", sort=True)["low"].min()
-    # Average per-minute volume of the previous day — volume normalisation denominator
     daily_avg_vol = df.groupby("utc_date", sort=True)["volume"].mean()
     dates = list(daily_last.index)
     result = {}
+
+    def off_close(date, fallback):
+        rec = official.get(date)
+        return rec["close"] if rec else fallback
 
     for i, date in enumerate(dates):
         if i == 0:
             continue
         prev = dates[i - 1]
-        prev_close = float(daily_last.iloc[i - 1])
-        prev_high  = float(daily_high.iloc[i - 1])
-        prev_low   = float(daily_low.iloc[i - 1])
+
+        off_prev   = official.get(prev)
+        prev_close = off_prev["close"] if off_prev else float(daily_last.iloc[i - 1])
+        prev_high  = off_prev["high"]  if off_prev else float(daily_high.iloc[i - 1])
+        prev_low   = off_prev["low"]   if off_prev else float(daily_low.iloc[i - 1])
         prev_avg   = float(daily_avg_vol.get(prev, 1.0)) or 1.0
 
-        prev2_c = float(daily_last.iloc[i - 2]) if i >= 2 else prev_close
+        prev2_fallback = float(daily_last.iloc[i - 2]) if i >= 2 else prev_close
+        prev2_c = off_close(dates[i - 2], prev2_fallback) if i >= 2 else prev_close
         prev_return = (prev_close - prev2_c) / prev2_c if prev2_c > 0 else 0.0
         prev_range  = (prev_high - prev_low) / prev_close if prev_close > 0 else 0.0
 
@@ -159,12 +209,12 @@ def build_daily_stats(df):
         day_closes = list(daily_last.iloc[i - lookback: i].values)
 
         result[date] = {
-            "prevClose":   prev_close,
-            "prevReturn":  prev_return,
-            "prevRange":   prev_range,
-            "prevAvgVol":  prev_avg,
-            "dow":         pd.Timestamp(date).dayofweek,
-            "day_closes":  day_closes,
+            "prevClose":  prev_close,
+            "prevReturn": prev_return,
+            "prevRange":  prev_range,
+            "prevAvgVol": prev_avg,
+            "dow":        pd.Timestamp(date).dayofweek,
+            "day_closes": day_closes,
         }
     return result
 
@@ -279,8 +329,9 @@ def build_dataset(symbols):
             print(f"  {symbol}: SKIP (no file)", flush=True)
             continue
 
-        df = load_symbol(symbol)
-        daily_stats = build_daily_stats(df)
+        df, daily_df = load_symbol(symbol)
+        official    = build_official_daily(daily_df)
+        daily_stats = build_daily_stats(df, official)
 
         tk_rows, tk_y, tk_ts = [], [], []
 

@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 /**
- * Batch-download 1-minute OKX perpetual-swap candles for a fixed set of
- * tickers into data/okx/<instId>_<year>_1m.parquet files.
+ * Batch-download OKX perpetual-swap candles (1m + 1D) for a fixed set of
+ * tickers into data/okx/<instId>_<year>_1m.parquet multi-interval files.
+ *
+ * Mirrors the MOEX fetch.js output format: both 1m and 1440m (daily) rows
+ * are stored in the same parquet, tagged with an `interval` column (1 or
+ * 1440). train_okx.py splits on this column so that prevClose/prevReturn/
+ * prevRange come from the official 1D candle — the same design as A05.
  *
  * Usage:
  *   node src/fetch-okx-batch.js                   # defaults: year=2025, concurrency=5
@@ -9,11 +14,10 @@
  *   node src/fetch-okx-batch.js --only ETH/USDT:USDT,BTC/USDT:USDT
  *   node src/fetch-okx-batch.js --skip ETH/USDT:USDT  # resume: skip already-done
  *
- * Output files: data/okx/<instId>_<year>_1m.parquet
- * e.g.          data/okx/BTC-USDT-SWAP_2025_1m.parquet
+ * Output: data/okx/<instId>_<year>_1m.parquet  (1m + 1D merged)
  *
- * Rate-limiting: each ticker makes ~5 000 REST calls (100 candles each, 200 ms
- * apart). At concurrency=5 the total wall time for 75 tickers is ~3–4 hours.
+ * Rate-limiting: 1m data ~5 000 REST calls per ticker; 1D needs only ~4 calls.
+ * At concurrency=5 the total wall time for 75 tickers is ~3–4 hours.
  */
 
 import { existsSync } from "node:fs";
@@ -22,7 +26,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { OkxClient } from "./broker/okx/client.js";
-import { writeCandleRecordsAsParquet } from "./core/candle-parquet.js";
+import { writeCandleSeriesAsParquet } from "./core/candle-parquet.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = join(ROOT, "data", "okx");
@@ -70,66 +74,76 @@ function outPath(instId, year) {
 }
 
 /**
- * Download 1 m candles for one symbol and write to parquet (atomic via tmp).
- * Returns {symbol, instId, rows, skipped, error}.
+ * Download 1m + 1D candles for one symbol and write a merged multi-interval
+ * parquet (same format as MOEX multi-interval files).
+ * Returns {symbol, instId, rows1m, rows1d, skipped, error}.
  */
 async function fetchOne(symbol, year, requestDelayMs) {
     const instId = symbolToInstId(symbol);
     const dest   = outPath(instId, year);
 
     if (existsSync(dest)) {
-        return { symbol, instId, rows: 0, skipped: true };
+        return { symbol, instId, rows1m: 0, rows1d: 0, skipped: true };
     }
 
     const client = new OkxClient({}, {
         verbose: false,
-        timeoutMs: 60000,       // generous timeout for historical bulk fetches
-        orderRetries: 5,        // retry transient network failures
+        timeoutMs: 60000,
+        orderRetries: 5,
         orderRetryDelayMs: 2000,
     });
     try {
         await client.init(symbol);
 
-        const from  = new Date(`${year}-01-01T00:00:00.000Z`).getTime();
-        const to    = new Date(`${year}-12-31T23:59:59.999Z`).getTime();
+        const from = new Date(`${year}-01-01T00:00:00.000Z`).getTime();
+        const to   = new Date(`${year}-12-31T23:59:59.999Z`).getTime();
 
-        const candles = await client.fetchHistory({
-            symbol,
-            timeframe: "1m",
-            since:  from,
-            until:  to,
-            limit:  100,
-            requestDelayMs,
+        // 1m candles — bulk of the work (~5 000 API calls per ticker per year)
+        const candles1m = await client.fetchHistory({
+            symbol, timeframe: "1m",
+            since: from, until: to, limit: 100, requestDelayMs,
         });
-
-        if (candles.length === 0) {
-            return { symbol, instId, rows: 0, skipped: false, error: "no candles returned" };
+        if (candles1m.length === 0) {
+            return { symbol, instId, rows1m: 0, rows1d: 0, skipped: false, error: "no 1m candles returned" };
         }
+
+        // 1D candles — only ~4 API calls, fetched after 1m to avoid rate pressure
+        const candles1d = await client.fetchHistory({
+            symbol, timeframe: "1d",
+            since: from, until: to, limit: 100, requestDelayMs: 200,
+        });
 
         const market = client.market;
         const contractSize = Number(market?.contractSize) || 1;
         const lot = (Number(market?.precision?.amount) || 1) * contractSize;
 
         const metadata = {
-            source:    "okx",
-            schemaVersion: 1,
+            source: "okx", schemaVersion: 1,
             instrument: {
                 ticker: symbol, symbol, name: market?.id || symbol,
                 exchange: "OKX", lot, contractSize,
                 currency: market?.quote || "USDT",
             },
             ticker: symbol, symbol, exchange: "OKX",
+            // Base interval is 1m; both intervals are listed in `intervals`
             interval: "1m", intervalLabel: "1m", intervalMinutes: 1,
+            intervals: [{ minutes: 1, label: "1m" }, { minutes: 1440, label: "1d" }],
             fromDate: `${year}-01-01`, tillDate: `${year}-12-31`,
             timezone: "UTC",
         };
 
+        // Merge into a single parquet, keyed by intervalMinutes
+        const seriesByMinutes = new Map([
+            [1,    candles1m],
+            [1440, candles1d],
+        ]);
+
         const tmp = `${dest}.tmp${process.pid}`;
-        const buf = await writeCandleRecordsAsParquet(candles, null, metadata);
+        const buf = await writeCandleSeriesAsParquet(seriesByMinutes, null, metadata);
         await writeFile(tmp, buf);
         await rename(tmp, dest);
 
-        return { symbol, instId, rows: candles.length, skipped: false };
+        return { symbol, instId, rows1m: candles1m.length, rows1d: candles1d.length, skipped: false };
     } finally {
         await client.close();
     }
@@ -221,7 +235,7 @@ async function main() {
         } else if (result.skipped) {
             console.log(`[${done}/${total}] ↩ ${result.instId}  skipped (file exists)`);
         } else {
-            console.log(`[${done}/${total}] ✓ ${result.instId}  ${result.rows.toLocaleString()} rows  (ETA ~${etaMin}m)`);
+            console.log(`[${done}/${total}] ✓ ${result.instId}  1m=${result.rows1m?.toLocaleString()} 1d=${result.rows1d}  (ETA ~${etaMin}m)`);
         }
     });
 

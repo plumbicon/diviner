@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { TinkoffClient } from "./tinkoff/client.js";
 import { OrderManager } from "./tinkoff/order-manager.js";
-import { StateManager } from "./tinkoff/state-manager.js";
-import { PositionStore } from "./tinkoff/position-store.js";
+import { StateManager } from "./common/state-manager.js";
+import { PositionStore } from "./common/position-store.js";
 import { runUtility, isUtilityRequest } from "./tinkoff/sandbox-utils.js";
 
 // Account utilities (no strategy) live in sandbox-utils; re-exported so the CLI

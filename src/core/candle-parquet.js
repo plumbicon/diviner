@@ -11,7 +11,12 @@ export const candleSchema = new parquet.ParquetSchema({
     high: { type: "DOUBLE" },
     low: { type: "DOUBLE" },
     close: { type: "DOUBLE" },
-    volume: { type: "INT64" },
+    // DOUBLE (not INT64) so fractional volumes are representable — crypto venues
+    // report sub-unit base-currency volume (e.g. 14.3326 BTC). MOEX share volumes
+    // are whole numbers and stored exactly within a double's 2^53 integer range,
+    // so this is lossless for the Tinkoff path too. Readers normalise via
+    // Number(), and existing files keep their own embedded schema on read.
+    volume: { type: "DOUBLE" },
     // Interval length in minutes (1, 60, 1440, …). Optional so a single-interval
     // file can omit it (legacy/back-compat: readers treat such rows as the base
     // interval from metadata). A multi-interval file tags every row, letting the

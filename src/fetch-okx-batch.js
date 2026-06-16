@@ -1,0 +1,235 @@
+#!/usr/bin/env node
+/**
+ * Batch-download 1-minute OKX perpetual-swap candles for a fixed set of
+ * tickers into data/okx/<instId>_<year>_1m.parquet files.
+ *
+ * Usage:
+ *   node src/fetch-okx-batch.js                   # defaults: year=2025, concurrency=5
+ *   node src/fetch-okx-batch.js --year 2025 --concurrency 8
+ *   node src/fetch-okx-batch.js --only ETH/USDT:USDT,BTC/USDT:USDT
+ *   node src/fetch-okx-batch.js --skip ETH/USDT:USDT  # resume: skip already-done
+ *
+ * Output files: data/okx/<instId>_<year>_1m.parquet
+ * e.g.          data/okx/BTC-USDT-SWAP_2025_1m.parquet
+ *
+ * Rate-limiting: each ticker makes ~5 000 REST calls (100 candles each, 200 ms
+ * apart). At concurrency=5 the total wall time for 75 tickers is ~3–4 hours.
+ */
+
+import { existsSync } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Command } from "commander";
+import { OkxClient } from "./broker/okx/client.js";
+import { writeCandleRecordsAsParquet } from "./core/candle-parquet.js";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const DATA_DIR = join(ROOT, "data", "okx");
+
+// ── Ticker list ───────────────────────────────────────────────────────────────
+// 75 OKX USDT-settled perps with listing date before 2025-01-01,
+// sorted by 24 h USD volume (descending). First 50 = training set, last 25 = validation.
+export const TRAIN_SYMBOLS = [
+    "ETH/USDT:USDT",  "BTC/USDT:USDT",  "SOL/USDT:USDT",  "WLD/USDT:USDT",
+    "DOGE/USDT:USDT", "XRP/USDT:USDT",  "UNI/USDT:USDT",  "JTO/USDT:USDT",
+    "XLM/USDT:USDT",  "NEAR/USDT:USDT", "PEPE/USDT:USDT", "BNB/USDT:USDT",
+    "ADA/USDT:USDT",  "BCH/USDT:USDT",  "SUI/USDT:USDT",  "TAO/USDT:USDT",
+    "ONDO/USDT:USDT", "FIL/USDT:USDT",  "AAVE/USDT:USDT", "LINK/USDT:USDT",
+    "LTC/USDT:USDT",  "AVAX/USDT:USDT", "DOT/USDT:USDT",  "INJ/USDT:USDT",
+    "PENGU/USDT:USDT","CHZ/USDT:USDT",  "ICP/USDT:USDT",  "ORDI/USDT:USDT",
+    "HMSTR/USDT:USDT","CRV/USDT:USDT",  "OP/USDT:USDT",   "APT/USDT:USDT",
+    "SHIB/USDT:USDT", "ZRO/USDT:USDT",  "GRASS/USDT:USDT","FARTCOIN/USDT:USDT",
+    "TRX/USDT:USDT",  "TIA/USDT:USDT",  "ARB/USDT:USDT",  "HBAR/USDT:USDT",
+    "VIRTUAL/USDT:USDT","ETC/USDT:USDT","RENDER/USDT:USDT","GALA/USDT:USDT",
+    "MEME/USDT:USDT", "MOVE/USDT:USDT", "JUP/USDT:USDT",  "WIF/USDT:USDT",
+    "STRK/USDT:USDT", "ETHFI/USDT:USDT",
+];
+
+export const VALID_SYMBOLS = [
+    "BONK/USDT:USDT", "SUSHI/USDT:USDT","NOT/USDT:USDT",  "LDO/USDT:USDT",
+    "ALGO/USDT:USDT", "ATOM/USDT:USDT", "DYDX/USDT:USDT", "AXS/USDT:USDT",
+    "ENJ/USDT:USDT",  "UMA/USDT:USDT",  "EIGEN/USDT:USDT","AR/USDT:USDT",
+    "POL/USDT:USDT",  "CFX/USDT:USDT",  "MOODENG/USDT:USDT","W/USDT:USDT",
+    "PYTH/USDT:USDT", "CORE/USDT:USDT", "TRB/USDT:USDT",  "ATH/USDT:USDT",
+    "ARKM/USDT:USDT", "ENS/USDT:USDT",  "PEOPLE/USDT:USDT","PNUT/USDT:USDT",
+    "EGLD/USDT:USDT",
+];
+
+export const ALL_SYMBOLS = [...TRAIN_SYMBOLS, ...VALID_SYMBOLS];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function symbolToInstId(symbol) {
+    const [base, rest] = symbol.split("/");
+    return `${base}-${rest.split(":")[0]}-SWAP`;
+}
+
+function outPath(instId, year) {
+    return join(DATA_DIR, `${instId}_${year}_1m.parquet`);
+}
+
+/**
+ * Download 1 m candles for one symbol and write to parquet (atomic via tmp).
+ * Returns {symbol, instId, rows, skipped, error}.
+ */
+async function fetchOne(symbol, year, requestDelayMs) {
+    const instId = symbolToInstId(symbol);
+    const dest   = outPath(instId, year);
+
+    if (existsSync(dest)) {
+        return { symbol, instId, rows: 0, skipped: true };
+    }
+
+    const client = new OkxClient({}, { verbose: false });
+    try {
+        await client.init(symbol);
+
+        const from  = new Date(`${year}-01-01T00:00:00.000Z`).getTime();
+        const to    = new Date(`${year}-12-31T23:59:59.999Z`).getTime();
+
+        const candles = await client.fetchHistory({
+            symbol,
+            timeframe: "1m",
+            since:  from,
+            until:  to,
+            limit:  100,
+            requestDelayMs,
+        });
+
+        if (candles.length === 0) {
+            return { symbol, instId, rows: 0, skipped: false, error: "no candles returned" };
+        }
+
+        const market = client.market;
+        const contractSize = Number(market?.contractSize) || 1;
+        const lot = (Number(market?.precision?.amount) || 1) * contractSize;
+
+        const metadata = {
+            source:    "okx",
+            schemaVersion: 1,
+            instrument: {
+                ticker: symbol, symbol, name: market?.id || symbol,
+                exchange: "OKX", lot, contractSize,
+                currency: market?.quote || "USDT",
+            },
+            ticker: symbol, symbol, exchange: "OKX",
+            interval: "1m", intervalLabel: "1m", intervalMinutes: 1,
+            fromDate: `${year}-01-01`, tillDate: `${year}-12-31`,
+            timezone: "UTC",
+        };
+
+        const tmp = `${dest}.tmp${process.pid}`;
+        const buf = await writeCandleRecordsAsParquet(candles, null, metadata);
+        await writeFile(tmp, buf);
+        await rename(tmp, dest);
+
+        return { symbol, instId, rows: candles.length, skipped: false };
+    } finally {
+        await client.close();
+    }
+}
+
+// ── Concurrency pool ──────────────────────────────────────────────────────────
+
+async function runPool(tasks, concurrency, onDone) {
+    const queue = [...tasks];
+    let running = 0;
+    let done    = 0;
+    const results = [];
+
+    await new Promise((resolve) => {
+        function next() {
+            while (running < concurrency && queue.length > 0) {
+                const task = queue.shift();
+                running++;
+                task().then((result) => {
+                    running--;
+                    done++;
+                    results.push(result);
+                    onDone(result, done, tasks.length);
+                    next();
+                    if (done === tasks.length) resolve();
+                }).catch((err) => {
+                    running--;
+                    done++;
+                    results.push({ error: err?.message || String(err) });
+                    onDone({ error: err?.message || String(err) }, done, tasks.length);
+                    next();
+                    if (done === tasks.length) resolve();
+                });
+            }
+        }
+        next();
+        if (tasks.length === 0) resolve();
+    });
+
+    return results;
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+async function main() {
+    const program = new Command();
+    program
+        .name("fetch-okx-batch")
+        .description("Batch-download 1 m OKX perp candles for the full OKX strategy ticker list")
+        .option("--year <year>", "Calendar year to download", "2025")
+        .option("--concurrency <n>", "Parallel tickers", "5")
+        .option("--request-delay-ms <ms>", "Delay between candle API calls per ticker", "200")
+        .option("--only <symbols>", "Comma-separated subset of symbols (overrides full list)")
+        .option("--skip <symbols>", "Comma-separated symbols to skip (e.g. already done)")
+        .option("--set <set>", "Subset to download: all | train | valid", "all");
+
+    program.parse();
+    const opts = program.opts();
+
+    const year        = parseInt(opts.year, 10);
+    const concurrency = Math.max(1, parseInt(opts.concurrency, 10) || 5);
+    const delayMs     = Math.max(0, parseInt(opts.requestDelayMs, 10) || 200);
+
+    let symbols = opts.only
+        ? opts.only.split(",").map((s) => s.trim()).filter(Boolean)
+        : opts.set === "train" ? TRAIN_SYMBOLS
+        : opts.set === "valid" ? VALID_SYMBOLS
+        : ALL_SYMBOLS;
+
+    if (opts.skip) {
+        const skipSet = new Set(opts.skip.split(",").map((s) => s.trim()));
+        symbols = symbols.filter((s) => !skipSet.has(s));
+    }
+
+    console.log(`Downloading ${symbols.length} ticker(s) for ${year}`);
+    console.log(`Concurrency: ${concurrency}  delay: ${delayMs} ms/call`);
+    console.log(`Output dir : ${DATA_DIR}\n`);
+
+    const started = Date.now();
+    const tasks = symbols.map((sym) => () => fetchOne(sym, year, delayMs));
+
+    const results = await runPool(tasks, concurrency, (result, done, total) => {
+        const elapsedSec = (Date.now() - started) / 1000;
+        const etaSec = done < total ? (elapsedSec / done) * (total - done) : 0;
+        const etaMin = (etaSec / 60).toFixed(0);
+        if (result.error) {
+            console.error(`[${done}/${total}] ✗ ${result.symbol ?? "?"}: ${result.error}  (ETA ~${etaMin}m)`);
+        } else if (result.skipped) {
+            console.log(`[${done}/${total}] ↩ ${result.instId}  skipped (file exists)`);
+        } else {
+            console.log(`[${done}/${total}] ✓ ${result.instId}  ${result.rows.toLocaleString()} rows  (ETA ~${etaMin}m)`);
+        }
+    });
+
+    const ok      = results.filter((r) => !r.error && !r.skipped).length;
+    const skipped = results.filter((r) => r.skipped).length;
+    const errors  = results.filter((r) => r.error);
+
+    console.log(`\nDone: ${ok} downloaded, ${skipped} skipped, ${errors.length} errors`);
+    if (errors.length) {
+        console.error("Errors:");
+        errors.forEach((r) => console.error(`  ${r.symbol ?? "?"}: ${r.error}`));
+    }
+    const mins = ((Date.now() - started) / 60000).toFixed(1);
+    console.log(`Total time: ${mins} min`);
+}
+
+main().catch((e) => { console.error(e?.message || e); process.exit(1); });

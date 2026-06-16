@@ -9,6 +9,7 @@
     "diviner-fetch": "./src/fetch.js",
     "diviner-fetch-okx": "./src/fetch-okx.js",
     "diviner-fetch-okx-metrics": "./src/fetch-okx-metrics.js",
+    "diviner-fetch-okx-batch": "./src/fetch-okx-batch.js",
     "diviner-convert": "./src/convert.js"
   },
   "scripts": {
@@ -16,6 +17,7 @@
     "fetch": "node src/fetch.js",
     "fetch-okx": "node src/fetch-okx.js",
     "fetch-okx-metrics": "node src/fetch-okx-metrics.js",
+    "fetch-okx-batch": "node src/fetch-okx-batch.js",
     "convert": "node src/convert.js",
     "test": "node --test"
   },

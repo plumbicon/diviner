@@ -15,8 +15,11 @@ Key design decisions:
     1440m rows feed the daily context.
   - Inter-day features (prev day return, day of week, avg range, 5-day trend)
 
-A05 strategy uses the model as confidence filter ON TOP of the A02 gap-up condition:
-  profitPct > minProfitPct  AND  model.predict() ≥ threshold
+A05 strategy uses the model as the SOLE entry filter in the morning window:
+  model.predict() ≥ threshold
+Unlike A01–A04, A05 has NO fixed gap pre-filter (no profitPct > minProfitPct
+gate). The gap itself enters the model as the continuous `close_pct` feature, so
+the model learns which gaps are worth trading instead of a hardcoded cutoff.
 
 Inputs:  data/<TICKER>_2025_1m.parquet
 Outputs: ml/model.txt  +  ml/predictions_2025.json

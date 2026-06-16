@@ -7,11 +7,13 @@
   "bin": {
     "diviner": "./src/diviner.js",
     "diviner-fetch": "./src/fetch.js",
+    "diviner-fetch-okx": "./src/fetch-okx.js",
     "diviner-convert": "./src/convert.js"
   },
   "scripts": {
     "start": "node src/diviner.js",
     "fetch": "node src/fetch.js",
+    "fetch-okx": "node src/fetch-okx.js",
     "convert": "node src/convert.js",
     "test": "node --test"
   },
@@ -26,6 +28,7 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.11.0",
     "@dsnp/parquetjs": "^1.8.7",
+    "ccxt": "^4.5.58",
     "commander": "^12.0.0",
     "date-fns": "^3.0.0",
     "tinkoff-invest-api": "^7.0.1"

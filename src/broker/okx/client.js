@@ -271,10 +271,22 @@ export class OkxClient {
 
         while (cursor < until) {
             let batch;
-            try {
-                batch = await this.exchange.fetchOHLCV(symbol, timeframe, cursor, limit);
-            } catch (error) {
-                throw new Error(`OKX fetchOHLCV failed at ${new Date(cursor).toISOString()}: ${error?.message || error}`);
+            let fetchErr;
+            for (let attempt = 0; attempt <= this.orderRetries; attempt++) {
+                try {
+                    batch = await this.exchange.fetchOHLCV(symbol, timeframe, cursor, limit);
+                    fetchErr = null;
+                    break;
+                } catch (error) {
+                    fetchErr = error;
+                    if (!this._isRetryable(error) || attempt >= this.orderRetries) break;
+                    const delay = this.orderRetryDelayMs * 2 ** attempt;
+                    console.warn(`[OkxClient] fetchOHLCV at ${new Date(cursor).toISOString()} attempt ${attempt + 1} failed (${error?.message || error}); retrying in ${delay}ms.`);
+                    await this._sleep(delay);
+                }
+            }
+            if (fetchErr) {
+                throw new Error(`OKX fetchOHLCV failed at ${new Date(cursor).toISOString()}: ${fetchErr?.message || fetchErr}`);
             }
             if (!Array.isArray(batch) || batch.length === 0) {
                 break;

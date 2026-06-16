@@ -81,7 +81,12 @@ async function fetchOne(symbol, year, requestDelayMs) {
         return { symbol, instId, rows: 0, skipped: true };
     }
 
-    const client = new OkxClient({}, { verbose: false });
+    const client = new OkxClient({}, {
+        verbose: false,
+        timeoutMs: 60000,       // generous timeout for historical bulk fetches
+        orderRetries: 5,        // retry transient network failures
+        orderRetryDelayMs: 2000,
+    });
     try {
         await client.init(symbol);
 
@@ -141,9 +146,9 @@ async function runPool(tasks, concurrency, onDone) {
     await new Promise((resolve) => {
         function next() {
             while (running < concurrency && queue.length > 0) {
-                const task = queue.shift();
+                const { symbol, fn } = queue.shift();
                 running++;
-                task().then((result) => {
+                fn().then((result) => {
                     running--;
                     done++;
                     results.push(result);
@@ -153,8 +158,9 @@ async function runPool(tasks, concurrency, onDone) {
                 }).catch((err) => {
                     running--;
                     done++;
-                    results.push({ error: err?.message || String(err) });
-                    onDone({ error: err?.message || String(err) }, done, tasks.length);
+                    const result = { symbol, error: err?.message || String(err) };
+                    results.push(result);
+                    onDone(result, done, tasks.length);
                     next();
                     if (done === tasks.length) resolve();
                 });
@@ -204,7 +210,7 @@ async function main() {
     console.log(`Output dir : ${DATA_DIR}\n`);
 
     const started = Date.now();
-    const tasks = symbols.map((sym) => () => fetchOne(sym, year, delayMs));
+    const tasks = symbols.map((sym) => ({ symbol: sym, fn: () => fetchOne(sym, year, delayMs) }));
 
     const results = await runPool(tasks, concurrency, (result, done, total) => {
         const elapsedSec = (Date.now() - started) / 1000;

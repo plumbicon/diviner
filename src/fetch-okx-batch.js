@@ -69,14 +69,21 @@ function symbolToInstId(symbol) {
     return `${base}-${rest.split(":")[0]}-SWAP`;
 }
 
+// Intraday timeframe used for signal candles.
+// 5m: 5× fewer API calls than 1m (1 052 vs 5 256 per year), identical model
+// quality since train_okx.py fires a signal every bar anyway.
+const INTRADAY_TF      = "5m";
+const INTRADAY_MINUTES = 5;
+const INTRADAY_LABEL   = "5m";
+
 function outPath(instId, year) {
-    return join(DATA_DIR, `${instId}_${year}_1m.parquet`);
+    return join(DATA_DIR, `${instId}_${year}_${INTRADAY_LABEL}.parquet`);
 }
 
 /**
- * Download 1m + 1D candles for one symbol and write a merged multi-interval
+ * Download 5m + 1D candles for one symbol and write a merged multi-interval
  * parquet (same format as MOEX multi-interval files).
- * Returns {symbol, instId, rows1m, rows1d, skipped, error}.
+ * Returns {symbol, instId, rows5m, rows1d, skipped, error}.
  */
 async function fetchOne(symbol, year, requestDelayMs) {
     const instId = symbolToInstId(symbol);
@@ -98,16 +105,16 @@ async function fetchOne(symbol, year, requestDelayMs) {
         const from = new Date(`${year}-01-01T00:00:00.000Z`).getTime();
         const to   = new Date(`${year}-12-31T23:59:59.999Z`).getTime();
 
-        // 1m candles — bulk of the work (~5 000 API calls per ticker per year)
-        const candles1m = await client.fetchHistory({
-            symbol, timeframe: "1m",
+        // 5m intraday candles — ~1 052 API calls per ticker per year
+        const candles5m = await client.fetchHistory({
+            symbol, timeframe: INTRADAY_TF,
             since: from, until: to, limit: 100, requestDelayMs,
         });
-        if (candles1m.length === 0) {
-            return { symbol, instId, rows1m: 0, rows1d: 0, skipped: false, error: "no 1m candles returned" };
+        if (candles5m.length === 0) {
+            return { symbol, instId, rows5m: 0, rows1d: 0, skipped: false, error: `no ${INTRADAY_TF} candles returned` };
         }
 
-        // 1D candles — only ~4 API calls, fetched after 1m to avoid rate pressure
+        // 1D candles — only ~4 API calls; provides official daily close for prevClose
         const candles1d = await client.fetchHistory({
             symbol, timeframe: "1d",
             since: from, until: to, limit: 100, requestDelayMs: 200,
@@ -125,17 +132,18 @@ async function fetchOne(symbol, year, requestDelayMs) {
                 currency: market?.quote || "USDT",
             },
             ticker: symbol, symbol, exchange: "OKX",
-            // Base interval is 1m; both intervals are listed in `intervals`
-            interval: "1m", intervalLabel: "1m", intervalMinutes: 1,
-            intervals: [{ minutes: 1, label: "1m" }, { minutes: 1440, label: "1d" }],
+            interval: INTRADAY_LABEL, intervalLabel: INTRADAY_LABEL, intervalMinutes: INTRADAY_MINUTES,
+            intervals: [
+                { minutes: INTRADAY_MINUTES, label: INTRADAY_LABEL },
+                { minutes: 1440, label: "1d" },
+            ],
             fromDate: `${year}-01-01`, tillDate: `${year}-12-31`,
             timezone: "UTC",
         };
 
-        // Merge into a single parquet, keyed by intervalMinutes
         const seriesByMinutes = new Map([
-            [1,    candles1m],
-            [1440, candles1d],
+            [INTRADAY_MINUTES, candles5m],
+            [1440,             candles1d],
         ]);
 
         const tmp = `${dest}.tmp${process.pid}`;
@@ -143,7 +151,7 @@ async function fetchOne(symbol, year, requestDelayMs) {
         await writeFile(tmp, buf);
         await rename(tmp, dest);
 
-        return { symbol, instId, rows1m: candles1m.length, rows1d: candles1d.length, skipped: false };
+        return { symbol, instId, rows5m: candles5m.length, rows1d: candles1d.length, skipped: false };
     } finally {
         await client.close();
     }
@@ -235,7 +243,7 @@ async function main() {
         } else if (result.skipped) {
             console.log(`[${done}/${total}] ↩ ${result.instId}  skipped (file exists)`);
         } else {
-            console.log(`[${done}/${total}] ✓ ${result.instId}  1m=${result.rows1m?.toLocaleString()} 1d=${result.rows1d}  (ETA ~${etaMin}m)`);
+            console.log(`[${done}/${total}] ✓ ${result.instId}  5m=${result.rows5m?.toLocaleString()} 1d=${result.rows1d}  (ETA ~${etaMin}m)`);
         }
     });
 

@@ -38,10 +38,13 @@ from sklearn.metrics import classification_report, roc_auc_score
 TP_PCT = 0.005   # 0.5% short profit target
 SL_PCT = 0.010   # 1.0% short stop loss
 
-# Signal fires every SIGNAL_STEP 1m bars within the UTC day, but not before
-# SIGNAL_MIN_BAR (gives lag/momentum features time to fill).
-SIGNAL_STEP    = 5    # sample every 5 minutes — reduces dataset to ~288 pts/day
-SIGNAL_MIN_BAR = 15   # skip first 15 bars (need lag history)
+# Intraday timeframe: 5m candles (matches fetch-okx-batch.js INTRADAY_TF).
+# Signal fires on every bar starting from SIGNAL_MIN_BAR, giving ~285 signals
+# per day (same effective granularity as 1m with SIGNAL_STEP=5).
+INTRADAY_MINUTES = 5
+INTRADAY_LABEL   = "5m"
+SIGNAL_STEP    = 1    # every 5m bar is a potential signal
+SIGNAL_MIN_BAR = 3    # skip first 3 bars (15 min) to fill lag/momentum buffers
 
 LAG_N          = 10   # number of lagged-close features
 
@@ -105,7 +108,7 @@ def symbol_to_inst_id(symbol):
 
 
 def data_path(symbol, year=YEAR):
-    return DATA_DIR / f"{symbol_to_inst_id(symbol)}_{year}_1m.parquet"
+    return DATA_DIR / f"{symbol_to_inst_id(symbol)}_{year}_{INTRADAY_LABEL}.parquet"
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -128,7 +131,7 @@ def load_symbol(symbol, year=YEAR):
 
     if "interval" in raw.columns:
         daily_raw = raw[raw["interval"] == 1440].copy()
-        df        = raw[(raw["interval"] == 1) | (raw["interval"].isna())].copy()
+        df        = raw[(raw["interval"] == INTRADAY_MINUTES) | (raw["interval"].isna())].copy()
     else:
         daily_raw = None
         df        = raw.copy()

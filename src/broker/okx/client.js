@@ -31,7 +31,12 @@ export class OkxClient {
             // Default ccxt timeout (10s) is tight for loadMarkets (it fans out over
             // several instrument-type endpoints) on slower links; 30s is safer.
             timeout: Number(options.timeoutMs) || 30000,
-            options: { defaultType: "swap" },
+            options: {
+                defaultType: "swap",
+                // Only load swap + spot markets; skip options (fans out per
+                // underlying and frequently times out on flaky networks).
+                fetchMarkets: ["spot", "swap", "future"],
+            },
         });
         if (options.demo) {
             // OKX demo trading: routes REST + WS to the demo environment. Requires

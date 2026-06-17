@@ -35,8 +35,8 @@ from sklearn.metrics import classification_report, roc_auc_score
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-TP_PCT = 0.005   # 0.5% short profit target
-SL_PCT = 0.010   # 1.0% short stop loss
+TP_PCT = 0.007   # 0.7% short profit target  (~2× median 1h drop across OKX perps)
+SL_PCT = 0.010   # 1.0% short stop loss    (needs 62% precision to break even after fees)
 
 # Intraday timeframe: 5m candles (matches fetch-okx-batch.js INTRADAY_TF).
 # Signal fires on every bar starting from SIGNAL_MIN_BAR, giving ~285 signals

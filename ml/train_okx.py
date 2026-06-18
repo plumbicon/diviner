@@ -3,12 +3,13 @@
 Train LightGBM to predict profitable SHORT entries on OKX perpetual swaps (A06).
 
 Key design:
-  - 24/7 trading — no time-of-day filter; model learns temporal patterns itself
-  - Features: current bar (vs prevClose) + 5-hour rolling window of normalised
-    candles (60 × 5m × OHLCV) + inter-day context (5-day trend)
-  - Rolling window crosses UTC-midnight freely (not session-bound)
-  - Label: TP (−0.7%) before SL (+1.0%) within LABEL_HORIZON bars (24 h)
-  - prevClose: official 1D candle close (mirrors A05 daily-auction source)
+  - Features: last 24 × 5m bars (2h) + 30 daily candles = 270 total.
+    OHLC normalised by prevClose; 5m volume log1p(vol/prevAvgVol);
+    daily volume log1p(vol/avgDayVol).
+  - Label: TP (−0.7%) before SL (+1.0%) within LABEL_HORIZON=96 bars (8h)
+    → matches actual trade duration.
+  - Training: 24/7 (all bars); entry window applied only at inference/backtest.
+  - prevClose: official 1D candle close.
 
 Inputs:  data/okx/<INST>_2025_5m.parquet  (1D rows tagged interval=1440)
 Outputs: ml/model_okx.txt  +  ml/predictions_okx_2025.json
@@ -25,15 +26,27 @@ from sklearn.metrics import classification_report, roc_auc_score
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-TP_PCT = 0.007   # 0.7% short profit target  (~2× median 1h drop across OKX perps)
-SL_PCT = 0.010   # 1.0% short stop loss      (break-even at ~62% precision after fees)
+TP_PCT = 0.007   # 0.7% short take-profit
+SL_PCT = 0.010   # 1.0% short stop-loss
 
 INTRADAY_MINUTES = 5
 INTRADAY_LABEL   = "5m"
 
-LOOKBACK       = 60    # rolling history window: 60 × 5m = 5 hours
-LABEL_HORIZON  = 288   # max bars to check TP/SL: 288 × 5m = 24 hours
-SIGNAL_STEP    = 1     # sample every bar (reduce to 3-5 if RAM is tight)
+LOOKBACK_5M   = 24   # last 24 × 5m bars = 2 hours (unique feature per bar)
+LOOKBACK_1D   = 30   # last 30 daily candles
+LABEL_HORIZON = 96   # 96 × 5m = 8h — matches actual trade duration
+SIGNAL_STEP   = 2    # sample every 2nd bar (24/7 training)
+
+# ── Entry time window ────────────────────────────────────────────────────────
+# 24/7 trading (no time filter) → ENTRY_UTC_HOUR_START=0, END=24.
+# (Morning-window variant: START=7, END=11 = 03:00–07:00 NY EDT.)
+ENTRY_UTC_HOUR_START = 0    # 00:00 UTC inclusive
+ENTRY_UTC_HOUR_END   = 24   # 24:00 UTC exclusive  (→ all hours, 24/7)
+
+# If True, training samples are restricted to the entry window (like A05).
+# Window-only training overfits badly on crypto perps (+726% in-sample 2025 but
+# −14.4% out-of-sample 2026); 24/7 generalises far better. Keep False.
+TRAIN_WINDOW_ONLY = False
 
 # ── Ticker lists ──────────────────────────────────────────────────────────────
 
@@ -69,22 +82,37 @@ YEAR         = 2025
 TRAIN_CUTOFF = pd.Timestamp("2025-10-01", tz="UTC")
 
 # ── Feature names ─────────────────────────────────────────────────────────────
-# 18 scalar features + 60 × 5 rolling-window features = 318 total.
-# Rolling features: p{n}_{f} = bar n steps ago, field f (o/h/l/c/v).
-# OHLC normalised by current close; volume = log1p(vol / prev_day_avg_vol).
+# m{n}_* : 5m bar n steps back (n=1 newest … n=24 = 2h ago), normalised by prevClose
+# d{n}_* : daily bar n days back (n=1=yesterday … n=30), normalised by prevClose
 
-_SCALAR = [
-    # Current bar vs prevClose
-    "open_pct", "high_pct", "low_pct", "close_pct",
-    "body_pct", "upper_wick", "lower_wick", "log_volume",
-    # Time-of-day (fraction of UTC day, 0→1) + day of week
-    "session_elapsed_frac", "day_of_week",
-    # Inter-day context (prevClose + 5-day trend)
-    "prev_day_return", "prev_day_range",
-    "ret_d2", "ret_d3", "ret_d4", "ret_d5", "trend_5d", "vol_5d",
-]
-_ROLL = [f"p{n}_{f}" for n in range(1, LOOKBACK + 1) for f in ("o", "h", "l", "c", "v")]
-FEATURE_NAMES = _SCALAR + _ROLL   # 18 + 300 = 318
+_ROLL_5M = [f"m{n}_{f}" for n in range(1, LOOKBACK_5M + 1) for f in ("o", "h", "l", "c", "v")]
+_ROLL_1D = [f"d{n}_{f}" for n in range(1, LOOKBACK_1D + 1) for f in ("o", "h", "l", "c", "v")]
+FEATURE_NAMES = _ROLL_5M + _ROLL_1D   # 120 + 150 = 270
+
+BASE_1D = LOOKBACK_5M * 5   # = 120 — start of daily block in feature vector
+
+# ── Feature subset (ablation) ──────────────────────────────────────────────────
+# Build assembles the full 270-feature layout; KEEP_IDX selects the subset fed to
+# the model (applied in build_dataset and backtest alike). "full" = all 270.
+# Pruning to "important" features keeps AUC (~0.520) but breaks the trading-
+# threshold precision (full=71.4% vs vol_lh_m1=63.3% prec@t=0.65) — keep "full".
+FEATURE_SET = "full"
+
+def _select_feature_indices(set_name):
+    if set_name == "full":
+        return None, list(FEATURE_NAMES)
+    if set_name == "vol_m1":
+        idx = [i for i, nm in enumerate(FEATURE_NAMES)
+               if (nm[0] == "d" and nm.endswith("_v")) or nm.startswith("m1_")]
+        return idx, [FEATURE_NAMES[i] for i in idx]
+    if set_name == "vol_lh_m1":
+        idx = [i for i, nm in enumerate(FEATURE_NAMES)
+               if (nm[0] == "d" and nm.endswith(("_v", "_l", "_h")))
+               or nm.startswith("m1_")]
+        return idx, [FEATURE_NAMES[i] for i in idx]
+    raise ValueError(f"unknown FEATURE_SET: {set_name}")
+
+KEEP_IDX, USED_FEATURE_NAMES = _select_feature_indices(FEATURE_SET)
 
 # ── Symbol → file ─────────────────────────────────────────────────────────────
 
@@ -119,7 +147,6 @@ def load_symbol(symbol, year=YEAR):
 
     df["datetime"] = _ensure_utc(df["datetime"])
     df = df.sort_values("datetime").reset_index(drop=True)
-    df["utc_min"]  = df["datetime"].dt.hour * 60 + df["datetime"].dt.minute
     df["utc_date"] = df["datetime"].dt.normalize().dt.tz_localize(None)
 
     daily_df = None
@@ -134,67 +161,96 @@ def load_symbol(symbol, year=YEAR):
 
 
 def build_official_daily(daily_df):
+    """Official 1D OHLCV keyed by utc_date."""
     if daily_df is None or len(daily_df) == 0:
         return {}
-    return {r["utc_date"]: {"close": float(r["close"]), "high": float(r["high"]), "low": float(r["low"])}
-            for _, r in daily_df.iterrows()}
+    return {
+        r["utc_date"]: {
+            "open":   float(r["open"]),
+            "high":   float(r["high"]),
+            "low":    float(r["low"]),
+            "close":  float(r["close"]),
+            "volume": float(r["volume"]),
+        }
+        for _, r in daily_df.iterrows()
+    }
 
 
 def build_daily_stats(df, official=None):
-    """Per-UTC-day context dict (prevClose, prevReturn, prevRange, day_closes, …)."""
-    official      = official or {}
-    daily_last    = df.groupby("utc_date", sort=True)["close"].last()
-    daily_high    = df.groupby("utc_date", sort=True)["high"].max()
-    daily_low     = df.groupby("utc_date", sort=True)["low"].min()
-    daily_avg_vol = df.groupby("utc_date", sort=True)["volume"].mean()
-    dates = list(daily_last.index)
-    result = {}
+    """
+    Per-UTC-day context dict.
 
-    def off_close(date, fallback):
-        rec = official.get(date)
-        return rec["close"] if rec else fallback
+    Keys per date D:
+      prevClose   – D-1 official close (normalisation anchor)
+      prevAvgVol  – D-1 average 5m bar volume
+      avgDayVol   – rolling 10-day mean of total daily volume
+      daily_bars  – list of up to LOOKBACK_1D (o,h,l,c,v) tuples, newest first
+    """
+    official = official or {}
+
+    daily_last       = df.groupby("utc_date", sort=True)["close"].last()
+    daily_high       = df.groupby("utc_date", sort=True)["high"].max()
+    daily_low        = df.groupby("utc_date", sort=True)["low"].min()
+    daily_avg_vol    = df.groupby("utc_date", sort=True)["volume"].mean()
+    daily_total_vol  = df.groupby("utc_date", sort=True)["volume"].sum()
+    daily_first_open = df.groupby("utc_date", sort=True)["open"].first()
+
+    dates  = list(daily_last.index)
+    result = {}
 
     for i, date in enumerate(dates):
         if i == 0:
             continue
-        prev = dates[i - 1]
-        off_prev   = official.get(prev)
-        prev_close = off_prev["close"] if off_prev else float(daily_last.iloc[i - 1])
-        prev_high  = off_prev["high"]  if off_prev else float(daily_high.iloc[i - 1])
-        prev_low   = off_prev["low"]   if off_prev else float(daily_low.iloc[i - 1])
+
+        prev     = dates[i - 1]
+        off_prev = official.get(prev)
+
+        prev_close = float(off_prev["close"]) if off_prev else float(daily_last.iloc[i - 1])
         prev_avg   = float(daily_avg_vol.get(prev, 1.0)) or 1.0
 
-        prev2_fallback = float(daily_last.iloc[i - 2]) if i >= 2 else prev_close
-        prev2_c = off_close(dates[i - 2], prev2_fallback) if i >= 2 else prev_close
-        prev_return = (prev_close - prev2_c) / prev2_c if prev2_c > 0 else 0.0
-        prev_range  = (prev_high - prev_low) / prev_close if prev_close > 0 else 0.0
+        lb = min(10, i)
+        avg_day_vol = float(np.mean([float(daily_total_vol.iloc[i - k])
+                                     for k in range(1, lb + 1)])) or 1.0
 
-        lookback   = min(7, i)
-        day_closes = list(daily_last.iloc[i - lookback: i].values)
+        daily_bars = []
+        for k in range(1, LOOKBACK_1D + 1):
+            if i - k >= 0:
+                d_k   = dates[i - k]
+                off_k = official.get(d_k)
+                if off_k:
+                    daily_bars.append((
+                        off_k["open"], off_k["high"], off_k["low"],
+                        off_k["close"], off_k["volume"],
+                    ))
+                else:
+                    o_k = float(daily_first_open.get(d_k, prev_close))
+                    h_k = float(daily_high.get(d_k, prev_close))
+                    l_k = float(daily_low.get(d_k, prev_close))
+                    c_k = float(daily_last.get(d_k, prev_close))
+                    v_k = float(daily_total_vol.get(d_k, avg_day_vol))
+                    daily_bars.append((o_k, h_k, l_k, c_k, v_k))
+            else:
+                daily_bars.append(None)
 
         result[date] = {
             "prevClose":  prev_close,
-            "prevReturn": prev_return,
-            "prevRange":  prev_range,
             "prevAvgVol": prev_avg,
-            "dow":        pd.Timestamp(date).dayofweek,
-            "day_closes": day_closes,
+            "avgDayVol":  avg_day_vol,
+            "daily_bars": daily_bars,
         }
+
     return result
 
 
 # ── Label ─────────────────────────────────────────────────────────────────────
 
 def compute_label(closes, entry_pos, total_n):
-    """
-    1 if SHORT hits TP (−TP_PCT) before SL (+SL_PCT) within LABEL_HORIZON bars.
-    Checks across UTC-day boundaries (closes is the full ticker array).
-    """
+    """1 if SHORT hits TP (−TP_PCT) before SL (+SL_PCT) within LABEL_HORIZON bars."""
     ec = closes[entry_pos]
     if ec <= 0:
         return 0
-    tp = ec * (1 - TP_PCT)
-    sl = ec * (1 + SL_PCT)
+    tp  = ec * (1 - TP_PCT)
+    sl  = ec * (1 + SL_PCT)
     end = min(entry_pos + 1 + LABEL_HORIZON, total_n)
     for j in range(entry_pos + 1, end):
         if closes[j] <= tp:
@@ -208,13 +264,10 @@ def compute_label(closes, entry_pos, total_n):
 
 def build_dataset(symbols):
     """
-    Sequential pass over every ticker's full bar array.
+    Build feature matrix for the given symbols.
 
-    Rolling-window features (p1..p60) look back across UTC-midnight freely —
-    no session-boundary reset. Label also checks across midnight up to 24 h.
-
-    Memory note: 318 features × float32 × ~5 M samples ≈ 6 GB. Reduce
-    SIGNAL_STEP to 3–5 to cut RAM proportionally without losing much signal.
+    Feature layout: 24×5m + 30×1D = 270. All OHLC normalised by prevClose;
+    5m volume log1p(vol/prevAvgVol); daily volume log1p(vol/avgDayVol).
     """
     feat_chunks, y_chunks, ts_chunks, tid_chunks = [], [], [], []
     ticker_names = []
@@ -227,29 +280,34 @@ def build_dataset(symbols):
             continue
 
         df, daily_df = load_symbol(symbol)
-        official    = build_official_daily(daily_df)
-        daily_stats = build_daily_stats(df, official)
+        official     = build_official_daily(daily_df)
+        daily_stats  = build_daily_stats(df, official)
 
-        # Pull numpy arrays once for speed
         opens   = df["open"].values.astype(np.float64)
         highs   = df["high"].values.astype(np.float64)
         lows    = df["low"].values.astype(np.float64)
         closes  = df["close"].values.astype(np.float64)
         volumes = df["volume"].values.astype(np.float64)
-        utc_min = df["utc_min"].values
-        utc_date = df["utc_date"].values
         dts_ns  = df["datetime"].values.astype("datetime64[ns]").astype("int64")
         n = len(closes)
 
-        # Valid range: need LOOKBACK history before and LABEL_HORIZON future after
-        start = LOOKBACK
+        bar_info  = [daily_stats.get(d) for d in df["utc_date"]]
+        utc_hours = df["datetime"].dt.hour.values
+
+        start = LOOKBACK_5M   # need LOOKBACK_5M bars of 5m history
         end   = n - LABEL_HORIZON
 
-        # Collect valid indices first (fast pass)
-        idxs = []
-        for i in range(start, end, SIGNAL_STEP):
-            if closes[i] > 0 and daily_stats.get(utc_date[i]) is not None:
-                idxs.append(i)
+        if TRAIN_WINDOW_ONLY:
+            idxs = [
+                i for i in range(start, end, SIGNAL_STEP)
+                if closes[i] > 0 and bar_info[i] is not None
+                and ENTRY_UTC_HOUR_START <= utc_hours[i] < ENTRY_UTC_HOUR_END
+            ]
+        else:
+            idxs = [
+                i for i in range(start, end, SIGNAL_STEP)
+                if closes[i] > 0 and bar_info[i] is not None
+            ]
 
         if not idxs:
             print(f"  {symbol}: 0 samples", flush=True)
@@ -261,56 +319,43 @@ def build_dataset(symbols):
         tc = np.zeros(Ni, dtype=np.int64)
 
         for j, i in enumerate(idxs):
-            info = daily_stats[utc_date[i]]
+            info = bar_info[i]
             pc   = info["prevClose"]
             pavv = info["prevAvgVol"] or 1.0
-            c, o, h, l, v = closes[i], opens[i], highs[i], lows[i], volumes[i]
+            adv  = info["avgDayVol"]  or 1.0
 
-            # ── Scalar features (indices 0–17) ──────────────────────────────
-            Xc[j, 0]  = (o - pc) / pc                    # open_pct
-            Xc[j, 1]  = (h - pc) / pc                    # high_pct
-            Xc[j, 2]  = (l - pc) / pc                    # low_pct
-            Xc[j, 3]  = (c - pc) / pc                    # close_pct
-            Xc[j, 4]  = (c - o) / pc                     # body_pct
-            Xc[j, 5]  = (h - max(o, c)) / pc             # upper_wick
-            Xc[j, 6]  = (min(o, c) - l) / pc             # lower_wick
-            Xc[j, 7]  = np.log1p(v / pavv)               # log_volume
-            Xc[j, 8]  = utc_min[i] / 1440.0              # session_elapsed_frac
-            Xc[j, 9]  = info["dow"]                       # day_of_week
-            Xc[j, 10] = info["prevReturn"]                # prev_day_return
-            Xc[j, 11] = info["prevRange"]                 # prev_day_range
+            # ── 5m rolling window (indices 0 … 119): newest-first ────────────
+            win_o = opens  [i - LOOKBACK_5M:i][::-1]
+            win_h = highs  [i - LOOKBACK_5M:i][::-1]
+            win_l = lows   [i - LOOKBACK_5M:i][::-1]
+            win_c = closes [i - LOOKBACK_5M:i][::-1]
+            win_v = volumes[i - LOOKBACK_5M:i][::-1]
 
-            dc = info["day_closes"]
-            def dret(k):
-                return (dc[-k] - dc[-k-1]) / dc[-k-1] if len(dc) >= k+1 and dc[-k-1] > 0 else 0.0
+            if pc > 0:
+                Xc[j, 0:BASE_1D:5] = ((win_o / pc) - 1).astype(np.float32)
+                Xc[j, 1:BASE_1D:5] = ((win_h / pc) - 1).astype(np.float32)
+                Xc[j, 2:BASE_1D:5] = ((win_l / pc) - 1).astype(np.float32)
+                Xc[j, 3:BASE_1D:5] = ((win_c / pc) - 1).astype(np.float32)
+            Xc[j, 4:BASE_1D:5] = np.log1p(win_v / pavv).astype(np.float32)
 
-            Xc[j, 12] = dret(2)                           # ret_d2
-            Xc[j, 13] = dret(3)                           # ret_d3
-            Xc[j, 14] = dret(4)                           # ret_d4
-            Xc[j, 15] = dret(5)                           # ret_d5
-            Xc[j, 16] = (dc[-1]/dc[0] - 1) if len(dc) >= 5 and dc[0] > 0 else 0.0  # trend_5d
-            rets5 = [dret(k) for k in range(1, min(6, len(dc)))]
-            Xc[j, 17] = float(np.std(rets5)) if len(rets5) >= 2 else 0.0  # vol_5d
+            # ── Daily window (indices 120 … 269): d1=yesterday … d30 ────────
+            for k, bar in enumerate(info["daily_bars"]):
+                if bar is None:
+                    continue
+                o_k, h_k, l_k, c_k, v_k = bar
+                base = BASE_1D + k * 5
+                if pc > 0:
+                    Xc[j, base + 0] = np.float32((o_k / pc) - 1)
+                    Xc[j, base + 1] = np.float32((h_k / pc) - 1)
+                    Xc[j, base + 2] = np.float32((l_k / pc) - 1)
+                    Xc[j, base + 3] = np.float32((c_k / pc) - 1)
+                Xc[j, base + 4] = np.float32(np.log1p(v_k / adv))
 
-            # ── Rolling 60-bar window (indices 18…317) ───────────────────────
-            # p{n}: n=1 = 5m ago, n=60 = 5h ago
-            # OHLC normalised by current close; volume = log1p(vol/avg)
-            win_o = opens  [i - LOOKBACK:i][::-1]   # newest-first slice
-            win_h = highs  [i - LOOKBACK:i][::-1]
-            win_l = lows   [i - LOOKBACK:i][::-1]
-            win_c = closes [i - LOOKBACK:i][::-1]
-            win_v = volumes[i - LOOKBACK:i][::-1]
-
-            if c > 0:
-                Xc[j, 18::5] = (win_o / c - 1).astype(np.float32)  # p{n}_o
-                Xc[j, 19::5] = (win_h / c - 1).astype(np.float32)  # p{n}_h
-                Xc[j, 20::5] = (win_l / c - 1).astype(np.float32)  # p{n}_l
-                Xc[j, 21::5] = (win_c / c - 1).astype(np.float32)  # p{n}_c
-            Xc[j, 22::5] = np.log1p(win_v / pavv).astype(np.float32)  # p{n}_v
-
-            # ── Label ────────────────────────────────────────────────────────
             yc[j] = compute_label(closes, i, n)
             tc[j] = dts_ns[i]
+
+        if KEEP_IDX is not None:
+            Xc = Xc[:, KEEP_IDX]
 
         tid = len(ticker_names)
         ticker_names.append(symbol)
@@ -325,8 +370,9 @@ def build_dataset(symbols):
     if not feat_chunks:
         raise RuntimeError("No data for any symbol.")
 
+    n_out = len(USED_FEATURE_NAMES)
     N = sum(len(c) for c in feat_chunks)
-    X          = np.empty((N, n_feat), dtype=np.float32)
+    X          = np.empty((N, n_out), dtype=np.float32)
     y          = np.empty(N, dtype=np.int8)
     ts         = np.empty(N, dtype=np.int64)
     ticker_ids = np.empty(N, dtype=np.int16)
@@ -361,12 +407,12 @@ def train_model(X, y, ts):
         "metric":            "auc",
         "learning_rate":     0.02,
         "num_leaves":        63,
-        "min_child_samples": 50,
-        "bagging_fraction":  0.7,
+        "min_child_samples": 100,
+        "bagging_fraction":  0.8,
         "bagging_freq":      1,
-        "feature_fraction":  0.3,   # subsample features (318 total → ~95 per tree)
-        "lambda_l1":         0.2,
-        "lambda_l2":         0.2,
+        "feature_fraction":  0.8,   # 270 × 0.8 = 216 features per tree
+        "lambda_l1":         0.1,
+        "lambda_l2":         0.1,
         "scale_pos_weight":  (n_tr - pos) / pos if pos else 1.0,
         "seed":              42,
         "verbose":           -1,
@@ -374,16 +420,17 @@ def train_model(X, y, ts):
     }
 
     ds_tr = lgb.Dataset(X[train_mask], label=y[train_mask],
-                        feature_name=list(FEATURE_NAMES), free_raw_data=True)
+                        feature_name=list(USED_FEATURE_NAMES), free_raw_data=True)
     ds_te = lgb.Dataset(X[test_mask],  label=y[test_mask],
                         reference=ds_tr, free_raw_data=True)
 
     model = lgb.train(
         params, ds_tr,
-        num_boost_round=1500,
+        num_boost_round=5000,
         valid_sets=[ds_te],
         valid_names=["test"],
-        callbacks=[lgb.early_stopping(150, verbose=False)],
+        callbacks=[lgb.early_stopping(300, verbose=False),
+                   lgb.log_evaluation(200)],
     )
     del ds_tr, ds_te
 
@@ -398,14 +445,17 @@ def train_model(X, y, ts):
     print("\nClassification report (Oct–Dec 2025):")
     print(classification_report(y_te, pred_te, digits=3, zero_division=0))
 
-    print("Feature importances (top 20):")
-    pairs = sorted(zip(FEATURE_NAMES, model.feature_importance(importance_type="split")),
+    print("Feature importances (top 30):")
+    pairs = sorted(zip(USED_FEATURE_NAMES, model.feature_importance(importance_type="split")),
                    key=lambda x: -x[1])
-    for name, imp in pairs[:20]:
-        print(f"  {name:<26s} {imp}")
+    for name, imp in pairs[:30]:
+        print(f"  {name:<20s} {imp}")
 
+    comm = 0.001
+    be   = (SL_PCT + comm) / (TP_PCT + SL_PCT)
+    print(f"\nBreak-even WinRate (after {comm*100:.1f}% fees): {be:.1%}")
     print("\nThreshold analysis:")
-    for t in np.arange(0.35, 0.80, 0.05):
+    for t in np.arange(0.35, 0.90, 0.05):
         preds = (proba_te >= t).astype(int)
         n_pos = preds.sum()
         if n_pos == 0:
@@ -413,16 +463,19 @@ def train_model(X, y, ts):
         tp   = ((preds == 1) & (y_te == 1)).sum()
         prec = tp / n_pos
         rec  = tp / max((y_te == 1).sum(), 1)
-        ev   = prec * (TP_PCT - 0.001) - (1 - prec) * (SL_PCT + 0.001)  # after 0.1% fees
+        ev   = prec * (TP_PCT - comm) - (1 - prec) * (SL_PCT + comm)
         print(f"  t={t:.2f}: {n_pos:7d} signals ({n_pos/len(y_te):.1%})  "
               f"prec={prec:.3f}  rec={rec:.3f}  EV={ev*100:+.3f}%")
 
     return model, auc
 
 
-def find_threshold(model, X_te, y_te, target_precision=0.62):
-    """Find threshold where precision ≥ target (break-even after fees)."""
-    proba     = model.predict(X_te, num_iteration=model.best_iteration or model.num_trees())
+def find_threshold(model, X_te, y_te, target_precision=None):
+    """Find threshold where precision ≥ break-even (after fees)."""
+    if target_precision is None:
+        comm = 0.001
+        target_precision = (SL_PCT + comm) / (TP_PCT + SL_PCT)
+    proba = model.predict(X_te, num_iteration=model.best_iteration or model.num_trees())
     best_thresh, best_f1 = 0.5, 0.0
     for t in np.arange(0.30, 0.95, 0.01):
         preds = (proba >= t).astype(int)
@@ -459,11 +512,17 @@ def build_lookup(model, X, ts, ticker_ids, ticker_names, threshold, chunk=2_000_
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    print(f"OKX short strategy (A06)  TP={TP_PCT*100:.1f}%  SL={SL_PCT*100:.1f}%")
+    comm = 0.001
+    be   = (SL_PCT + comm) / (TP_PCT + SL_PCT)
+    n_5m = LOOKBACK_5M * 5
+    n_1d = LOOKBACK_1D * 5
+    print(f"OKX short strategy (A06)  TP={TP_PCT*100:.1f}%  SL={SL_PCT*100:.1f}%  "
+          f"break-even {be:.1%}")
     print(f"Year     : {YEAR}")
-    print(f"Window   : {LOOKBACK} bars lookback ({LOOKBACK * INTRADAY_MINUTES} min) + "
-          f"{LABEL_HORIZON} bars label horizon ({LABEL_HORIZON * INTRADAY_MINUTES // 60}h)")
-    print(f"Features : {len(FEATURE_NAMES)}  (18 scalar + {LOOKBACK}×5 rolling OHLCV)")
+    print(f"Window   : {ENTRY_UTC_HOUR_START:02d}:00–{ENTRY_UTC_HOUR_END:02d}:00 UTC "
+          f"— applied at inference only")
+    print(f"Label    : {LABEL_HORIZON} bars = {LABEL_HORIZON * INTRADAY_MINUTES // 60}h")
+    print(f"Features : {n_5m + n_1d}  ({LOOKBACK_5M}×5m + {LOOKBACK_1D}×1D)")
     print(f"Split    : train < {TRAIN_CUTOFF.date()}, test ≥ {TRAIN_CUTOFF.date()}")
     print(f"Tickers  : {len(TRAIN_SYMBOLS)} train  {len(VALID_SYMBOLS)} valid\n")
 
@@ -481,7 +540,7 @@ def main():
 
     test_mask = ts >= TRAIN_CUTOFF.value
     threshold = find_threshold(model, X[test_mask], y[test_mask])
-    print(f"Threshold (prec≥62%): {threshold:.2f}")
+    print(f"Threshold (prec≥break-even): {threshold:.2f}")
 
     print("\nBuilding predictions lookup…")
     positives = build_lookup(model, X, ts, ticker_ids, ticker_names, threshold)
@@ -492,7 +551,8 @@ def main():
         "year":           YEAR,
         "tp_pct":         TP_PCT,
         "sl_pct":         SL_PCT,
-        "lookback_bars":  LOOKBACK,
+        "lookback_5m":    LOOKBACK_5M,
+        "lookback_1d":    LOOKBACK_1D,
         "label_horizon":  LABEL_HORIZON,
         "signal_step":    SIGNAL_STEP,
         "threshold":      threshold,

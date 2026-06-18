@@ -54,7 +54,12 @@ export class Engine {
             strategy.setDataIndex(index);
             broker.exec.setCurrentCandle(candle);
 
-            if (evaluateStops(broker.exec.getPosition(), candle.close)) {
+            // Backtest exposes checkStops() for intrabar (high/low) SL/TP that
+            // fills at the stop level. Live has no future high/low, so it falls
+            // back to the shared close-based evaluation on the latest tick.
+            if (typeof broker.exec.checkStops === "function") {
+                broker.exec.checkStops(candle);
+            } else if (evaluateStops(broker.exec.getPosition(), candle.close)) {
                 broker.exec.closePosition();
             }
 

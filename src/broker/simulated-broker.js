@@ -1,6 +1,7 @@
 import { Portfolio } from "../core/portfolio.js";
 import { PerformanceMetrics } from "../core/metrics.js";
 import { loadDataset } from "../core/data-loader.js";
+import { evaluateIntrabarStop } from "../core/stops.js";
 import {
     DEFAULT_EXCHANGE,
     MOSCOW_OFFSET_MS,
@@ -298,6 +299,37 @@ export class SimulatedExecutor {
             return null;
         }
         return this.portfolio.closePosition({ candle: this.currentCandle });
+    }
+
+    /**
+     * Внутрисвечная проверка SL/TP (backtest-хук для движка). Триггерит по
+     * диапазону свечи (high/low) и закрывает позицию ровно по цене уровня
+     * sl/tp в той же свече — в обход next-open-буфера, т.к. стоп-ордер на бирже
+     * исполняется при касании уровня, а не на открытии следующего бара.
+     * SL имеет приоритет при двойном касании (см. evaluateIntrabarStop).
+     * @param {object} candle - Текущая свеча.
+     * @returns {object|null} Закрытая сделка или null.
+     */
+    checkStops(candle) {
+        const position = this.portfolio.position;
+        if (!position) {
+            return null;
+        }
+        const reason = evaluateIntrabarStop(position, candle);
+        if (!reason) {
+            return null;
+        }
+        const level = reason === "sl" ? position.sl : position.tp;
+        // Синтетическая свеча: все цены = уровень стопа, чтобы Portfolio
+        // (использует candle.close) зафиксировал выход именно по нему.
+        const fc = {
+            datetime: candle.datetime,
+            open: level, high: level, low: level, close: level,
+            volume: 0,
+        };
+        // Стоп исполняется немедленно — отменяем любой буферизованный ордер.
+        this._pending = null;
+        return this.portfolio.closePosition({ candle: fc });
     }
 
     getPosition() {

@@ -17,6 +17,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const options = [
     { flags: "--balance <amount>", description: "Initial balance", default: "10000" },
     { flags: "--commission <rate>", description: "Commission rate", default: "0.0005" },
+    { flags: "--leverage <n>", description: "Short-side leverage: scales position size and locked margin (default 1 = unleveraged)", default: "1" },
     { flags: "--fill-next-open", description: "Fill orders at the open of the next candle (more realistic than current-close fill)" },
 ];
 
@@ -42,6 +43,7 @@ export async function createBroker(config = {}) {
         metadata,
         initialCash:   Number(config.balance),
         commission:    Number(config.commission),
+        leverage:      Number(config.leverage),
         fillOnNextOpen: Boolean(config.fillNextOpen),
         meta: {
             historyFile: config.sourceName || "",
@@ -327,13 +329,14 @@ export function createSimulatedBroker({
     metadata = {},
     initialCash = 10000,
     commission = 0.0005,
+    leverage = 1,
     fillOnNextOpen = false,
     meta = {},
 } = {}) {
     // Lot size from the dataset's instrument metadata, so default order sizing
     // floors to whole lots like the live broker (e.g. ALRS lot=10).
     const lot = Number(metadata?.instrument?.lot) || 1;
-    const portfolio = new Portfolio({ cash: initialCash, commission, lot });
+    const portfolio = new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
     const data = new SimulatedDataSource({ candles, series, metadata, portfolio, equity });
     const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen });

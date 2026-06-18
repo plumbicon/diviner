@@ -31,6 +31,7 @@ export const options = [
     { flags: "--stall-timeout <minutes>", description: "Exit if no candle arrives for N minutes during a trading session (0 disables). Raise for illiquid instruments whose no-trade gaps are long.", default: "30" },
     { flags: "--state-file <path>", description: "Path to persist software SL/TP across restarts (default: .diviner-state/<account>_<ticker>.json)" },
     { flags: "--intrabar-stops", description: "Check SL/TP against the live candle's high/low (not just close) and close at market the moment a level is touched. Default off = check on close.", default: false },
+    { flags: "--leverage <n>", description: "Margin leverage: default order size = 95% of cash × leverage. >1 sends confirmMarginTrade=true (uncovered/margin positions). Requires a margin-enabled account. Default 1.", default: "1" },
     // Account utilities (run without a strategy):
     { flags: "--list-sandboxes", description: "List sandbox accounts and exit", default: false },
     { flags: "--create-account", description: "Create a new sandbox account", default: false },
@@ -78,6 +79,7 @@ export async function createBroker(config = {}) {
             stateFile: config.stateFile || null,
             orderTag: config.orderTag || "div",
             intrabarStops: Boolean(config.intrabarStops),
+            leverage: parseFloat(config.leverage ?? "1"),
         },
     });
 
@@ -623,6 +625,15 @@ export class TinkoffExecutor {
         // evaluateStops path. A touch closes the position at market immediately.
         this.intrabarStops = Boolean(options.intrabarStops);
 
+        // Margin leverage: default order size = 95% of cash × leverage. With
+        // leverage>1 we send confirmMarginTrade=true so the broker accepts the
+        // resulting uncovered (margin) position; requires a margin-enabled
+        // account. At 1× behaviour is unchanged (covered sizing, flag off).
+        this.leverage = Number.isFinite(Number(options.leverage)) && Number(options.leverage) > 0
+            ? Number(options.leverage)
+            : 1;
+        this.confirmMarginTrade = this.leverage > 1;
+
         this.accountRubBalance = 0;
         this.currentCandle = null;
         this.orderQueue = Promise.resolve();
@@ -844,7 +855,9 @@ export class TinkoffExecutor {
     }
 
     /**
-     * Default order size in lots from available cash.
+     * Default order size in lots from available cash, scaled by leverage.
+     * Mirrors the backtest Portfolio: notional = 95% of cash × leverage,
+     * floored to whole lots. At leverage 1 this is the original 1× sizing.
      * @private
      */
     _defaultOrderLots(price) {
@@ -852,7 +865,7 @@ export class TinkoffExecutor {
             return 0;
         }
         const lotSize = Number(this.instrument?.lot) || 1;
-        return Math.floor((this.accountRubBalance * 0.95) / (price * lotSize));
+        return Math.floor((this.accountRubBalance * 0.95 * this.leverage) / (price * lotSize));
     }
 
     /**
@@ -889,6 +902,7 @@ export class TinkoffExecutor {
                 quantity: size,
                 direction,
                 orderId: this._buildOrderId("open", direction),
+                confirmMarginTrade: this.confirmMarginTrade,
             });
             const summary = this.client.getOrderExecutionSummary(result);
             const executedLots = summary.lotsExecuted || size;

@@ -9,6 +9,7 @@ import { TinkoffClient } from "./tinkoff/client.js";
 import { OrderManager } from "./tinkoff/order-manager.js";
 import { StateManager } from "./common/state-manager.js";
 import { PositionStore } from "./common/position-store.js";
+import { evaluateIntrabarStop } from "../core/stops.js";
 import { runUtility, isUtilityRequest } from "./tinkoff/sandbox-utils.js";
 
 // Account utilities (no strategy) live in sandbox-utils; re-exported so the CLI
@@ -29,6 +30,7 @@ export const options = [
     { flags: "--order-tag <tag>", description: "Short label embedded in each order's idempotency key for log correlation (e.g. strategy name). Default: \"div\"", default: "div" },
     { flags: "--stall-timeout <minutes>", description: "Exit if no candle arrives for N minutes during a trading session (0 disables). Raise for illiquid instruments whose no-trade gaps are long.", default: "30" },
     { flags: "--state-file <path>", description: "Path to persist software SL/TP across restarts (default: .diviner-state/<account>_<ticker>.json)" },
+    { flags: "--intrabar-stops", description: "Check SL/TP against the live candle's high/low (not just close) and close at market the moment a level is touched. Default off = check on close.", default: false },
     // Account utilities (run without a strategy):
     { flags: "--list-sandboxes", description: "List sandbox accounts and exit", default: false },
     { flags: "--create-account", description: "Create a new sandbox account", default: false },
@@ -75,6 +77,7 @@ export async function createBroker(config = {}) {
             stallTimeoutMin: parseInt(config.stallTimeout ?? "30", 10),
             stateFile: config.stateFile || null,
             orderTag: config.orderTag || "div",
+            intrabarStops: Boolean(config.intrabarStops),
         },
     });
 
@@ -615,6 +618,11 @@ export class TinkoffExecutor {
             || join(process.cwd(), ".diviner-state", `${accountId}_${instrument.ticker}.json`);
         this.store = new PositionStore(stateFile, { verbose: this.verbose });
 
+        // Intrabar SL/TP: when on, the engine routes stop checks through
+        // checkStops() (high/low of the live candle) instead of the close-only
+        // evaluateStops path. A touch closes the position at market immediately.
+        this.intrabarStops = Boolean(options.intrabarStops);
+
         this.accountRubBalance = 0;
         this.currentCandle = null;
         this.orderQueue = Promise.resolve();
@@ -635,6 +643,39 @@ export class TinkoffExecutor {
 
     getPosition() {
         return this.stateManager.getPosition();
+    }
+
+    /**
+     * Intrabar SL/TP check for live (engine hook, used only when intrabarStops
+     * is on). Evaluates the current candle's high/low against the open
+     * position's SL/TP — for a short, SL on `high`, TP on `low` — and closes at
+     * market the moment a level is touched, rather than waiting for the close.
+     * Called by the engine each tick; with a forming-candle subscription the
+     * candle's running high/low update continuously, so the exit fires as soon
+     * as the level is breached. SL wins a same-bar double touch (evaluateIntrabarStop).
+     * @param {object} candle - Current (possibly still-forming) candle.
+     * @returns {object|null} Closed position or null.
+     */
+    checkStops(candle) {
+        const position = this.getPosition();
+        if (!position || !candle) {
+            return null;
+        }
+        const reason = evaluateIntrabarStop(position, candle);
+        if (!reason) {
+            return null;
+        }
+        const level = reason === "sl" ? position.sl : position.tp;
+        const label = reason === "sl" ? "Stop Loss" : "Take Profit";
+        const extreme = (position.side === "short")
+            ? (reason === "sl" ? candle.high : candle.low)
+            : (reason === "sl" ? candle.low : candle.high);
+        console.log(
+            `[TinkoffExecutor] ${label} touched intrabar: ${position.side} `
+            + `level=${level} (candle ${reason === "sl" ? "high" : "low"}=${extreme}) `
+            + `— closing at market`,
+        );
+        return this.closePosition();
     }
 
     getBalance() {

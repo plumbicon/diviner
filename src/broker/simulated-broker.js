@@ -21,6 +21,7 @@ export const options = [
     { flags: "--leverage <n>", description: "Short-side leverage: scales position size and locked margin (default 1 = unleveraged)", default: "1" },
     { flags: "--fill-next-open", description: "Fill orders at the open of the next candle (more realistic than current-close fill)" },
     { flags: "--intrabar-stops", description: "Evaluate SL/TP intrabar by candle high/low and fill at the level (default off = close-only). Used by A07." },
+    { flags: "--model-liquidation", description: "With --intrabar-stops + leverage>1: gap-aware stop fills + margin-call liquidation (loss capped at posted margin). Off = stops always fill at the level (no liquidation)." },
 ];
 
 /**
@@ -48,6 +49,7 @@ export async function createBroker(config = {}) {
         leverage:      Number(config.leverage),
         fillOnNextOpen: Boolean(config.fillNextOpen),
         intrabarStops: Boolean(config.intrabarStops),
+        modelLiquidation: Boolean(config.modelLiquidation),
         meta: {
             historyFile: config.sourceName || "",
             strategyFile: config.strategy || "",
@@ -217,12 +219,19 @@ export class SimulatedExecutor {
      * @param {Portfolio} params.portfolio
      * @param {boolean} [params.fillOnNextOpen=false]
      */
-    constructor({ portfolio, fillOnNextOpen = false, intrabarStops = false }) {
+    constructor({ portfolio, fillOnNextOpen = false, intrabarStops = false,
+                  modelLiquidation = false }) {
         this.portfolio = portfolio;
         this.fillOnNextOpen = fillOnNextOpen;
         // When true, the engine routes SL/TP through checkStops() (intrabar
         // high/low). When false (default), SL/TP is close-only. See engine.run().
         this.intrabarStops = intrabarStops;
+        // When true (only meaningful with intrabarStops + leverage>1): stops
+        // fill gap-aware (at the bar open if it gapped past the level), and a
+        // bar that opens past the liquidation price (adverse move ≥ 1/leverage)
+        // force-closes the position with the loss capped at the posted margin.
+        this.modelLiquidation = modelLiquidation;
+        this.liquidations = 0;
         this.currentCandle = null;
         // Pending order buffered for next-open settlement:
         // { type: 'close' | 'open-long' | 'open-short', size?, sl?, tp? }
@@ -324,17 +333,46 @@ export class SimulatedExecutor {
         if (!reason) {
             return null;
         }
-        const level = reason === "sl" ? position.sl : position.tp;
-        // Синтетическая свеча: все цены = уровень стопа, чтобы Portfolio
-        // (использует candle.close) зафиксировал выход именно по нему.
+
+        let fillPrice = reason === "sl" ? position.sl : position.tp;
+        let liquidated = false;
+
+        // Liquidation / gap-aware fill (loss side only). Without this the stop
+        // always fills exactly at the level, so a position can never lose more
+        // than the SL — liquidation is impossible. With it: a stop fills at the
+        // bar's open when the open gapped past the level (you couldn't exit at
+        // the level), and if the open is past the liquidation price (adverse
+        // move ≥ 1/leverage) the broker force-closes there with the loss capped
+        // at the posted margin.
+        if (this.modelLiquidation && reason === "sl") {
+            const lev = this.portfolio.leverage || 1;
+            const entry = position.entryPrice;
+            if (position.side === "short") {
+                const liqPrice = entry * (1 + 1 / lev);
+                fillPrice = Math.min(Math.max(position.sl, candle.open), liqPrice);
+                liquidated = candle.open >= liqPrice;
+            } else {
+                const liqPrice = entry * (1 - 1 / lev);
+                fillPrice = Math.max(Math.min(position.sl, candle.open), liqPrice);
+                liquidated = candle.open <= liqPrice;
+            }
+        }
+
+        // Синтетическая свеча: все цены = цена исполнения, чтобы Portfolio
+        // (использует candle.close) зафиксировал выход именно по ней.
         const fc = {
             datetime: candle.datetime,
-            open: level, high: level, low: level, close: level,
+            open: fillPrice, high: fillPrice, low: fillPrice, close: fillPrice,
             volume: 0,
         };
         // Стоп исполняется немедленно — отменяем любой буферизованный ордер.
         this._pending = null;
-        return this.portfolio.closePosition({ candle: fc });
+        const trade = this.portfolio.closePosition({ candle: fc });
+        if (trade && liquidated) {
+            trade.liquidated = true;
+            this.liquidations += 1;
+        }
+        return trade;
     }
 
     getPosition() {
@@ -369,6 +407,7 @@ export function createSimulatedBroker({
     leverage = 1,
     fillOnNextOpen = false,
     intrabarStops = false,
+    modelLiquidation = false,
     meta = {},
 } = {}) {
     // Lot size from the dataset's instrument metadata, so default order sizing
@@ -377,7 +416,7 @@ export function createSimulatedBroker({
     const portfolio = new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
     const data = new SimulatedDataSource({ candles, series, metadata, portfolio, equity });
-    const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen, intrabarStops });
+    const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen, intrabarStops, modelLiquidation });
 
     return {
         data,

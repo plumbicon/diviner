@@ -748,6 +748,7 @@ export class TinkoffClient {
       direction,
       price,
       orderType = "market",
+      confirmMarginTrade = false,
     } = params;
 
     try {
@@ -788,6 +789,13 @@ export class TinkoffClient {
             : OrderType.ORDER_TYPE_MARKET,
         orderId: String(orderId),
       };
+
+      // Allow opening an uncovered (margin/leveraged) position — e.g. shorts or
+      // leverage>1. Only set when requested so default (covered) orders are
+      // unchanged. The API rejects uncovered orders unless this is true.
+      if (confirmMarginTrade) {
+        orderParams.confirmMarginTrade = true;
+      }
 
       // Для лимитного ордера добавляем цену
       if (orderType === "limit" && price) {

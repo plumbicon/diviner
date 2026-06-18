@@ -82,6 +82,9 @@ export class OrderManager {
         direction: validated.direction,
         orderType: "market",
         orderId: validated.orderId,
+        // Consent to an order that may open an uncovered (margin) position —
+        // required for shorts/leverage; ignored by covered orders.
+        confirmMarginTrade: Boolean(params.confirmMarginTrade),
       });
       return result;
     } catch (error) {

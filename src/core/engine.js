@@ -54,10 +54,12 @@ export class Engine {
             strategy.setDataIndex(index);
             broker.exec.setCurrentCandle(candle);
 
-            // Backtest exposes checkStops() for intrabar (high/low) SL/TP that
-            // fills at the stop level. Live has no future high/low, so it falls
-            // back to the shared close-based evaluation on the latest tick.
-            if (typeof broker.exec.checkStops === "function") {
+            // Intrabar (high/low) SL/TP is opt-in via the broker's `intrabarStops`
+            // flag (set by --intrabar-stops; used by A07). When off — the default,
+            // and always for live (no future high/low) — fall back to the shared
+            // close-based evaluation on the latest tick (A05 and other close
+            // strategies behave exactly as before).
+            if (broker.exec.intrabarStops && typeof broker.exec.checkStops === "function") {
                 broker.exec.checkStops(candle);
             } else if (evaluateStops(broker.exec.getPosition(), candle.close)) {
                 broker.exec.closePosition();

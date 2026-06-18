@@ -40,9 +40,10 @@ WINDOW_END_MIN    = 9 * 60 + 49
 MAX_LOOKBACK_DAYS = 14
 LAG_N             = 10
 
-# TP/SL parameters.
-TP_PCT = 0.010   # 1.0%
-SL_PCT = 0.019   # 1.9%
+# TP/SL parameters (env-overridable for the SL/TP sweep; defaults = production).
+import os
+TP_PCT = float(os.environ.get('TP_PCT', '0.010'))   # 1.0%
+SL_PCT = float(os.environ.get('SL_PCT', '0.019'))   # 1.9%
 # No gap pre-filter: the model learns from close_pct which gaps are worth trading.
 
 # Label mode (env LABEL_MODE):
@@ -58,7 +59,6 @@ SL_PCT = 0.019   # 1.9%
 # generalises better, and execution friction is handled by the broker, not the
 # label. So 'tpsl' is the default. (The official-prevClose feature fix — separate
 # from the label — is what lifted +47%→+53%.)
-import os
 LABEL_MODE = os.environ.get('LABEL_MODE', 'tpsl')
 
 # Training on all 50 available 2025 tickers.
@@ -616,7 +616,7 @@ def main():
     print('\nTraining LightGBM…')
     model, auc = train_model(X, y, ts)
 
-    model_path = ML_DIR / 'model.txt'
+    model_path = Path(os.environ.get('MODEL_OUT', str(ML_DIR / 'model.txt')))
     model.save_model(str(model_path))
     print(f'\nModel   → {model_path}')
 
@@ -645,7 +645,7 @@ def main():
         'positive_count': len(positives),
         'positives':      positives,
     }
-    lookup_path = ML_DIR / 'predictions_2025.json'
+    lookup_path = Path(os.environ.get('PRED_OUT', str(ML_DIR / 'predictions_2025.json')))
     with open(lookup_path, 'w') as fh:
         json.dump(lookup, fh, separators=(',', ':'))
 

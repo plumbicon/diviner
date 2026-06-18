@@ -62,6 +62,9 @@ export async function createBroker(config = {}) {
         orderRetries: parseInt(config.orderRetries ?? "2", 10),
         verbose: Boolean(config.verbose),
     });
+    // Print before the first network call so a connection hang (bad token,
+    // network) is immediately distinguishable from "the process never started".
+    console.log(`[Tinkoff] Connecting to T-Invest API (${config.sandbox ? "SANDBOX" : "REAL"})…`);
     await client.init();
 
     const instrument = await client.getInstrumentByTicker(config.ticker);
@@ -96,6 +99,17 @@ export async function createBroker(config = {}) {
         timezone: "Europe/Moscow",
     };
     broker.client = client;
+
+    // Unconditional startup banner so the operator always sees the bot is alive
+    // and how it's configured — without this, a flat sandbox account run without
+    // --verbose produces zero output until the first trade, looking like a hang.
+    const lev = parseFloat(config.leverage ?? "1");
+    console.log(
+        `[Tinkoff] Connected (${config.sandbox ? "SANDBOX" : "REAL"}). `
+        + `account=${client.accountId} instrument=${instrument.ticker} (${instrument.figi}) `
+        + `interval=${interval}m leverage=${lev}x intrabar-stops=${Boolean(config.intrabarStops)} `
+        + `dry-run=${Boolean(config.dryRun)}`,
+    );
     return broker;
 }
 
@@ -161,6 +175,10 @@ export class TinkoffDataSource {
             },
         );
         this._startStallWatchdog();
+        console.log(
+            `[Tinkoff] Subscribed to ${this.instrument.ticker} ${this.interval}m candles. `
+            + `Waiting for completed candles (one per ${this.interval}m while the market is open)…`,
+        );
 
         while (!this._closed) {
             if (this._queue.length === 0) {
@@ -190,9 +208,10 @@ export class TinkoffDataSource {
         }
         this._lastTime = time;
         this._lastCandleWall = Date.now();
-        if (this.verbose) {
-            console.log(`[Live] candle ${candle.datetime.toISOString()} close=${candle.close}`);
-        }
+        // Per-candle heartbeat is unconditional: one line per interval is a
+        // reasonable liveness signal for a long-running trading bot and is the
+        // operator's proof the stream is flowing.
+        console.log(`[Live] candle ${candle.datetime.toISOString()} close=${candle.close}`);
         this._queue.push(candle);
         if (this._notify) {
             const notify = this._notify;
@@ -809,9 +828,7 @@ export class TinkoffExecutor {
         if (!position) {
             this.stateManager.reset();
             this.store.clear();   // account is flat → drop any stale persisted SL/TP
-            if (this.verbose) {
-                console.log(`[TinkoffExecutor] Account position for ${this.instrument.ticker}: none`);
-            }
+            console.log(`[TinkoffExecutor] Account position for ${this.instrument.ticker}: none (flat).`);
             return;
         }
 
@@ -848,9 +865,7 @@ export class TinkoffExecutor {
             return this.accountRubBalance;
         }
         this.accountRubBalance = await this.client.getRubBalance(this.client.accountId);
-        if (this.verbose) {
-            console.log(`[TinkoffExecutor] Account RUB balance: ${this.accountRubBalance.toFixed(2)}`);
-        }
+        console.log(`[TinkoffExecutor] Account RUB balance: ${this.accountRubBalance.toFixed(2)}`);
         return this.accountRubBalance;
     }
 

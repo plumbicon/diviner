@@ -20,6 +20,7 @@ export const options = [
     { flags: "--commission <rate>", description: "Commission rate", default: "0.0005" },
     { flags: "--leverage <n>", description: "Short-side leverage: scales position size and locked margin (default 1 = unleveraged)", default: "1" },
     { flags: "--fill-next-open", description: "Fill orders at the open of the next candle (more realistic than current-close fill)" },
+    { flags: "--intrabar-stops", description: "Evaluate SL/TP intrabar by candle high/low and fill at the level (default off = close-only). Used by A07." },
 ];
 
 /**
@@ -46,6 +47,7 @@ export async function createBroker(config = {}) {
         commission:    Number(config.commission),
         leverage:      Number(config.leverage),
         fillOnNextOpen: Boolean(config.fillNextOpen),
+        intrabarStops: Boolean(config.intrabarStops),
         meta: {
             historyFile: config.sourceName || "",
             strategyFile: config.strategy || "",
@@ -215,9 +217,12 @@ export class SimulatedExecutor {
      * @param {Portfolio} params.portfolio
      * @param {boolean} [params.fillOnNextOpen=false]
      */
-    constructor({ portfolio, fillOnNextOpen = false }) {
+    constructor({ portfolio, fillOnNextOpen = false, intrabarStops = false }) {
         this.portfolio = portfolio;
         this.fillOnNextOpen = fillOnNextOpen;
+        // When true, the engine routes SL/TP through checkStops() (intrabar
+        // high/low). When false (default), SL/TP is close-only. See engine.run().
+        this.intrabarStops = intrabarStops;
         this.currentCandle = null;
         // Pending order buffered for next-open settlement:
         // { type: 'close' | 'open-long' | 'open-short', size?, sl?, tp? }
@@ -363,6 +368,7 @@ export function createSimulatedBroker({
     commission = 0.0005,
     leverage = 1,
     fillOnNextOpen = false,
+    intrabarStops = false,
     meta = {},
 } = {}) {
     // Lot size from the dataset's instrument metadata, so default order sizing
@@ -371,7 +377,7 @@ export function createSimulatedBroker({
     const portfolio = new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
     const data = new SimulatedDataSource({ candles, series, metadata, portfolio, equity });
-    const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen });
+    const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen, intrabarStops });
 
     return {
         data,

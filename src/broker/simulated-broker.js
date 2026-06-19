@@ -12,6 +12,11 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// This broker can take its parquet listing from a pipe when no path is given,
+// so the CLI may read stdin for it. Live brokers omit this flag and the CLI
+// never blocks on stdin for them.
+export const readsSourceFromStdin = true;
+
 /**
  * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
  */

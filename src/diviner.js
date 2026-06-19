@@ -150,15 +150,18 @@ async function runBrokerMode(brokerRef, rest) {
         exitWithError("nothing to do: provide --strategy <path> with a data source, or a valid account utility");
     }
 
-    // Strategy run. simulated reads its source from a pipe if no path was given.
-    if (config.source === undefined) {
+    // Strategy run. Only brokers that declare readsSourceFromStdin (the
+    // simulated backtest broker) may take their source from a pipe. Live brokers
+    // never consume stdin — reading it would block forever on an interactive TTY
+    // (or an open pipe with no EOF), hanging the process right after startup.
+    if (config.source !== undefined) {
+        config.sourceName = config.source;
+    } else if (mod.readsSourceFromStdin && !process.stdin.isTTY) {
         const buffer = await readStdin();
         if (buffer) {
             config.source = buffer;
             config.sourceName = "stdin";
         }
-    } else {
-        config.sourceName = config.source;
     }
 
     const broker = await mod.createBroker(config);

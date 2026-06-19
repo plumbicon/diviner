@@ -99,6 +99,5 @@ export function lgbmPredict(model, features) {
 export async function loadModel(modelPath) {
     const text  = await readFile(modelPath, "utf8");
     const model = parseModel(text);
-    console.error(`[lgbm] Loaded: ${model.trees.length} trees`);
     return model;
 }

@@ -208,10 +208,11 @@ export class TinkoffDataSource {
         }
         this._lastTime = time;
         this._lastCandleWall = Date.now();
-        // Per-candle heartbeat is unconditional: one line per interval is a
-        // reasonable liveness signal for a long-running trading bot and is the
-        // operator's proof the stream is flowing.
-        console.log(`[Live] candle ${candle.datetime.toISOString()} close=${candle.close}`);
+        // Per-candle heartbeat is verbose-only (one line per interval is noisy in
+        // prod); the startup banner already confirms the bot is alive.
+        if (this.verbose) {
+            console.log(`[Live] candle ${candle.datetime.toISOString()} close=${candle.close}`);
+        }
         this._queue.push(candle);
         if (this._notify) {
             const notify = this._notify;

@@ -42,7 +42,7 @@ const leverage = String(argValue("--leverage", "1"));
 const intrabarStops    = args.includes("--intrabar-stops");
 const modelLiquidation = args.includes("--model-liquidation");
 const SUFFIX   = `_${year}_1m.parquet`;
-const STRATEGY = join(ROOT, "src", "strategies", `${stratNm}.js`);
+const STRATEGY = join(ROOT, "src", "strategies", stratNm, `${stratNm}.js`);
 
 // --params '{"minProfitPct":0.5,"slPct":2.5,"tpPct":1.0}' — inject extra fields
 // into the strategy instance after construction.

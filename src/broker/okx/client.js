@@ -10,7 +10,7 @@ import ccxt from "ccxt";
  *
  * One client = one OKX account (the apiKey/secret/password triple). Sub-account
  * isolation is achieved by pointing each process at a different credential set
- * (see --key-prefix in okx-broker.js).
+ * (see --key-prefix in broker.js).
  */
 export class OkxClient {
     /**

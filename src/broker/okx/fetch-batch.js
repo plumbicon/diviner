@@ -9,10 +9,10 @@
  * prevRange come from the official 1D candle — the same design as A05.
  *
  * Usage:
- *   node src/fetch-okx-batch.js                   # defaults: year=2025, concurrency=5
- *   node src/fetch-okx-batch.js --year 2025 --concurrency 8
- *   node src/fetch-okx-batch.js --only ETH/USDT:USDT,BTC/USDT:USDT
- *   node src/fetch-okx-batch.js --skip ETH/USDT:USDT  # resume: skip already-done
+ *   node src/broker/okx/fetch-batch.js                   # defaults: year=2025, concurrency=5
+ *   node src/broker/okx/fetch-batch.js --year 2025 --concurrency 8
+ *   node src/broker/okx/fetch-batch.js --only ETH/USDT:USDT,BTC/USDT:USDT
+ *   node src/broker/okx/fetch-batch.js --skip ETH/USDT:USDT  # resume: skip already-done
  *
  * Output: data/okx/<instId>_<year>_1m.parquet  (1m + 1D merged)
  *
@@ -25,8 +25,8 @@ import { rename, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { OkxClient } from "./broker/okx/client.js";
-import { writeCandleSeriesAsParquet } from "./core/candle-parquet.js";
+import { OkxClient } from "./client.js";
+import { writeCandleSeriesAsParquet } from "../../core/candle-parquet.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = join(ROOT, "data", "okx");

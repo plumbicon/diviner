@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OkxExecutor, buildClientOrderId } from "../okx-broker.js";
+import { OkxExecutor, buildClientOrderId } from "./broker.js";
 import { normalizeOhlcv } from "./client.js";
 import { getOkxIntervalConfig } from "./intervals.js";
 

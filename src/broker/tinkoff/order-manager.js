@@ -47,7 +47,7 @@ export class OrderManager {
       price: price !== undefined && price !== null ? price : null,
       direction,
       // Idempotency key (API order_id). Optional; client.postOrder falls back to
-      // a random UUID when absent. See buildOrderId in tinkoff-broker.js.
+      // a random UUID when absent. See buildOrderId in tinkoff/broker.js.
       orderId: orderId || undefined,
     };
   }

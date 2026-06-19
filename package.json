@@ -6,18 +6,18 @@
   "main": "src/diviner.js",
   "bin": {
     "diviner": "./src/diviner.js",
-    "diviner-fetch": "./src/fetch.js",
-    "diviner-fetch-okx": "./src/fetch-okx.js",
-    "diviner-fetch-okx-metrics": "./src/fetch-okx-metrics.js",
-    "diviner-fetch-okx-batch": "./src/fetch-okx-batch.js",
+    "diviner-fetch": "./src/broker/tinkoff/fetch.js",
+    "diviner-fetch-okx": "./src/broker/okx/fetch.js",
+    "diviner-fetch-okx-metrics": "./src/broker/okx/fetch-metrics.js",
+    "diviner-fetch-okx-batch": "./src/broker/okx/fetch-batch.js",
     "diviner-convert": "./src/convert.js"
   },
   "scripts": {
     "start": "node src/diviner.js",
-    "fetch": "node src/fetch.js",
-    "fetch-okx": "node src/fetch-okx.js",
-    "fetch-okx-metrics": "node src/fetch-okx-metrics.js",
-    "fetch-okx-batch": "node src/fetch-okx-batch.js",
+    "fetch": "node src/broker/tinkoff/fetch.js",
+    "fetch-okx": "node src/broker/okx/fetch.js",
+    "fetch-okx-metrics": "node src/broker/okx/fetch-metrics.js",
+    "fetch-okx-batch": "node src/broker/okx/fetch-batch.js",
     "convert": "node src/convert.js",
     "test": "node --test"
   },

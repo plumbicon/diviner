@@ -2,15 +2,15 @@ import {
     TinkoffMarketDataProvider,
     buildInstrumentMetadata,
     getMoscowDateKey,
-} from "../core/market-data.js";
+} from "../../core/market-data.js";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { TinkoffClient } from "./tinkoff/client.js";
-import { OrderManager } from "./tinkoff/order-manager.js";
-import { StateManager } from "./common/state-manager.js";
-import { PositionStore } from "./common/position-store.js";
-import { evaluateIntrabarStop } from "../core/stops.js";
-import { runUtility, isUtilityRequest } from "./tinkoff/sandbox-utils.js";
+import { TinkoffClient } from "./client.js";
+import { OrderManager } from "./order-manager.js";
+import { StateManager } from "../common/state-manager.js";
+import { PositionStore } from "../common/position-store.js";
+import { evaluateIntrabarStop } from "../../core/stops.js";
+import { runUtility, isUtilityRequest } from "./sandbox-utils.js";
 
 // Account utilities (no strategy) live in sandbox-utils; re-exported so the CLI
 // can call broker.runUtility(config) when no strategy is given (п.2).

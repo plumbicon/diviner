@@ -8,3 +8,7 @@ reports/
 AGENTS.md
 **/.DS_Store
 src/strategies/
+
+# Модели — большие бинарные артефакты, регенерируются обучением; в git не коммитятся
+model*.txt
+*.onnx

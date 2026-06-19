@@ -41,12 +41,12 @@ diviner/
 │   │   ├── metrics.js           # Метрики (Return/MaxDD/Sharpe/Calmar)
 │   │   ├── market-data.js / market-cache.js / data-loader.js / candle-parquet.js
 │   │   └── json-encoder.js / logger.js
-│   ├── ml/
-│   │   └── lgbm.js              # LightGBM-инференс на чистом JS (+ кэш модели)
-│   ├── strategies/              # ← ОТДЕЛЬНЫЙ репозиторий (gitignored): A01..A05, A07
+│   ├── strategies/              # ← ОТДЕЛЬНЫЙ репозиторий (gitignored)
+│   │                            #   A01..A04 — простые; A05/A07 — ML (своя модель,
+│   │                            #   src/lgbm.js, scripts/train.py); A06 — крипто/OKX
+│   │                            #   (Python-пайплайн в scripts/, без JS-движка)
 │   ├── diviner.js               # Точка входа (--broker / --fetch / --convert)
 │   └── convert.js               # JSON → Parquet
-├── ml/                          # Обучение моделей + скрипты данных (Python/shell)
 ├── data/                        # Parquet-данные (gitignored)
 ├── reports/                     # Отчёты бэктеста (gitignored)
 ├── package.json

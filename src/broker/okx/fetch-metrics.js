@@ -22,10 +22,10 @@
  *
  * Usage:
  *   # Last 30 days to stdout
- *   node src/fetch-okx-metrics.js --symbol BTC/USDT:USDT
+ *   node src/broker/okx/fetch-metrics.js --symbol BTC/USDT:USDT
  *
  *   # Specific range to file (range clamped to API availability)
- *   node src/fetch-okx-metrics.js --symbol BTC/USDT:USDT \
+ *   node src/broker/okx/fetch-metrics.js --symbol BTC/USDT:USDT \
  *     --from-date 2026-05-01 --till-date 2026-06-15 --out data/BTC_metrics.csv
  */
 

@@ -31,7 +31,7 @@ worker() {
     local ok=0
     for attempt in 1 2 3; do
       rm -f "$tmp"
-      node src/fetch.js --security "$t" --from-date "$FROM" --till-date "$TO" \
+      node src/broker/tinkoff/fetch.js --security "$t" --from-date "$FROM" --till-date "$TO" \
         --interval 1 --parquet --request-delay-ms "$DELAY" 2>"$log" \
         | dd bs=1M 2>/dev/null > "$tmp"
       if [[ -s "$tmp" ]]; then

@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { OkxClient } from "./okx/client.js";
-import { getOkxIntervalConfig, getSupportedOkxIntervals } from "./okx/intervals.js";
-import { StateManager } from "./common/state-manager.js";
-import { PositionStore } from "./common/position-store.js";
+import { OkxClient } from "./client.js";
+import { getOkxIntervalConfig, getSupportedOkxIntervals } from "./intervals.js";
+import { StateManager } from "../common/state-manager.js";
+import { PositionStore } from "../common/position-store.js";
 
 /**
  * Plugin option descriptors for the CLI (validated by the shared layer).

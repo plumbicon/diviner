@@ -12,33 +12,43 @@ Tinkoff Investments API.
 
 ```
 diviner/
+├── scripts/
+│   └── backtest.mjs             # Параллельный батч-бэктест всех тикеров (worker_threads)
 ├── src/
-│   ├── broker/
-│   │   ├── simulated-broker.js  # Брокер бэктеста (data + exec + finalize)
-│   │   ├── tinkoff-broker.js    # Брокер T-Invest (data + exec + finalize + утилиты)
-│   │   └── tinkoff/             # Транспорт и хелперы T-Invest
-│   │       ├── client.js        # Клиент Tinkoff Invest API
-│   │       ├── order-manager.js # Постановка/валидация ордеров
+│   ├── broker/                  # Каждый брокер — своя директория со ВСЕМ своим кодом
+│   │   ├── simulated/
+│   │   │   └── broker.js        # Брокер бэктеста (data + exec + finalize)
+│   │   ├── tinkoff/             # Live T-Invest: брокер + транспорт + загрузка данных
+│   │   │   ├── broker.js        # Брокер T-Invest (data + exec + finalize + утилиты)
+│   │   │   ├── client.js        # Клиент Tinkoff Invest API
+│   │   │   ├── order-manager.js # Постановка/валидация ордеров
+│   │   │   ├── sandbox-utils.js # Аккаунт-утилиты sandbox (без стратегии)
+│   │   │   └── fetch.js         # Загрузка свечей через Tinkoff API → Parquet
+│   │   ├── okx/                 # Крипта (ccxt perp-swap): брокер + загрузка данных
+│   │   │   ├── broker.js
+│   │   │   ├── client.js
+│   │   │   ├── intervals.js
+│   │   │   ├── fetch.js / fetch-batch.js / fetch-metrics.js
+│   │   │   └── broker.test.js
+│   │   └── common/              # Общее live-состояние брокеров
 │   │       ├── state-manager.js # Состояние позиции
-│   │       └── sandbox-utils.js # Аккаунт-утилиты sandbox (без стратегии)
-│   ├── core/                    # Общие слои и утилиты
-│   │   ├── engine.js            # Единый режим-слепой движок (run)
-│   │   ├── strategy.js          # Базовый класс стратегии
-│   │   ├── strategy-loader.js   # Загрузчик стратегий по пути
-│   │   ├── temporal-view.js     # Окно видимости (clamp по now, защита от look-ahead)
-│   │   ├── market-cache.js      # Кэш истории (декоратор над data source)
-│   │   ├── stops.js             # evaluateStops — единая логика SL/TP
-│   │   ├── portfolio.js         # Симулируемый портфель
-│   │   ├── metrics.js           # Метрики доходности
-│   │   ├── market-data.js       # Провайдер свечей/расписания T-Invest
-│   │   ├── data-loader.js       # Загрузка Parquet
-│   │   ├── candle-parquet.js    # Чтение/запись Parquet свечей
-│   │   ├── json-encoder.js      # JSON-энкодер отчёта
-│   │   └── logger.js            # Логирование
-│   ├── diviner.js               # Единая точка входа (--broker/--fetch/--convert)
-│   ├── fetch.js                 # Загрузка свечей через Tinkoff API
+│   │       └── position-store.js# Персист SL/TP между рестартами
+│   ├── core/                    # Общие режим-слепые слои
+│   │   ├── engine.js            # Единый движок (run): тик-цикл + оркестрация SL/TP
+│   │   ├── strategy.js / strategy-loader.js / temporal-view.js
+│   │   ├── stops.js             # evaluateStops / evaluateIntrabarStop — логика SL/TP
+│   │   ├── portfolio.js         # Симулируемый портфель (размер, плечо, маржа)
+│   │   ├── metrics.js           # Метрики (Return/MaxDD/Sharpe/Calmar)
+│   │   ├── market-data.js / market-cache.js / data-loader.js / candle-parquet.js
+│   │   └── json-encoder.js / logger.js
+│   ├── ml/
+│   │   └── lgbm.js              # LightGBM-инференс на чистом JS (+ кэш модели)
+│   ├── strategies/              # ← ОТДЕЛЬНЫЙ репозиторий (gitignored): A01..A05, A07
+│   ├── diviner.js               # Точка входа (--broker / --fetch / --convert)
 │   └── convert.js               # JSON → Parquet
-├── data/                        # Исторические данные
+├── ml/                          # Обучение моделей + скрипты данных (Python/shell)
+├── data/                        # Parquet-данные (gitignored)
+├── reports/                     # Отчёты бэктеста (gitignored)
 ├── package.json
 └── README.md
 ```
@@ -85,10 +95,10 @@ diviner --convert [опции convert]
 (parquet для `simulated`, `--ticker` для `tinkoff`). Без стратегии `tinkoff` выполняет
 аккаунт-утилиту, если она запрошена.
 
-## Бэктест (`--broker src/broker/simulated-broker.js`)
+## Бэктест (`--broker src/broker/simulated/broker.js`)
 
 ```bash
-diviner --broker src/broker/simulated-broker.js data/sber_2024.parquet --strategy path/to/strategy.js --balance 10000 --commission 0.0005
+diviner --broker src/broker/simulated/broker.js data/sber_2024.parquet --strategy path/to/strategy.js --balance 10000 --commission 0.0005
 ```
 
 | Опция | Описание | По умолчанию |
@@ -102,7 +112,7 @@ diviner --broker src/broker/simulated-broker.js data/sber_2024.parquet --strateg
 Данные можно передать через pipe:
 
 ```bash
-cat data/sber_2024.parquet | diviner --broker src/broker/simulated-broker.js --strategy path/to/strategy.js
+cat data/sber_2024.parquet | diviner --broker src/broker/simulated/broker.js --strategy path/to/strategy.js
 ```
 
 Расписание торгов в backtest восстанавливается из самих свечей; дневные свечи (`interval: "1d"`)
@@ -115,10 +125,10 @@ cat data/sber_2024.parquet | diviner --broker src/broker/simulated-broker.js --s
 как живой брокер (например, ALRS с lot=10 — кратно 10 акциям). Это совпадает с
 `_defaultOrderLots` в live-брокере.
 
-## Live-трейдинг (`--broker src/broker/tinkoff-broker.js`)
+## Live-трейдинг (`--broker src/broker/tinkoff/broker.js`)
 
 ```bash
-T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --strategy path/to/strategy.js --ticker SBER --sandbox --account <id> --interval 1
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js --strategy path/to/strategy.js --ticker SBER --sandbox --account <id> --interval 1
 ```
 
 | Опция | Описание | По умолчанию |
@@ -168,11 +178,11 @@ T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --strategy 
 ### Аккаунт-утилиты (без стратегии)
 
 ```bash
-T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-balance
-T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-history --history-from 2026-06-01
-T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --create-account
-T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --increase-balance 100000
-T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff-broker.js --sandbox --list-sandboxes
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js --sandbox --account <id> --print-balance
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js --sandbox --account <id> --print-history --history-from 2026-06-01
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js --sandbox --create-account
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js --sandbox --account <id> --increase-balance 100000
+T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js --sandbox --list-sandboxes
 ```
 
 | Опция | Описание |

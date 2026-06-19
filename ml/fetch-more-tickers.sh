@@ -61,7 +61,7 @@ for TICKER in "${NEW_TICKERS[@]}"; do
   fi
 
   echo -n "[fetch] ${TICKER}  ${FROM}→${TO}  1m… "
-  if node src/fetch.js \
+  if node src/broker/tinkoff/fetch.js \
         --security "$TICKER" \
         --from-date "$FROM" \
         --till-date "$TO" \

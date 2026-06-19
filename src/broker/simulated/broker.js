@@ -1,14 +1,14 @@
-import { Portfolio } from "../core/portfolio.js";
-import { PerformanceMetrics } from "../core/metrics.js";
-import { loadDataset } from "../core/data-loader.js";
-import { evaluateIntrabarStop } from "../core/stops.js";
+import { Portfolio } from "../../core/portfolio.js";
+import { PerformanceMetrics } from "../../core/metrics.js";
+import { loadDataset } from "../../core/data-loader.js";
+import { evaluateIntrabarStop } from "../../core/stops.js";
 import {
     DEFAULT_EXCHANGE,
     MOSCOW_OFFSET_MS,
     buildCandleDerivedTradingSchedule,
     getCandleIntervalConfig,
     toDate,
-} from "../core/market-data.js";
+} from "../../core/market-data.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -164,7 +164,7 @@ export class SimulatedDataSource {
                 `Backtest data has no ${config.label} (${minutes}m) candles. `
                 + `The parquet file stores only interval(s) [${available}m]. `
                 + `Re-fetch the listing with this interval, e.g.: `
-                + `node src/fetch.js --security <TICKER> --from-date <YYYY-MM-DD> `
+                + `node src/broker/tinkoff/fetch.js --security <TICKER> --from-date <YYYY-MM-DD> `
                 + `--till-date <YYYY-MM-DD> --interval ${config.label} --merge-into <file>`,
             );
         }

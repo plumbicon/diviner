@@ -38,7 +38,7 @@ worker() {
     local log="/tmp/daily25_${t}_$$.log"
     local ok=0
     for attempt in 1 2 3; do
-      if node src/fetch.js \
+      if node src/broker/tinkoff/fetch.js \
             --security "$t" \
             --from-date "$FROM" \
             --till-date "$TO" \

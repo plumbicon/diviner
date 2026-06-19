@@ -6,15 +6,15 @@ import { InstrumentIdType } from "tinkoff-invest-api/dist/generated/instruments.
 import {
     writeCandleRowsAsParquet,
     writeCandleSeriesAsParquet,
-} from "./core/candle-parquet.js";
-import { loadDataset } from "./core/data-loader.js";
+} from "../../core/candle-parquet.js";
+import { loadDataset } from "../../core/data-loader.js";
 import {
     DEFAULT_EXCHANGE,
     MOSCOW_TIMEZONE,
     buildInstrumentMetadata,
     getCandleIntervalConfig,
     getSupportedIntervalValues,
-} from "./core/market-data.js";
+} from "../../core/market-data.js";
 
 const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
 

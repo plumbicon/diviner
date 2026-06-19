@@ -72,9 +72,9 @@ run_one() {
   fi
   local j02="$WORKDIR/$t.a02.json"
   local j05="$WORKDIR/$t.a05.json"
-  if ! node src/diviner.js --broker src/broker/simulated-broker.js "$f" \
+  if ! node src/diviner.js --broker src/broker/simulated/broker.js "$f" \
         --strategy src/strategies/A02.js --balance 10000 > "$j02" 2>/dev/null \
-     || ! node src/diviner.js --broker src/broker/simulated-broker.js "$f" \
+     || ! node src/diviner.js --broker src/broker/simulated/broker.js "$f" \
         --strategy src/strategies/A05.js --balance 10000 > "$j05" 2>/dev/null; then
     printf 'ERR\t%s\tbacktest failed\n' "$t" > "$rec"
     return 0

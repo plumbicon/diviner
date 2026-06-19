@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { rename } from "node:fs/promises";
-import { OkxClient } from "./broker/okx/client.js";
+import { OkxClient } from "./client.js";
 import {
     getOkxIntervalConfig,
     getSupportedOkxIntervals,
     minutesToOkxIntervalToken,
-} from "./broker/okx/intervals.js";
+} from "./intervals.js";
 import {
     writeCandleRecordsAsParquet,
     writeCandleSeriesAsParquet,
-} from "./core/candle-parquet.js";
-import { loadDataset } from "./core/data-loader.js";
+} from "../../core/candle-parquet.js";
+import { loadDataset } from "../../core/data-loader.js";
 
 /**
  * Fetch historical OKX perpetual-swap candles into Parquet, reusing the existing

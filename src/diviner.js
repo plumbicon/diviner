@@ -21,10 +21,10 @@ Exactly one of --broker / --fetch / --convert.
 --broker is a path to a broker module (like --strategy).
 
 Examples:
-  diviner --broker src/broker/simulated-broker.js data/SBER_2024_1m.parquet --strategy path/to/strategy.js --balance 10000
-  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff-broker.js --strategy path/to/strategy.js --ticker SBER --sandbox --account <id>
-  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-balance
-  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff-broker.js --sandbox --account <id> --print-history [--history-from 2026-06-01]
+  diviner --broker src/broker/simulated/broker.js data/SBER_2024_1m.parquet --strategy path/to/strategy.js --balance 10000
+  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff/broker.js --strategy path/to/strategy.js --ticker SBER --sandbox --account <id>
+  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff/broker.js --sandbox --account <id> --print-balance
+  T_INVEST_TOKEN=<t> diviner --broker src/broker/tinkoff/broker.js --sandbox --account <id> --print-history [--history-from 2026-06-01]
   T_INVEST_TOKEN=<t> diviner --fetch --security SBER --from-date 2024-01-01 --parquet > sber.parquet
   diviner --convert --input-json sber.json --output-parquet sber.parquet`;
 
@@ -221,7 +221,7 @@ async function main() {
     }
 
     const mode = modes[0];
-    if (mode === "fetch") { delegate("fetch.js", rest); return; }
+    if (mode === "fetch") { delegate("broker/tinkoff/fetch.js", rest); return; }
     if (mode === "convert") { delegate("convert.js", rest); return; }
     await runBrokerMode(brokerRef, rest);
 }

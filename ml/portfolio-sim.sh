@@ -22,10 +22,10 @@ for t in "${TICKERS[@]}"; do
   f="data/${t}_${YEAR}_1m.parquet"
   [[ -f "$f" ]] || continue
   (
-    node src/diviner.js --broker src/broker/simulated-broker.js "$f" \
+    node src/diviner.js --broker src/broker/simulated/broker.js "$f" \
          --strategy src/strategies/A02.js --balance 10000 2>/dev/null \
          > "$TMPDIR_LOCAL/a02_$t.json"
-    node src/diviner.js --broker src/broker/simulated-broker.js "$f" \
+    node src/diviner.js --broker src/broker/simulated/broker.js "$f" \
          --strategy src/strategies/A05.js --balance 10000 2>/dev/null \
          > "$TMPDIR_LOCAL/a05_$t.json"
   ) &

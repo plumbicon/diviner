@@ -6,6 +6,12 @@
  * непрерывные фичи, decision_type <= (тип 0 или 2).
  */
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+// Parsed-model cache keyed by absolute path. Batch backtests construct one
+// strategy per ticker, each calling loadModel for the same file; without this
+// the 1 MB model would be re-read and re-parsed dozens of times per process.
+const modelCache = new Map();
 
 // Быстрый sigmoid
 function sigmoid(x) {
@@ -97,7 +103,13 @@ export function lgbmPredict(model, features) {
  * @returns {Promise<{trees, sigmoidScale}>}
  */
 export async function loadModel(modelPath) {
+    const key = resolve(modelPath);
+    const cached = modelCache.get(key);
+    if (cached) {
+        return cached;
+    }
     const text  = await readFile(modelPath, "utf8");
     const model = parseModel(text);
+    modelCache.set(key, model);
     return model;
 }

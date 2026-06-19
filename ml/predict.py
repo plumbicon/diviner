@@ -251,7 +251,7 @@ def main():
     print(f'Tickers   : {", ".join(tickers)}')
     print()
 
-    model     = lgb.Booster(model_file=str(ML_DIR / 'model.txt'))
+    model     = lgb.Booster(model_file=str(ML_DIR.parent / 'src' / 'strategies' / 'A05' / 'model.txt'))
     all_positives = []
 
     for ticker in tickers:

@@ -1,10 +1,5 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { writeSync } from "node:fs";
-// Synchronous, un-buffered proof-of-life on fd 1, emitted before any import-time
-// work or async hop. If even this never reaches the terminal, the problem is the
-// terminal/shell (redirected fd, multiplexer), not this program's logging.
-writeSync(1, `[diviner] starting (pid ${process.pid})\n`);
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command } from "commander";

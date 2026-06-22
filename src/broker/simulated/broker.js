@@ -239,7 +239,7 @@ export class SimulatedExecutor {
         this.liquidations = 0;
         this.currentCandle = null;
         // Pending order buffered for next-open settlement:
-        // { type: 'close' | 'open-long' | 'open-short', size?, sl?, tp? }
+        // { type: 'close' | 'open-long' | 'open-short', size?, sl?, tp?, exitDeadline? }
         this._pending = null;
     }
 
@@ -278,34 +278,34 @@ export class SimulatedExecutor {
             }
         } else if (p.type === "open-short") {
             if (!this.portfolio.position) {
-                this.portfolio.openShort({ candle: fc, size: p.size, sl: p.sl, tp: p.tp });
+                this.portfolio.openShort({ candle: fc, size: p.size, sl: p.sl, tp: p.tp, exitDeadline: p.exitDeadline });
             }
         } else if (p.type === "open-long") {
             if (!this.portfolio.position) {
-                this.portfolio.openLong({ candle: fc, size: p.size, sl: p.sl, tp: p.tp });
+                this.portfolio.openLong({ candle: fc, size: p.size, sl: p.sl, tp: p.tp, exitDeadline: p.exitDeadline });
             }
         }
     }
 
-    buy(size, sl, tp) {
+    buy({ size = null, sl = null, tp = null, exitDeadline = null } = {}) {
         if (this.fillOnNextOpen) {
             // Buffer if no position and no existing pending order.
             if (!this.portfolio.position && !this._pending) {
-                this._pending = { type: "open-long", size, sl, tp };
+                this._pending = { type: "open-long", size, sl, tp, exitDeadline };
             }
             return null;
         }
-        return this.portfolio.openLong({ candle: this.currentCandle, size, sl, tp });
+        return this.portfolio.openLong({ candle: this.currentCandle, size, sl, tp, exitDeadline });
     }
 
-    sell(size, sl, tp) {
+    sell({ size = null, sl = null, tp = null, exitDeadline = null } = {}) {
         if (this.fillOnNextOpen) {
             if (!this.portfolio.position && !this._pending) {
-                this._pending = { type: "open-short", size, sl, tp };
+                this._pending = { type: "open-short", size, sl, tp, exitDeadline };
             }
             return null;
         }
-        return this.portfolio.openShort({ candle: this.currentCandle, size, sl, tp });
+        return this.portfolio.openShort({ candle: this.currentCandle, size, sl, tp, exitDeadline });
     }
 
     closePosition() {

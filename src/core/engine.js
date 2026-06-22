@@ -1,4 +1,4 @@
-import { evaluateStops } from "./stops.js";
+import { evaluateStops, evaluateTimeExit } from "./stops.js";
 
 /**
  * Unified, режим-слепой engine.
@@ -62,6 +62,14 @@ export class Engine {
             if (broker.exec.intrabarStops && typeof broker.exec.checkStops === "function") {
                 broker.exec.checkStops(candle);
             } else if (evaluateStops(broker.exec.getPosition(), candle.close)) {
+                broker.exec.closePosition();
+            }
+
+            // Time-exit: a declared exit alongside SL/TP. Checked after the price
+            // stops (SL/TP win a same-tick tie — their fill price is more
+            // realistic) and unconditionally in both stop modes. The deadline is
+            // absolute (epoch ms), set by the strategy at entry.
+            if (evaluateTimeExit(broker.exec.getPosition(), candle.datetime.getTime())) {
                 broker.exec.closePosition();
             }
 

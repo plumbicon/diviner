@@ -9,7 +9,7 @@ import { TinkoffClient } from "./client.js";
 import { OrderManager } from "./order-manager.js";
 import { StateManager } from "../common/state-manager.js";
 import { PositionStore } from "../common/position-store.js";
-import { evaluateIntrabarStop } from "../../core/stops.js";
+import { evaluateIntrabarStop, evaluateTimeExit } from "../../core/stops.js";
 import { runUtility, isUtilityRequest } from "./sandbox-utils.js";
 
 // Account utilities (no strategy) live in sandbox-utils; re-exported so the CLI
@@ -157,16 +157,6 @@ export class TinkoffDataSource {
         // holidays instead of assuming a fixed weekday calendar.
         this._scheduleCache = new Map();
         this._loadingSchedule = false;
-
-        // Wall-clock EOD close: the strategy's schedule-exit is candle-driven, so
-        // if no market candle arrives in the final minutes of a session (illiquid
-        // tail, stream gap) an open position would carry over to the next day. We
-        // schedule a synthetic no-trade tick shortly before the session end that
-        // drives the strategy once more so its schedule-exit closes the position
-        // in time — independent of incoming market data.
-        this._eodTimer = null;
-        this._lastClose = null;
-        this._eodLeadMs = 90 * 1000;   // fire ~1.5 min before the session end
     }
 
     /**
@@ -185,7 +175,6 @@ export class TinkoffDataSource {
             },
         );
         this._startStallWatchdog();
-        this._scheduleEodClose().catch(() => {});
         console.log(
             `[Tinkoff] Subscribed to ${this.instrument.ticker} ${this.interval}m candles. `
             + `Waiting for completed candles (one per ${this.interval}m while the market is open)…`,
@@ -219,9 +208,6 @@ export class TinkoffDataSource {
         }
         this._lastTime = time;
         this._lastCandleWall = Date.now();
-        if (Number.isFinite(candle.close)) {
-            this._lastClose = candle.close;
-        }
         // Per-candle heartbeat is verbose-only (one line per interval is noisy in
         // prod); the startup banner already confirms the bot is alive.
         if (this.verbose) {
@@ -455,105 +441,6 @@ export class TinkoffDataSource {
     }
 
     /**
-     * Schedule the wall-clock EOD close for the soonest upcoming session: a
-     * synthetic no-trade tick fired shortly before the session end so the
-     * strategy's schedule-exit closes any open position even if the market sent
-     * no candle in the final minutes. Reschedules itself for the next session.
-     * @param {Date} [now] - Reference time (injectable for tests).
-     * @private
-     */
-    async _scheduleEodClose(now = new Date()) {
-        if (this._closed) {
-            return;
-        }
-        if (this._eodTimer) {
-            clearTimeout(this._eodTimer);
-            this._eodTimer = null;
-        }
-
-        const closeTs = await this._nextSessionCloseTs(now);
-        if (!closeTs) {
-            // No schedule available yet (e.g. network down) — retry within the hour.
-            this._eodTimer = setTimeout(() => this._scheduleEodClose().catch(() => {}), 60 * 60 * 1000);
-            this._eodTimer.unref?.();
-            return;
-        }
-
-        const fireAt = closeTs - this._eodLeadMs;
-        const delay = Math.max(0, fireAt - now.getTime());
-        this._eodTimer = setTimeout(() => {
-            this._emitEodTick(closeTs);
-            // Arrange the next session's close (start the search after this one).
-            this._scheduleEodClose(new Date(closeTs + 60 * 1000)).catch(() => {});
-        }, delay);
-        this._eodTimer.unref?.();
-
-        if (this.verbose) {
-            console.log(
-                `[TinkoffDataSource] EOD close armed for ${new Date(fireAt).toISOString()} `
-                + `(session end ${new Date(closeTs).toISOString()}).`,
-            );
-        }
-    }
-
-    /**
-     * Soonest upcoming session-close timestamp (today if still ahead, otherwise
-     * the next trading day) from the schedule cache, loading it if needed.
-     * @param {Date} now - Reference time.
-     * @returns {Promise<number|null>} Epoch ms of the session end, or null.
-     * @private
-     */
-    async _nextSessionCloseTs(now) {
-        const nowMs = now.getTime();
-        for (let i = 0; i < 8; i += 1) {
-            const day = new Date(nowMs + i * 24 * 60 * 60 * 1000);
-            const dateKey = getMoscowDateKey(day);
-            if (!this._scheduleCache.has(dateKey)) {
-                await this._loadScheduleAround(day);
-            }
-            const entry = this._scheduleCache.get(dateKey);
-            if (entry?.isTradingDay && entry.closeTs && entry.closeTs - this._eodLeadMs > nowMs) {
-                return entry.closeTs;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Inject a synthetic, no-trade candle at (closeTs - lead) carrying the last
-     * known price. It drives the engine/strategy once more so the schedule-exit
-     * closes any open position before the session ends. Dropped if a real candle
-     * already covered this window (the exit ran on it) or no price is known yet.
-     * @param {number} closeTs - Session-end timestamp (epoch ms).
-     * @private
-     */
-    _emitEodTick(closeTs) {
-        if (this._closed || !Number.isFinite(this._lastClose)) {
-            return;
-        }
-        const ts = closeTs - this._eodLeadMs;
-        if (this._lastTime !== null && ts <= this._lastTime) {
-            return;   // a real candle already reached this window
-        }
-        const price = this._lastClose;
-        console.log(
-            `[TinkoffDataSource] EOD tick injected at ${new Date(ts).toISOString()} `
-            + `(session end ${new Date(closeTs).toISOString()}) — forcing schedule exit if a position is open.`,
-        );
-        this._enqueue({
-            datetime: new Date(ts),
-            open: price,
-            high: price,
-            low: price,
-            close: price,
-            volume: 0,
-            isComplete: true,
-            noTrade: true,
-            eodTick: true,
-        });
-    }
-
-    /**
      * Re-fetch candles missed during a stream outage and enqueue them.
      * @private
      */
@@ -640,10 +527,6 @@ export class TinkoffDataSource {
         if (this._stallTimer) {
             clearInterval(this._stallTimer);
             this._stallTimer = null;
-        }
-        if (this._eodTimer) {
-            clearTimeout(this._eodTimer);
-            this._eodTimer = null;
         }
         if (this._notify) {
             const notify = this._notify;
@@ -775,6 +658,41 @@ export class TinkoffExecutor {
         this.currentCandle = null;
         this.orderQueue = Promise.resolve();
         this.sessionTrades = [];
+        // Wall-clock time-exit: SL/TP are price events (only fire when a candle
+        // arrives), but exitDeadline is a clock event — it must fire even if the
+        // market sends no candle near the session end. Armed per open position
+        // from its exitDeadline, fires a market close through the order queue.
+        this._exitTimer = null;
+    }
+
+    /**
+     * Arm the wall-clock timer that closes the open position at its exitDeadline,
+     * independent of incoming candles. No-op when there is no deadline.
+     * @param {number|null} exitDeadline - Absolute close time (epoch ms).
+     * @private
+     */
+    _armExitDeadline(exitDeadline) {
+        this._clearExitDeadline();
+        if (exitDeadline == null || !Number.isFinite(exitDeadline)) {
+            return;
+        }
+        const delay = Math.max(0, exitDeadline - Date.now());
+        this._exitTimer = setTimeout(() => {
+            this._exitTimer = null;
+            if (evaluateTimeExit(this.stateManager.getPosition(), Date.now())) {
+                console.log(`[TinkoffExecutor] Time-exit reached (${new Date(exitDeadline).toISOString()}) — closing position at market.`);
+                this.closePosition();
+            }
+        }, delay);
+        this._exitTimer.unref?.();
+    }
+
+    /** @private */
+    _clearExitDeadline() {
+        if (this._exitTimer) {
+            clearTimeout(this._exitTimer);
+            this._exitTimer = null;
+        }
     }
 
     /**
@@ -834,19 +752,19 @@ export class TinkoffExecutor {
         this.stateManager.syncWithStrategy(strategy);
     }
 
-    buy(size, sl, tp) {
-        return this._open("long", size, sl, tp);
+    buy({ size = null, sl = null, tp = null, exitDeadline = null } = {}) {
+        return this._open("long", size, sl, tp, exitDeadline);
     }
 
-    sell(size, sl, tp) {
-        return this._open("short", size, sl, tp);
+    sell({ size = null, sl = null, tp = null, exitDeadline = null } = {}) {
+        return this._open("short", size, sl, tp, exitDeadline);
     }
 
     /**
      * Open a position and enqueue the corresponding broker order.
      * @private
      */
-    _open(side, size, sl, tp) {
+    _open(side, size, sl, tp, exitDeadline = null) {
         if (this.stateManager.hasPosition()) {
             if (this.verbose) {
                 console.log(`[TinkoffExecutor] ${side.toUpperCase()} skipped: position already open`);
@@ -897,8 +815,10 @@ export class TinkoffExecutor {
             entryTime: this.currentCandle?.datetime,
             sl,
             tp,
+            exitDeadline,
         });
-        // Persist SL/TP so a restart re-attaches them to the re-synced position.
+        // Persist SL/TP + exitDeadline so a restart re-attaches them to the
+        // re-synced position (and re-arms the time-exit timer).
         this.store.save({
             figi: this.instrument.figi,
             ticker: this.instrument.ticker,
@@ -907,7 +827,9 @@ export class TinkoffExecutor {
             entryPrice: this.currentCandle?.close ?? null,
             sl: sl ?? null,
             tp: tp ?? null,
+            exitDeadline: exitDeadline ?? null,
         });
+        this._armExitDeadline(exitDeadline);
         this._enqueue(() => this._executeOrder(side === "long" ? "buy" : "sell", actualSize));
         return this.stateManager.getPosition();
     }
@@ -919,6 +841,7 @@ export class TinkoffExecutor {
             }
             return null;
         }
+        this._clearExitDeadline();
         const closed = this.stateManager.closePosition();
         this.store.clear();
         this._enqueue(() => this._closeRealPosition(closed));
@@ -956,6 +879,7 @@ export class TinkoffExecutor {
             && saved.figi === this.instrument.figi
             && saved.side === position.side;
 
+        const exitDeadline = matched ? (saved.exitDeadline ?? null) : null;
         this.stateManager.setPosition({
             side: position.side,
             size: position.lots,
@@ -963,13 +887,17 @@ export class TinkoffExecutor {
             entryTime: new Date(),
             sl: matched ? (saved.sl ?? null) : null,
             tp: matched ? (saved.tp ?? null) : null,
+            exitDeadline,
             source: "account",
         });
+        // Re-arm the wall-clock time-exit so a restart doesn't lose the deadline
+        // (the exact failure that let positions carry overnight before).
+        this._armExitDeadline(exitDeadline);
         console.warn(
             `[TinkoffExecutor] Existing account position detected: ${position.side} ${position.quantity} of ${this.instrument.ticker} (~${position.lots} lots). State synced.`,
         );
         if (matched) {
-            console.warn(`[TinkoffExecutor] SL/TP restored from state file: sl=${saved.sl} tp=${saved.tp}`);
+            console.warn(`[TinkoffExecutor] SL/TP restored from state file: sl=${saved.sl} tp=${saved.tp} exitDeadline=${exitDeadline ? new Date(exitDeadline).toISOString() : "none"}`);
         } else {
             console.warn(`[TinkoffExecutor] No matching persisted SL/TP — position UNPROTECTED until the strategy re-sets levels.`);
         }

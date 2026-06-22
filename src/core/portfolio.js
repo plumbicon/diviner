@@ -39,7 +39,7 @@ export class Portfolio {
      * @param {object} params - Order parameters.
      * @returns {object|null} Opened position or null.
      */
-    openLong({ candle, size = null, sl = null, tp = null }) {
+    openLong({ candle, size = null, sl = null, tp = null, exitDeadline = null }) {
         if (this.position) {
             return null;
         }
@@ -63,6 +63,7 @@ export class Portfolio {
             side: "long",
             sl,
             tp,
+            exitDeadline,
         };
 
         return this.position;
@@ -73,7 +74,7 @@ export class Portfolio {
      * @param {object} params - Order parameters.
      * @returns {object|null} Opened position or null.
      */
-    openShort({ candle, size = null, sl = null, tp = null }) {
+    openShort({ candle, size = null, sl = null, tp = null, exitDeadline = null }) {
         if (this.position) {
             return null;
         }
@@ -97,6 +98,7 @@ export class Portfolio {
             side: "short",
             sl,
             tp,
+            exitDeadline,
         };
 
         return this.position;

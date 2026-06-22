@@ -59,3 +59,23 @@ export function evaluateIntrabarStop(position, candle) {
 
     return null;
 }
+
+/**
+ * Выход позиции по времени (третий вид выхода наряду с SL/TP).
+ *
+ * Чистая функция: позиция несёт абсолютный дедлайн `exitDeadline` (epoch ms),
+ * заданный стратегией при открытии. Возвращает 'time', когда `now` достиг
+ * дедлайна. В отличие от SL/TP это событие часов, а не цены — поэтому в live его
+ * применяет не только потиковый путь движка, но и wall-clock-таймер брокера
+ * (на случай, когда рыночная свеча в конце сессии не пришла).
+ *
+ * @param {{exitDeadline?: number|null}|null} position - Текущая позиция.
+ * @param {number} now - Текущее время (epoch ms).
+ * @returns {'time'|null} Причина выхода или null.
+ */
+export function evaluateTimeExit(position, now) {
+    if (!position || position.exitDeadline == null) {
+        return null;
+    }
+    return now >= position.exitDeadline ? "time" : null;
+}

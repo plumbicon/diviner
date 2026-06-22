@@ -14,7 +14,7 @@ export class StateManager {
      * Открыть позицию
      */
     openPosition(params) {
-        const { side, size, entryPrice, entryTime, sl, tp } = params;
+        const { side, size, entryPrice, entryTime, sl, tp, exitDeadline = null } = params;
 
         if (this.position) {
             if (this.verbose) {
@@ -29,7 +29,8 @@ export class StateManager {
             entryPrice,
             entryTime,
             sl,
-            tp
+            tp,
+            exitDeadline,
         };
 
         if (this.verbose) {

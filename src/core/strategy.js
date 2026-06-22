@@ -61,23 +61,27 @@ export class Strategy {
   /**
    * Открыть длинную позицию (buy).
    * Денежную механику ведёт исполнитель (execution adapter / Portfolio),
-   * стратегия лишь объявляет сигнал.
+   * стратегия лишь объявляет сигнал и его условия выхода.
+   *
+   * @param {{size?: number, sl?: number, tp?: number, exitDeadline?: number}} [opts]
+   *   size — размер (по умолчанию дефолтный сайзинг исполнителя);
+   *   sl/tp — уровни стопов; exitDeadline — абсолютный дедлайн закрытия (epoch ms).
    */
-  buy(size, sl, tp) {
+  buy(opts = {}) {
     if (!this.execution) {
       throw new Error('Strategy.buy requires an attached execution adapter');
     }
-    return this.execution.buy(size, sl, tp);
+    return this.execution.buy(opts);
   }
 
   /**
-   * Открыть короткую позицию (sell/short).
+   * Открыть короткую позицию (sell/short). См. {@link Strategy#buy} про opts.
    */
-  sell(size, sl, tp) {
+  sell(opts = {}) {
     if (!this.execution) {
       throw new Error('Strategy.sell requires an attached execution adapter');
     }
-    return this.execution.sell(size, sl, tp);
+    return this.execution.sell(opts);
   }
 
   /**

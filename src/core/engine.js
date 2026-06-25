@@ -61,8 +61,11 @@ export class Engine {
             // strategies behave exactly as before).
             if (broker.exec.intrabarStops && typeof broker.exec.checkStops === "function") {
                 broker.exec.checkStops(candle);
-            } else if (evaluateStops(broker.exec.getPosition(), candle.close)) {
-                broker.exec.closePosition();
+            } else {
+                const stopReason = evaluateStops(broker.exec.getPosition(), candle.close);
+                if (stopReason) {
+                    broker.exec.closePosition(stopReason);
+                }
             }
 
             // Time-exit: a declared exit alongside SL/TP. Checked after the price
@@ -70,7 +73,7 @@ export class Engine {
             // realistic) and unconditionally in both stop modes. The deadline is
             // absolute (epoch ms), set by the strategy at entry.
             if (evaluateTimeExit(broker.exec.getPosition(), candle.datetime.getTime())) {
-                broker.exec.closePosition();
+                broker.exec.closePosition("time");
             }
 
             await strategy.next();

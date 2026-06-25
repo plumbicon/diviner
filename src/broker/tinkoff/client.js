@@ -927,12 +927,17 @@ export class TinkoffClient {
     const statusName = orderExecutionReportStatusToJSON(status);
     const lotsRequested = Number(order?.lotsRequested) || 0;
     const lotsExecuted = Number(order?.lotsExecuted) || 0;
+    // Фактическая средняя цена исполнения (за один инструмент), если биржа её
+    // вернула — для аудита реальных филлов (проскальзывание vs модель).
+    const toNum = (v) => (v ? this.api.helpers.toNumber(v) : null);
+    const avgPrice = toNum(order?.executedOrderPrice) ?? toNum(order?.averagePositionPrice) ?? null;
 
     return {
       status,
       statusName,
       lotsRequested,
       lotsExecuted,
+      avgPrice,
       isFilled: status === OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_FILL,
       isPartiallyFilled: status === OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_PARTIALLYFILL,
       isRejectedOrCancelled: status === OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_REJECTED

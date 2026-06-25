@@ -308,7 +308,9 @@ export class SimulatedExecutor {
         return this.portfolio.openShort({ candle: this.currentCandle, size, sl, tp, exitDeadline });
     }
 
-    closePosition() {
+    closePosition(_reason = "manual") {
+        // _reason принимается для совместимости с движком (аудит причины выхода
+        // в live); в бэктесте причина не логируется — поведение не меняется.
         if (this.fillOnNextOpen) {
             // Guard: only buffer once; ignore duplicate close signals on the same tick
             // (e.g. SL/TP fires then strategy also tries to exit by schedule).

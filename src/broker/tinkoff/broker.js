@@ -681,7 +681,7 @@ export class TinkoffExecutor {
             this._exitTimer = null;
             if (evaluateTimeExit(this.stateManager.getPosition(), Date.now())) {
                 console.log(`[TinkoffExecutor] Time-exit reached (${new Date(exitDeadline).toISOString()}) — closing position at market.`);
-                this.closePosition();
+                this.closePosition("time");
             }
         }, delay);
         this._exitTimer.unref?.();
@@ -741,7 +741,7 @@ export class TinkoffExecutor {
             + `level=${level} (candle ${reason === "sl" ? "high" : "low"}=${extreme}) `
             + `— closing at market`,
         );
-        return this.closePosition();
+        return this.closePosition(reason);
     }
 
     getBalance() {
@@ -834,7 +834,7 @@ export class TinkoffExecutor {
         return this.stateManager.getPosition();
     }
 
-    closePosition() {
+    closePosition(reason = "manual") {
         if (!this.stateManager.hasPosition()) {
             if (this.verbose) {
                 console.log("[TinkoffExecutor] CLOSE skipped: no position open");
@@ -844,7 +844,7 @@ export class TinkoffExecutor {
         this._clearExitDeadline();
         const closed = this.stateManager.closePosition();
         this.store.clear();
-        this._enqueue(() => this._closeRealPosition(closed));
+        this._enqueue(() => this._closeRealPosition(closed, reason));
         return closed;
     }
 
@@ -974,8 +974,9 @@ export class TinkoffExecutor {
             if (executedLots !== size) {
                 this.stateManager.updatePositionSize(executedLots);
             }
-            this.sessionTrades.push({ kind: "open", direction, lots: executedLots, at: new Date() });
-            console.log(`[TinkoffExecutor] Order executed: ${direction} ${executedLots}/${size} lots of ${this.instrument.ticker} (${summary.statusName})`);
+            this.sessionTrades.push({ kind: "open", direction, lots: executedLots, at: new Date(), fillPrice: summary.avgPrice ?? null });
+            const fillStr = summary.avgPrice != null ? ` @ ${summary.avgPrice}` : "";
+            console.log(`[TinkoffExecutor] Order executed: ${direction} ${executedLots}/${size} lots of ${this.instrument.ticker}${fillStr} (${summary.statusName})`);
             await this.refreshBalance();
         } catch (error) {
             console.error(`[TinkoffExecutor] Failed to execute ${direction} order:`, error.message);
@@ -987,7 +988,7 @@ export class TinkoffExecutor {
      * Place a real close order and reconcile on partial fills.
      * @private
      */
-    async _closeRealPosition(position) {
+    async _closeRealPosition(position, reason = "manual") {
         if (!position) {
             return;
         }
@@ -1009,8 +1010,9 @@ export class TinkoffExecutor {
             if (executedLots < position.size) {
                 this.stateManager.setPosition({ ...position, size: position.size - executedLots });
             }
-            this.sessionTrades.push({ kind: "close", side: position.side, lots: executedLots, at: new Date() });
-            console.log(`[TinkoffExecutor] Close order executed: ${position.side} ${executedLots}/${position.size} lots of ${this.instrument.ticker} (${summary.statusName})`);
+            this.sessionTrades.push({ kind: "close", side: position.side, lots: executedLots, at: new Date(), reason, fillPrice: summary.avgPrice ?? null });
+            const fillStr = summary.avgPrice != null ? ` @ ${summary.avgPrice}` : "";
+            console.log(`[TinkoffExecutor] Close order executed: ${position.side} ${executedLots}/${position.size} lots of ${this.instrument.ticker}${fillStr} [reason=${reason}] (${summary.statusName})`);
         } catch (error) {
             console.error("[TinkoffExecutor] Failed to close position:", error.message);
             if (!this.stateManager.hasPosition()) {

@@ -556,6 +556,25 @@ export class TinkoffClient {
   }
 
   /**
+   * Текущий торговый статус инструмента: можно ли слать рыночную/лимитную заявку
+   * прямо сейчас. Во время аукциона открытия и волатильностных дискретных
+   * аукционов биржа замораживает цену и отклоняет рыночные ордера
+   * (marketOrderAvailableFlag=false), хотя сессия формально открыта.
+   * @param {string} instrumentId - uid (предпочтительно) или figi.
+   * @returns {Promise<{tradingStatus:number, marketOrderAvailableFlag:boolean,
+   *   limitOrderAvailableFlag:boolean, apiTradeAvailableFlag:boolean}>}
+   */
+  async getTradingStatus(instrumentId) {
+    const res = await this.api.marketData.getTradingStatus({ instrumentId });
+    return {
+      tradingStatus: res.tradingStatus,
+      marketOrderAvailableFlag: res.marketOrderAvailableFlag,
+      limitOrderAvailableFlag: res.limitOrderAvailableFlag,
+      apiTradeAvailableFlag: res.apiTradeAvailableFlag,
+    };
+  }
+
+  /**
    * Подписка на свечи
    */
   async subscribeCandles(instrument, interval, onCandle, options = {}) {

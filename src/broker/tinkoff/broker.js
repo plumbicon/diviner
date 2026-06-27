@@ -955,8 +955,43 @@ export class TinkoffExecutor {
         return buildOrderId({ tag: this.orderTag, ticker: this.instrument?.ticker, action, direction, at });
     }
 
+    /**
+     * Откатить оптимистично открытую позицию, если вход не состоялся
+     * (гасим таймер выхода, чистим стор, сбрасываем состояние). @private
+     */
+    _abortPendingEntry() {
+        this._clearExitDeadline();
+        this.store.clear();
+        this.stateManager.reset();
+    }
+
     async _executeOrder(direction, size) {
         try {
+            // Гард: во время аукциона открытия и волатильностных дискретных
+            // аукционов биржа замораживает цену и отклоняет рыночные ордера
+            // (marketOrderAvailableFlag=false), хотя сессия открыта. Не шлём ордер
+            // в таком состоянии — иначе гарантированный отказ. Вход пропускаем,
+            // позицию откатываем; стратегия попробует на следующей свече.
+            try {
+                const status = await this.client.getTradingStatus(
+                    this.instrument.uid || this.instrument.figi,
+                );
+                if (status && status.marketOrderAvailableFlag === false) {
+                    console.warn(
+                        `[TinkoffExecutor] ${direction} entry skipped: market orders `
+                        + `unavailable now (tradingStatus=${status.tradingStatus}) — `
+                        + `instrument in auction/frozen-price. No entry this candle.`,
+                    );
+                    this._abortPendingEntry();
+                    return;
+                }
+            } catch (statusErr) {
+                console.warn(
+                    `[TinkoffExecutor] trading-status check failed (${statusErr.message}); `
+                    + `proceeding with order attempt.`,
+                );
+            }
+
             const result = await this.orderManager.postMarketOrder({
                 figi: this.instrument.figi,
                 instrumentId: this.instrument.uid || this.instrument.figi,
@@ -980,7 +1015,7 @@ export class TinkoffExecutor {
             await this.refreshBalance();
         } catch (error) {
             console.error(`[TinkoffExecutor] Failed to execute ${direction} order:`, error.message);
-            this.stateManager.reset();
+            this._abortPendingEntry();
         }
     }
 

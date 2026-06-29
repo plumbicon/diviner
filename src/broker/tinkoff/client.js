@@ -565,7 +565,7 @@ export class TinkoffClient {
    *   limitOrderAvailableFlag:boolean, apiTradeAvailableFlag:boolean}>}
    */
   async getTradingStatus(instrumentId) {
-    const res = await this.api.marketData.getTradingStatus({ instrumentId });
+    const res = await this.api.marketdata.getTradingStatus({ instrumentId });
     return {
       tradingStatus: res.tradingStatus,
       marketOrderAvailableFlag: res.marketOrderAvailableFlag,

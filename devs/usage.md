@@ -101,14 +101,19 @@ T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js \
 ### Аккаунт-утилиты (без стратегии)
 
 ```bash
-diviner --broker src/broker/tinkoff/broker.js --sandbox --account <id> --print-balance
-diviner --broker src/broker/tinkoff/broker.js --sandbox --account <id> --print-history --history-from 2026-06-01
+# Инспекция — работает и на боевом (по умолчанию), и в sandbox (с --sandbox):
+diviner --broker src/broker/tinkoff/broker.js --account <id> --print-balance
+diviner --broker src/broker/tinkoff/broker.js --account <id> --print-history --history-from 2026-06-01
+
+# Управление тестовыми счетами — только sandbox (требуют --sandbox):
 diviner --broker src/broker/tinkoff/broker.js --sandbox --create-account [--increase-balance 10000]
 diviner --broker src/broker/tinkoff/broker.js --sandbox --list-sandboxes
 ```
 
-`--list-sandboxes` · `--create-account` · `--remove-account` · `--print-balance` ·
-`--print-history [--history-from YYYY-MM-DD]` · `--reset-positions` · `--increase-balance <amount>`.
+Инспекция (`--print-balance`, `--print-history`) идёт по **боевому** счёту по умолчанию;
+с `--sandbox` — по песочнице. Управление счетами
+(`--list-sandboxes` · `--create-account` · `--remove-account` · `--reset-positions` ·
+`--increase-balance <amount>`) существует только в sandbox-API и **требует** `--sandbox`.
 
 ## Загрузка данных (`--fetch`)
 

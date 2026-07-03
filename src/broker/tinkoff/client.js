@@ -144,7 +144,31 @@ export class TinkoffClient {
   async getSandboxBalance(accountId = this.accountId) {
     const resolvedAccountId = accountId || await this._getFirstSandboxAccountId();
     const account = new SandboxAccount(this.api, resolvedAccountId);
+    return this._buildBalanceReport(account, resolvedAccountId, "sandbox");
+  }
 
+  /**
+   * Баланс и позиции БОЕВОГО счёта (portfolio/positions через RealAccount).
+   * accountId обязателен — авто-выбора первого счёта для real нет.
+   * @param {string|null} accountId - ID боевого счёта.
+   */
+  async getRealBalance(accountId = this.accountId) {
+    const resolvedAccountId = accountId;
+    if (!resolvedAccountId) {
+      throw new Error("accountId is required to fetch real balance.");
+    }
+    const account = new RealAccount(this.api, resolvedAccountId);
+    return this._buildBalanceReport(account, resolvedAccountId, "real");
+  }
+
+  /**
+   * Собирает единый отчёт по балансу из RealAccount|SandboxAccount.
+   * Форматтеры общие, поэтому путь один для обоих контуров.
+   * @param {object} account - RealAccount или SandboxAccount.
+   * @param {string} resolvedAccountId - ID счёта.
+   * @param {string} label - Метка контура для сообщения об ошибке.
+   */
+  async _buildBalanceReport(account, resolvedAccountId, label) {
     try {
       const positions = await account.getPositions();
       const portfolio = await account.getPortfolio();
@@ -172,7 +196,7 @@ export class TinkoffClient {
         }),
       };
     } catch (error) {
-      throw new Error(`Failed to get sandbox balance: ${this._formatApiError(error)}`);
+      throw new Error(`Failed to get ${label} balance: ${this._formatApiError(error)}`);
     }
   }
 

@@ -16,8 +16,9 @@ export async function runUtility(config = {}) {
 
     validateUtilityOptions(config);
 
+    const sandbox = Boolean(config.sandbox);
     const client = new TinkoffClient(token, {
-        sandbox: true,
+        sandbox,
         accountId: config.account || null,
         orderRetries: parseInt(config.orderRetries ?? "2", 10),
         verbose: config.verbose,
@@ -60,7 +61,10 @@ export async function runUtility(config = {}) {
         }
 
         if (config.printBalance) {
-            printSandboxBalance(await client.getSandboxBalance(accountId));
+            const balance = sandbox
+                ? await client.getSandboxBalance(accountId)
+                : await client.getRealBalance(accountId);
+            printBalanceReport(balance, sandbox ? "Sandbox" : "Real");
         }
 
         if (config.printHistory) {
@@ -106,6 +110,17 @@ function validateUtilityOptions(config) {
 
     if (accountSpecific && !config.createAccount && !config.account) {
         throw new Error("option '--account <id>' is required for account-specific sandbox commands");
+    }
+    // These operations exist only in the sandbox API — no real-account equivalent.
+    if (!config.sandbox) {
+        const sandboxOnly = config.createAccount
+            || config.removeAccount
+            || config.listSandboxes
+            || config.resetPositions
+            || hasIncreaseBalance(config);
+        if (sandboxOnly) {
+            throw new Error("options --create-account/--remove-account/--list-sandboxes/--reset-positions/--increase-balance require --sandbox");
+        }
     }
     if (config.printHistory && config.historyFrom && !/^\d{4}-\d{2}-\d{2}$/.test(config.historyFrom)) {
         throw new Error("option '--history-from' must be a date in YYYY-MM-DD format");
@@ -175,16 +190,20 @@ function printSandboxAccounts(accounts) {
 }
 
 function printSandboxBalance(balance) {
-    console.log(`[Sandbox] Balance for account: ${balance.accountId}`);
-    printCurrencyValues("[Sandbox] Equity", balance.totals?.estimatedEquity || []);
-    printCurrencyValues("[Sandbox]   Free cash", balance.totals?.freeCash || []);
-    printNonZeroCurrencyValues("[Sandbox] Blocked cash", balance.totals?.blockedCash || []);
-    printNonZeroCurrencyValues("[Sandbox] Long positions", balance.totals?.longShares || []);
-    printNonZeroCurrencyValues("[Sandbox] Short debt", balance.totals?.shortShares || []);
+    printBalanceReport(balance, "Sandbox");
+}
+
+function printBalanceReport(balance, tag = "Sandbox") {
+    console.log(`[${tag}] Balance for account: ${balance.accountId}`);
+    printCurrencyValues(`[${tag}] Equity`, balance.totals?.estimatedEquity || []);
+    printCurrencyValues(`[${tag}]   Free cash`, balance.totals?.freeCash || []);
+    printNonZeroCurrencyValues(`[${tag}] Blocked cash`, balance.totals?.blockedCash || []);
+    printNonZeroCurrencyValues(`[${tag}] Long positions`, balance.totals?.longShares || []);
+    printNonZeroCurrencyValues(`[${tag}] Short debt`, balance.totals?.shortShares || []);
 
     for (const blocked of balance.blocked) {
         if (blocked.value !== 0) {
-            console.log(`[Sandbox] Blocked: ${blocked.value.toFixed(2)} ${blocked.currency.toUpperCase()}`);
+            console.log(`[${tag}] Blocked: ${blocked.value.toFixed(2)} ${blocked.currency.toUpperCase()}`);
         }
     }
 
@@ -197,15 +216,15 @@ function printSandboxBalance(balance) {
                 ? ` price=${formatCurrency(position.currentPrice, position.currency)}` : " price=n/a";
             const value = Number.isFinite(position.marketValue)
                 ? ` value=${formatCurrency(position.marketValue, position.currency)}` : " value=n/a";
-            console.log(`[Sandbox] ${label}:${ticker} figi=${position.figi} quantity=${position.quantity}${lots}${price}${value}`);
+            console.log(`[${tag}] ${label}:${ticker} figi=${position.figi} quantity=${position.quantity}${lots}${price}${value}`);
         }
     } else {
-        console.log("[Sandbox] Open share positions: none");
+        console.log(`[${tag}] Open share positions: none`);
     }
 
     const valuedFigis = new Set((balance.sharePositions || []).map((p) => p.figi));
     for (const security of balance.securities.filter((s) => !valuedFigis.has(s.figi))) {
-        console.log(`[Sandbox] Raw security: figi=${security.figi} balance=${security.balance} blocked=${security.blocked} type=${security.instrumentType}`);
+        console.log(`[${tag}] Raw security: figi=${security.figi} balance=${security.balance} blocked=${security.blocked} type=${security.instrumentType}`);
     }
 }
 

@@ -150,6 +150,9 @@ export class TinkoffDataSource {
         // REST to confirm a completed candle was actually missed. If REST shows
         // none, the stream is healthy and the market is just quiet — no reconnect.
         this._stallTimeoutMs = Math.max(0, Number(stallTimeoutMin) || 0) * 60 * 1000;
+        // Upper bound on a single force-reconnect attempt (REST catch-up +
+        // gRPC resubscribe). See _withTimeout usage in _checkStall.
+        this._reconnectTimeoutMs = 30 * 1000;
         this._lastCandleWall = Date.now();
         this._stallTimer = null;
         // dateKey (MSK) -> { isTradingDay, openTs, closeTs }. Populated from the
@@ -293,10 +296,33 @@ export class TinkoffDataSource {
             `[TinkoffDataSource] Candle stream stalled: a completed candle was missed after `
             + `${Math.round(silentMs / 60000)}min of silence. Reconnecting stream (SL/TP preserved in memory).`,
         );
-        this._forceReconnect().catch((error) => {
-            console.error("[TinkoffDataSource] Force-reconnect failed, exiting for systemd restart:", error.message);
-            process.exit(1);
-        });
+        // Bounded, not just caught: a black-holed connection (packets dropped
+        // silently, no RST) can leave the SDK's gRPC subscribe call pending
+        // forever instead of rejecting — it resolves once the request is
+        // handed to the channel, not once the server actually answers. An
+        // unbounded await here would leave the process stuck reporting
+        // "stalled" every _stallTimeoutMs without ever reaching process.exit(1),
+        // so systemd's Restart=always (the actual fix — a fresh process opens
+        // a new connection) never gets a chance to run.
+        this._withTimeout(this._forceReconnect(), this._reconnectTimeoutMs, "Force-reconnect")
+            .catch((error) => {
+                console.error("[TinkoffDataSource] Force-reconnect failed, exiting for systemd restart:", error.message);
+                process.exit(1);
+            });
+    }
+
+    /**
+     * Race a promise against a timeout, rejecting if it doesn't settle in time.
+     * @private
+     */
+    _withTimeout(promise, ms, label) {
+        return Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+                timer.unref?.();
+            }),
+        ]);
     }
 
     /**

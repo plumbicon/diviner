@@ -108,6 +108,13 @@ async function findInstrument(api, ticker, classCode) {
     );
 
     if (!instrument) {
+        // Fallback: индексы/индикативы (IMOEX, RTSI, RVI…) не возвращаются
+        // findInstrument как shares — их отдаёт отдельный метод indicatives().
+        const { instruments: indicatives } = await api.instruments.indicatives({});
+        const indicative = indicatives.find((item) => item.ticker === ticker);
+        if (indicative) {
+            return indicative;   // имеет uid/figi — достаточно для getCandles
+        }
         throw new Error(`Instrument ${ticker} with class code ${classCode} not found.`);
     }
 

@@ -26,7 +26,7 @@ import { Worker, isMainThread, parentPort, workerData } from "node:worker_thread
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT      = join(__dirname, "..");
-const DATA_DIR  = join(ROOT, "data");
+const DATA_DIR  = process.env.BACKTEST_DATA_DIR || join(ROOT, "data");
 const SELF      = fileURLToPath(import.meta.url);
 
 // ── CLI args ────────────────────────────────────────────────────────────────

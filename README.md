@@ -27,6 +27,3 @@ diviner --broker src/broker/tinkoff/broker.js --strategy src/strategies/A07/A07.
 - [`devs/paths.md`](devs/paths.md) — структура проекта: где что лежит, два репозитория, что не коммитится в git.
 - [`devs/structure.md`](devs/structure.md) — архитектура: как взаимодействуют брокер, движок и стратегия на программном уровне.
 - [`devs/usage.md`](devs/usage.md) — CLI-справка: backtest / live / fetch / convert / аккаунт-утилиты, цикл разработки.
-
----
-*Проект спроектирован в соответствии с принципами UNIX-way и KISS.*

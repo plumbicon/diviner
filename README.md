@@ -27,7 +27,7 @@ diviner src/broker/tinkoff/broker.js --strategy <путь-к-стратегии>
   --ticker SBER --sandbox --account <id> --leverage 4 --intrabar-stops
 
 # загрузка свечей MOEX → Parquet
-T_INVEST_TOKEN=<token> node scripts/fetch.mjs --security SBER --from-date 2024-01-01 \
+T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-date 2024-01-01 \
   --till-date 2024-12-31 --interval 1 --parquet > data/tinkoff/SBER_2024_1m.parquet
 ```
 

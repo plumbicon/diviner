@@ -6,7 +6,7 @@ import { evaluateStops } from "../../core/stops.js";
  */
 export class StateManager {
     constructor(options = {}) {
-        this.verbose = options.verbose || false;
+        this.verbose = options.verbose;
         this.position = null;
     }
 

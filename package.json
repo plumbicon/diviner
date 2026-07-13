@@ -6,7 +6,7 @@
   "main": "src/diviner.js",
   "bin": {
     "diviner": "./src/diviner.js",
-    "diviner-fetch": "./scripts/fetch.mjs",
+    "diviner-fetch": "./src/broker/tinkoff/fetch.js",
     "diviner-fetch-okx": "./src/broker/okx/fetch.js",
     "diviner-fetch-okx-metrics": "./src/broker/okx/fetch-metrics.js",
     "diviner-fetch-okx-batch": "./src/broker/okx/fetch-batch.js",
@@ -14,7 +14,7 @@
   },
   "scripts": {
     "start": "node src/diviner.js",
-    "fetch": "node scripts/fetch.mjs",
+    "fetch": "node src/broker/tinkoff/fetch.js",
     "fetch-okx": "node src/broker/okx/fetch.js",
     "fetch-okx-metrics": "node src/broker/okx/fetch-metrics.js",
     "fetch-okx-batch": "node src/broker/okx/fetch-batch.js",

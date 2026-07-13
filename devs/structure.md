@@ -126,6 +126,6 @@ run({ broker, strategy, context, options }):
 
 - **Брокер**: создать `src/broker/<name>/broker.js` с `export const options` и
   `export async function createBroker(config)`, вернуть `{data, exec, finalize?}`. CLI трогать
-  не нужно — `--broker` принимает путь к файлу.
+  не нужно — путь к брокеру передаётся первым аргументом `diviner`.
 - **Стратегия**: создать `src/strategies/<name>/<name>.js`, наследник `Strategy`. Вспомогательный
   код — в `<name>/src/`, обучение/тюнинг — в `<name>/scripts/`, модель — в `<name>/` (не в git).

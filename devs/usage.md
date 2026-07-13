@@ -1,6 +1,6 @@
 # CLI: использование
 
-Структура проекта — [paths.md](paths.md); архитектура — [structure.md](structure.md).
+Архитектура — [structure.md](structure.md).
 
 ## Установка
 
@@ -9,28 +9,24 @@ npm install
 export T_INVEST_TOKEN=<your-token>   # для команд, обращающихся к T-Invest API
 ```
 
-Python-зависимости обучения ставятся из конкретной стратегии:
-```bash
-pip install -r src/strategies/A07/requirements.txt
-```
-
 ## Единая точка входа
 
 ```bash
-diviner --broker <путь> --strategy <путь> [опции брокера]
-diviner --fetch   [опции fetch]
-diviner --convert [опции convert]
+diviner <путь-к-брокеру> --strategy <путь> [опции брокера]
 ```
 
-Ровно один из `--broker` / `--fetch` / `--convert`. Значение `--broker` — путь к файлу брокера
-(как `--strategy` — путь к стратегии). Опции брокера валидируются по его `export const options`,
-поэтому добавить брокера — это добавить файл, не трогая CLI.
+`<путь-к-брокеру>` — обязательный позиционный аргумент, путь к файлу брокера (как `--strategy` —
+путь к стратегии). Опции брокера валидируются по его `export const options`, поэтому добавить
+брокера — это добавить файл, не трогая CLI.
+
+Загрузка данных и конвертация в Parquet — не часть `diviner`, это отдельные скрипты в `scripts/`
+(см. [Загрузка данных](#загрузка-данных) и [Конвертация](#конвертация) ниже).
 
 ## Бэктест одного инструмента (`simulated`)
 
 ```bash
-diviner --broker src/broker/simulated/broker.js data/SBER_2024_1m.parquet \
-  --strategy src/strategies/A05/A05.js --balance 10000 --commission 0.0005
+diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
+  --strategy <путь-к-стратегии> --balance 10000 --commission 0.0005
 ```
 
 | Опция | Описание | По умолчанию |
@@ -44,7 +40,7 @@ diviner --broker src/broker/simulated/broker.js data/SBER_2024_1m.parquet \
 | `--verbose` | Включить `trade_log` в отчёт | выкл |
 | `[source]` | Позиционный аргумент — Parquet (или stdin) | — |
 
-Данные можно подать через pipe: `cat data/SBER_2024_1m.parquet | diviner --broker … --strategy …`.
+Данные можно подать через pipe: `cat data/tinkoff/SBER_2024_1m.parquet | diviner src/broker/simulated/broker.js --strategy …`.
 Отчёт печатается в stdout как JSON (`backtest_parameters`, `performance_metrics`, `trade_log`).
 
 **Размер позиции по умолчанию:** `floor(cash·0.95·leverage / (price·lot))·lot`; размер лота —
@@ -53,17 +49,18 @@ diviner --broker src/broker/simulated/broker.js data/SBER_2024_1m.parquet \
 ## Бэктест всех тикеров (параллельно)
 
 ```bash
-node scripts/backtest.mjs --strategy A07 --year 2026 --leverage 4 --intrabar-stops [--workers 8] [--top 25]
+node scripts/backtest.mjs --strategy <ИМЯ> --year 2026 --leverage 4 --intrabar-stops [--workers 8] [--top 25]
 ```
 
-Прогоняет все `data/*_<year>_1m.parquet` на пуле `worker_threads`, печатает рейтинг по доходности
+Прогоняет все `data/tinkoff/*_<year>_1m.parquet` на пуле `worker_threads` (переопределяется
+`BACKTEST_DATA_DIR`), печатает рейтинг по доходности
 (+ MaxDD/Sharpe/Calmar/WinRate) и агрегаты. Резолвит стратегию как `src/strategies/<name>/<name>.js`.
 
 ## Live-трейдинг (`tinkoff`)
 
 ```bash
-T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js \
-  --strategy src/strategies/A07/A07.js --ticker SBER --sandbox --account <id> \
+T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/broker.js \
+  --strategy <путь-к-стратегии> --ticker SBER --sandbox --account <id> \
   --leverage 4 --intrabar-stops --interval 1
 ```
 
@@ -102,12 +99,12 @@ T_INVEST_TOKEN=<token> diviner --broker src/broker/tinkoff/broker.js \
 
 ```bash
 # Инспекция — работает и на боевом (по умолчанию), и в sandbox (с --sandbox):
-diviner --broker src/broker/tinkoff/broker.js --account <id> --print-balance
-diviner --broker src/broker/tinkoff/broker.js --account <id> --print-history --history-from 2026-06-01
+diviner src/broker/tinkoff/broker.js --account <id> --print-balance
+diviner src/broker/tinkoff/broker.js --account <id> --print-history --history-from 2026-06-01
 
 # Управление тестовыми счетами — только sandbox (требуют --sandbox):
-diviner --broker src/broker/tinkoff/broker.js --sandbox --create-account [--increase-balance 10000]
-diviner --broker src/broker/tinkoff/broker.js --sandbox --list-sandboxes
+diviner src/broker/tinkoff/broker.js --sandbox --create-account [--increase-balance 10000]
+diviner src/broker/tinkoff/broker.js --sandbox --list-sandboxes
 ```
 
 Инспекция (`--print-balance`, `--print-history`) идёт по **боевому** счёту по умолчанию;
@@ -115,11 +112,13 @@ diviner --broker src/broker/tinkoff/broker.js --sandbox --list-sandboxes
 (`--list-sandboxes` · `--create-account` · `--remove-account` · `--reset-positions` ·
 `--increase-balance <amount>`) существует только в sandbox-API и **требует** `--sandbox`.
 
-## Загрузка данных (`--fetch`)
+## Загрузка данных
+
+Не часть `diviner` — самостоятельный скрипт:
 
 ```bash
-T_INVEST_TOKEN=<token> diviner --fetch --security SBER --from-date 2024-01-01 \
-  --till-date 2024-12-31 --interval 1 --parquet > data/SBER_2024_1m.parquet
+T_INVEST_TOKEN=<token> node scripts/fetch.mjs --security SBER --from-date 2024-01-01 \
+  --till-date 2024-12-31 --interval 1 --parquet > data/tinkoff/SBER_2024_1m.parquet
 ```
 
 | Опция | Описание | По умолчанию |
@@ -132,17 +131,10 @@ T_INVEST_TOKEN=<token> diviner --fetch --security SBER --from-date 2024-01-01 \
 
 Крипта (OKX): `src/broker/okx/fetch.js`, `fetch-batch.js`, `fetch-metrics.js`.
 
-## Конвертация (`--convert`)
+## Конвертация
+
+Не часть `diviner` — самостоятельный скрипт:
 
 ```bash
-diviner --convert --input-json sber.json --output-parquet sber.parquet
-```
-
-## Цикл разработки стратегии
-
-```bash
-pip install -r src/strategies/A07/requirements.txt
-python3 src/strategies/A07/scripts/train.py                 # обучение → A07/model_a07.txt
-node scripts/backtest.mjs --strategy A07 --year 2026 --leverage 4 --intrabar-stops
-# опционально: подбор параметров — src/strategies/<name>/scripts/grid-search.mjs
+node scripts/convert.mjs --input-json sber.json --output-parquet sber.parquet
 ```

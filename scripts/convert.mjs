@@ -4,7 +4,7 @@ import { readFile } from "fs/promises";
 import {
     findCandlesDataBlock,
     writeCandleRowsAsParquet,
-} from "./core/candle-parquet.js";
+} from "../src/core/candle-parquet.js";
 
 async function convertAndWriteParquet(rawData, outputPath) {
     const dataBlock = findCandlesDataBlock(rawData);

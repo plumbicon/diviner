@@ -114,10 +114,10 @@ diviner src/broker/tinkoff/broker.js --sandbox --list-sandboxes
 
 ## Загрузка данных
 
-Не часть `diviner` — самостоятельный скрипт:
+Не часть `diviner` — самостоятельный скрипт, часть брокера:
 
 ```bash
-T_INVEST_TOKEN=<token> node scripts/fetch.mjs --security SBER --from-date 2024-01-01 \
+T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-date 2024-01-01 \
   --till-date 2024-12-31 --interval 1 --parquet > data/tinkoff/SBER_2024_1m.parquet
 ```
 

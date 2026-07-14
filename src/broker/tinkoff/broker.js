@@ -16,6 +16,11 @@ import { runUtility, isUtilityRequest } from "./sandbox-utils.js";
 // can call broker.runUtility(config) when no strategy is given (п.2).
 export { runUtility, isUtilityRequest };
 
+// Sizing headroom for a market fill: the entry order fills at a future price up
+// to this fraction above the sizing price, so margin+commission must still fit
+// in cash at that adverse fill. Keep in sync with core/portfolio.js.
+const SIZING_SLIPPAGE_PAD = 0.01;
+
 /**
  * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
  */
@@ -680,6 +685,14 @@ export class TinkoffExecutor {
             : 1;
         this.confirmMarginTrade = this.leverage > 1;
 
+        // Entry commission rate, used only for order sizing (reserve the fee so
+        // the market order fits in cash); the real fee is charged by the broker.
+        // Mirrors the backtest Portfolio default (0.05%). Override via options
+        // when trading on a different tariff.
+        this.commission = Number.isFinite(Number(options.commission)) && Number(options.commission) >= 0
+            ? Number(options.commission)
+            : 0.0005;
+
         this.accountRubBalance = 0;
         this.currentCandle = null;
         this.orderQueue = Promise.resolve();
@@ -942,9 +955,12 @@ export class TinkoffExecutor {
     }
 
     /**
-     * Default order size in lots from available cash, scaled by leverage.
-     * Mirrors the backtest Portfolio: notional = 95% of cash × leverage,
-     * floored to whole lots. At leverage 1 this is the original 1× sizing.
+     * Default order size in lots from available cash, floored to whole lots.
+     * Reserves exactly the known costs instead of a flat haircut: a market order
+     * fills up to SIZING_SLIPPAGE_PAD above `price`, and at that adverse fill the
+     * posted margin (notional/leverage) plus entry commission must still fit in
+     * cash. Solving  lots·lotSize·priceFill·(1/leverage + commission) ≤ cash
+     * gives the formula below. Mirrors the backtest Portfolio `_defaultSize`.
      * @private
      */
     _defaultOrderLots(price) {
@@ -952,7 +968,9 @@ export class TinkoffExecutor {
             return 0;
         }
         const lotSize = Number(this.instrument?.lot) || 1;
-        return Math.floor((this.accountRubBalance * 0.95 * this.leverage) / (price * lotSize));
+        const priceFill = price * (1 + SIZING_SLIPPAGE_PAD);
+        const perLotCost = priceFill * (1 / this.leverage + this.commission) * lotSize;
+        return Math.floor(this.accountRubBalance / perLotCost);
     }
 
     /**

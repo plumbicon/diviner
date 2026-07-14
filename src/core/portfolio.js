@@ -1,3 +1,9 @@
+// Sizing headroom for a market fill: the entry order fills at a future price
+// up to this fraction above the sizing price, so margin+commission must still
+// fit in cash at that adverse fill. Replaces the old flat 5% haircut with a
+// cost-derived reserve. Keep in sync with tinkoff/broker.js SIZING_SLIPPAGE_PAD.
+export const SIZING_SLIPPAGE_PAD = 0.01;
+
 /**
  * Simulated trading portfolio for backtests.
  */
@@ -11,26 +17,37 @@ export class Portfolio {
         // `lot` (e.g. ALRS lot=10). Carried from the dataset's instrument
         // metadata; defaults to 1 (one share per lot) when unknown.
         this.lot = Number.isFinite(Number(lot)) && Number(lot) > 0 ? Number(lot) : 1;
-        // Short-side leverage. Scales the default short position size (notional =
-        // cash·0.95·leverage) and the locked margin (notional/leverage), so P&L
-        // and drawdowns scale ~linearly with leverage. Default 1 = unleveraged
-        // sizing; the margin posted then equals the full notional. Longs remain
-        // cash-funded (always 1×) — see openLong. Invalid values fall back to 1.
+        // Short-side leverage. Scales the default short position size and the
+        // locked margin (notional/leverage), so P&L and drawdowns scale ~linearly
+        // with leverage. Default 1 = unleveraged sizing; the margin posted then
+        // equals the full notional. Longs remain cash-funded (always 1×) — see
+        // openLong. Invalid values fall back to 1. See _defaultSize for how the
+        // per-lot cost (fill slippage + commission) bounds the size.
         this.leverage = Number.isFinite(Number(leverage)) && Number(leverage) > 0 ? Number(leverage) : 1;
         this.position = null;
         this.trades = [];
     }
 
     /**
-     * Default position size (in shares) for a given price: 95% of cash times the
-     * leverage multiplier, floored to a whole number of exchange lots. Mirrors
-     * the live broker's `_defaultOrderLots` at leverage 1. @private
+     * Default position size (in shares) for a given price, floored to a whole
+     * number of exchange lots. Reserves exactly the known costs instead of a flat
+     * haircut: a market order fills up to SIZING_SLIPPAGE_PAD above the sizing
+     * price, and at that adverse fill the posted margin (notional/leverage) plus
+     * entry commission must still fit in cash. Solving
+     *   size · priceFill · (1/leverage + commission) ≤ cash
+     * for size gives the formula below. Mirrors the live broker's
+     * `_defaultOrderLots` at the same pad/commission. @private
      * @param {number} price - Entry price per share.
      * @param {number} [leverage=1] - Buying-power multiplier (short side only).
      * @returns {number} Size in shares (a multiple of `this.lot`).
      */
     _defaultSize(price, leverage = 1) {
-        const lots = Math.floor((this.cash * 0.95 * leverage) / (price * this.lot));
+        if (!Number.isFinite(price) || price <= 0) {
+            return 0;
+        }
+        const priceFill = price * (1 + SIZING_SLIPPAGE_PAD);
+        const perLotCost = priceFill * (1 / leverage + this.commission) * this.lot;
+        const lots = Math.floor(this.cash / perLotCost);
         return lots * this.lot;
     }
 

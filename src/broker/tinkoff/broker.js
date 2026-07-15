@@ -21,6 +21,14 @@ export { runUtility, isUtilityRequest };
 // in cash at that adverse fill. Keep in sync with core/portfolio.js.
 const SIZING_SLIPPAGE_PAD = 0.01;
 
+// Convert a Tinkoff Quotation {units, nano} to a float; null if absent or
+// non-positive (risk rates are always > 0 when set).
+export function quotationToNumber(q) {
+    if (!q) return null;
+    const n = Number(q.units) + Number(q.nano) / 1e9;
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /**
  * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
  */
@@ -693,6 +701,22 @@ export class TinkoffExecutor {
             ? Number(options.commission)
             : 0.0005;
 
+        // Real short-margin rate: dshortClient is the client-adjusted initial-margin
+        // risk rate for a short (fraction of notional the broker locks as collateral).
+        // Used only as a CAP on short sizing — keeps margin+commission ≤ cash so an
+        // order is never rejected for insufficient margin, and bounds effective
+        // leverage at the broker max (1/rate). Falls back to the deprecated КСУР
+        // `dshort`, then null (cap disabled). At leverage 1 the cap sits far above the
+        // exposure size (dshort ≪ 1), so it never binds and sizing is unchanged.
+        this.shortRiskRate = quotationToNumber(this.instrument?.dshortClient)
+            ?? quotationToNumber(this.instrument?.dshort);
+        if (this.shortRiskRate) {
+            console.log(
+                `[TinkoffExecutor] Short margin rate (dshortClient) = ${this.shortRiskRate.toFixed(4)}`
+                + ` → max safe short leverage ≈ ${(1 / this.shortRiskRate).toFixed(2)}x`,
+            );
+        }
+
         this.accountRubBalance = 0;
         this.currentCandle = null;
         this.orderQueue = Promise.resolve();
@@ -839,7 +863,7 @@ export class TinkoffExecutor {
             }
         }
 
-        const actualSize = size || this._defaultOrderLots(this.currentCandle?.close);
+        const actualSize = size || this._defaultOrderLots(this.currentCandle?.close, side);
         if (!Number.isFinite(actualSize) || actualSize <= 0) {
             if (this.verbose) {
                 console.log(`[TinkoffExecutor] ${side.toUpperCase()} skipped: invalid size`);
@@ -956,21 +980,43 @@ export class TinkoffExecutor {
 
     /**
      * Default order size in lots from available cash, floored to whole lots.
-     * Reserves exactly the known costs instead of a flat haircut: a market order
-     * fills up to SIZING_SLIPPAGE_PAD above `price`, and at that adverse fill the
-     * posted margin (notional/leverage) plus entry commission must still fit in
-     * cash. Solving  lots·lotSize·priceFill·(1/leverage + commission) ≤ cash
-     * gives the formula below. Mirrors the backtest Portfolio `_defaultSize`.
+     *
+     * Exposure sizing (unchanged): reserves the known costs so that at an adverse
+     * fill (+SIZING_SLIPPAGE_PAD) the posted margin (notional/leverage) plus entry
+     * commission fit in cash — notional ≈ leverage × cash. Mirrors the backtest
+     * Portfolio `_defaultSize`.
+     *
+     * For a short, an extra cap uses the broker's REAL initial-margin rate
+     * (dshortClient): the broker locks notional × dshortClient as collateral, so
+     * lots are capped to keep margin + commission ≤ cash. This makes an
+     * over-leveraged short size down to the broker max (1/dshortClient) instead of
+     * being rejected, and bounds risk. At leverage 1 the cap never binds
+     * (dshortClient ≪ 1), so live sizing is identical to before.
      * @private
      */
-    _defaultOrderLots(price) {
+    _defaultOrderLots(price, side) {
         if (!Number.isFinite(price) || price <= 0) {
             return 0;
         }
         const lotSize = Number(this.instrument?.lot) || 1;
         const priceFill = price * (1 + SIZING_SLIPPAGE_PAD);
-        const perLotCost = priceFill * (1 / this.leverage + this.commission) * lotSize;
-        return Math.floor(this.accountRubBalance / perLotCost);
+        const exposureLots = Math.floor(
+            this.accountRubBalance / (priceFill * (1 / this.leverage + this.commission) * lotSize),
+        );
+        if (side === "short" && this.shortRiskRate) {
+            const marginCapLots = Math.floor(
+                this.accountRubBalance / (priceFill * (this.shortRiskRate + this.commission) * lotSize),
+            );
+            if (marginCapLots < exposureLots && this.leverage > 1) {
+                console.warn(
+                    `[TinkoffExecutor] Requested leverage ${this.leverage}x exceeds broker max`
+                    + ` (~${(1 / this.shortRiskRate).toFixed(2)}x for ${this.instrument?.ticker}); `
+                    + `short sizing capped by real margin (${exposureLots} → ${marginCapLots} lots).`,
+                );
+            }
+            return Math.min(exposureLots, marginCapLots);
+        }
+        return exposureLots;
     }
 
     /**

@@ -131,6 +131,47 @@ T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-d
 
 Крипта (OKX): `src/broker/okx/fetch.js`, `fetch-batch.js`, `fetch-metrics.js`.
 
+## Логирование стакана OKX
+
+Ни T-API, ни OKX не отдают историю L2-стакана — только текущий снэпшот и (для OKX) ~90 дней
+истории трейдов. Единственный способ получить данные стакана для скальп-стратегий — писать их
+самостоятельно, вперёд по времени, через публичный WebSocket (креды не нужны — это публичные
+рыночные данные).
+
+```bash
+node src/broker/okx/orderbook-logger.js \
+  --symbols BTC/USDT:USDT,ETH/USDT:USDT --depth 20 --interval-ms 1000 \
+  --rotate-minutes 30 --out-dir data/okx-orderbook
+```
+
+| Опция | Описание | По умолчанию |
+|-------|----------|-------------|
+| `--symbols` | Comma-separated ccxt-символы | топ-50 ликвидных (`TRAIN_SYMBOLS` из `fetch-batch.js`) |
+| `--depth` | Уровней на сторону | `20` |
+| `--interval-ms` | Период снэпшота | `1000` |
+| `--rotate-minutes` | Раз в сколько минут закрывать текущий файл и открывать новый | `30` |
+| `--out-dir` | Куда писать `.parquet` | `data/okx-orderbook` |
+
+Файл во время записи называется `ob_okx_<timestamp>.parquet.inprogress` и переименовывается в
+`ob_okx_<timestamp>.parquet` только после чистого закрытия (ротация или Ctrl-C/SIGTERM) —
+**копировать с сервера безопасно только файлы без суффикса `.inprogress`**. Ротация ограничивает
+объём потери при жёстком kille (SIGKILL/OOM/обрыв питания) окном в `--rotate-minutes`.
+
+Рабочий цикл на диск-ограниченном сервере: запустить логгер → периодически забирать готовые
+(`.parquet`, не `.inprogress`) файлы `rsync`/`scp` и удалять их с сервера, оставляя место → при
+полной остановке (Ctrl-C) следующий запуск сам откроет новый файл с новым таймстампом, без
+коллизий с предыдущими.
+
+Склейка скачанных чанков в один архив — на локальной машине:
+
+```bash
+node scripts/merge-okx-orderbook.mjs data/okx-orderbook-chunks/*.parquet \
+  --output data/okx-orderbook-2026-Q3.parquet
+```
+
+Чанки должны быть с одинаковым `--depth`; скрипт стримит построчно (не грузит всё в память) и
+полагается на то, что имена чанков (`ob_okx_<ISO-таймстамп>...`) уже сортируются хронологически.
+
 ## Конвертация
 
 Не часть `diviner` — самостоятельный скрипт:

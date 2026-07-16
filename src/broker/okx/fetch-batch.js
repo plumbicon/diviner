@@ -27,47 +27,12 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { OkxClient } from "./client.js";
 import { writeCandleSeriesAsParquet } from "../../core/candle-parquet.js";
+import { TRAIN_SYMBOLS, VALID_SYMBOLS, ALL_SYMBOLS, symbolToInstId } from "./symbols.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = join(ROOT, "data", "okx");
 
-// ── Ticker list ───────────────────────────────────────────────────────────────
-// 75 OKX USDT-settled perps with listing date before 2025-01-01,
-// sorted by 24 h USD volume (descending). First 50 = training set, last 25 = validation.
-export const TRAIN_SYMBOLS = [
-    "ETH/USDT:USDT",  "BTC/USDT:USDT",  "SOL/USDT:USDT",  "WLD/USDT:USDT",
-    "DOGE/USDT:USDT", "XRP/USDT:USDT",  "UNI/USDT:USDT",  "JTO/USDT:USDT",
-    "XLM/USDT:USDT",  "NEAR/USDT:USDT", "PEPE/USDT:USDT", "BNB/USDT:USDT",
-    "ADA/USDT:USDT",  "BCH/USDT:USDT",  "SUI/USDT:USDT",  "TAO/USDT:USDT",
-    "ONDO/USDT:USDT", "FIL/USDT:USDT",  "AAVE/USDT:USDT", "LINK/USDT:USDT",
-    "LTC/USDT:USDT",  "AVAX/USDT:USDT", "DOT/USDT:USDT",  "INJ/USDT:USDT",
-    "PENGU/USDT:USDT","CHZ/USDT:USDT",  "ICP/USDT:USDT",  "ORDI/USDT:USDT",
-    "HMSTR/USDT:USDT","CRV/USDT:USDT",  "OP/USDT:USDT",   "APT/USDT:USDT",
-    "SHIB/USDT:USDT", "ZRO/USDT:USDT",  "GRASS/USDT:USDT","FARTCOIN/USDT:USDT",
-    "TRX/USDT:USDT",  "TIA/USDT:USDT",  "ARB/USDT:USDT",  "HBAR/USDT:USDT",
-    "VIRTUAL/USDT:USDT","ETC/USDT:USDT","RENDER/USDT:USDT","GALA/USDT:USDT",
-    "MEME/USDT:USDT", "MOVE/USDT:USDT", "JUP/USDT:USDT",  "WIF/USDT:USDT",
-    "STRK/USDT:USDT", "ETHFI/USDT:USDT",
-];
-
-export const VALID_SYMBOLS = [
-    "BONK/USDT:USDT", "SUSHI/USDT:USDT","NOT/USDT:USDT",  "LDO/USDT:USDT",
-    "ALGO/USDT:USDT", "ATOM/USDT:USDT", "DYDX/USDT:USDT", "AXS/USDT:USDT",
-    "ENJ/USDT:USDT",  "UMA/USDT:USDT",  "EIGEN/USDT:USDT","AR/USDT:USDT",
-    "POL/USDT:USDT",  "CFX/USDT:USDT",  "MOODENG/USDT:USDT","W/USDT:USDT",
-    "PYTH/USDT:USDT", "CORE/USDT:USDT", "TRB/USDT:USDT",  "ATH/USDT:USDT",
-    "ARKM/USDT:USDT", "ENS/USDT:USDT",  "PEOPLE/USDT:USDT","PNUT/USDT:USDT",
-    "EGLD/USDT:USDT",
-];
-
-export const ALL_SYMBOLS = [...TRAIN_SYMBOLS, ...VALID_SYMBOLS];
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function symbolToInstId(symbol) {
-    const [base, rest] = symbol.split("/");
-    return `${base}-${rest.split(":")[0]}-SWAP`;
-}
+export { TRAIN_SYMBOLS, VALID_SYMBOLS, ALL_SYMBOLS, symbolToInstId };
 
 // Intraday timeframe used for signal candles.
 // 5m: 5× fewer API calls than 1m (1 052 vs 5 256 per year), identical model

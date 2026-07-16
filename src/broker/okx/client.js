@@ -49,17 +49,16 @@ export class OkxClient {
     }
 
     /**
-     * Load markets and resolve the swap market for `symbol`.
-     * @param {string} symbol - Unified ccxt symbol (e.g. "BTC/USDT:USDT").
-     * @returns {Promise<object>} The resolved ccxt market.
+     * Load markets, retrying with backoff on transient errors. Idempotent —
+     * ccxt caches the result internally, so calling this from multiple call
+     * sites (init() below, or a multi-symbol caller that never calls init())
+     * does not re-fetch once loaded.
      */
-    async init(symbol) {
-        // loadMarkets fans out over several endpoints and can fail transiently on
-        // a slow/flaky link; retry with backoff before giving up.
+    async loadMarkets() {
         for (let attempt = 0; ; attempt += 1) {
             try {
                 await this.exchange.loadMarkets();
-                break;
+                return;
             } catch (error) {
                 if (attempt >= this.orderRetries || !this._isRetryable(error)) {
                     throw error;
@@ -69,6 +68,15 @@ export class OkxClient {
                 await this._sleep(delay);
             }
         }
+    }
+
+    /**
+     * Load markets and resolve the swap market for `symbol`.
+     * @param {string} symbol - Unified ccxt symbol (e.g. "BTC/USDT:USDT").
+     * @returns {Promise<object>} The resolved ccxt market.
+     */
+    async init(symbol) {
+        await this.loadMarkets();
         this.market = this.exchange.market(symbol);
         if (!this.market) {
             throw new Error(`OKX market not found for symbol '${symbol}'`);
@@ -256,6 +264,20 @@ export class OkxClient {
             lastFormingTs = formingTs;
             lastFormingCandle = forming;
         }
+    }
+
+    /**
+     * Watch the exchange-maintained order book for `symbol`, cropped to `limit`
+     * levels per side. Resolves once per book update (ccxt.pro semantics) — call
+     * in a loop to keep receiving updates. Order book is public market data: no
+     * API credentials are required, so this works on a client constructed with
+     * an empty credentials object.
+     * @param {string} symbol - Unified ccxt symbol (e.g. "BTC/USDT:USDT").
+     * @param {number} [limit] - Max levels per side to receive.
+     * @returns {Promise<object>} ccxt order book structure ({bids, asks, timestamp, ...}).
+     */
+    async watchOrderBook(symbol, limit) {
+        return this.exchange.watchOrderBook(symbol, limit);
     }
 
     /**

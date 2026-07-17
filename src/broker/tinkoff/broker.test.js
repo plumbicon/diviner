@@ -52,3 +52,51 @@ test("quotationToNumber parses {units, nano}, rejects absent/zero", () => {
     assert.equal(quotationToNumber(undefined), null);
     assert.equal(quotationToNumber({ units: 0, nano: 0 }), null, "zero rate treated as unset");
 });
+
+// ── onTickPrice: per-tick SL/TP check (option 1 — fast stop detection) ─────────
+function tickExec(position) {
+    const ex = Object.create(TinkoffExecutor.prototype);
+    ex._closed = [];
+    ex.getPosition = () => position;
+    ex.closePosition = (reason) => { ex._closed.push(reason); return {}; };
+    return ex;
+}
+
+test("onTickPrice short: SL fires when tick >= sl", () => {
+    const ex = tickExec({ side: "short", sl: 226.85, tp: 219.06 });
+    ex.onTickPrice(227.0);
+    assert.deepEqual(ex._closed, ["sl"]);
+});
+
+test("onTickPrice short: TP fires when tick <= tp", () => {
+    const ex = tickExec({ side: "short", sl: 226.85, tp: 219.06 });
+    ex.onTickPrice(219.0);
+    assert.deepEqual(ex._closed, ["tp"]);
+});
+
+test("onTickPrice short: SL wins the tie at the exact level (pessimistic)", () => {
+    const ex = tickExec({ side: "short", sl: 226.85, tp: 219.06 });
+    ex.onTickPrice(226.85);
+    assert.deepEqual(ex._closed, ["sl"]);
+});
+
+test("onTickPrice: no close between levels / no position / bad price", () => {
+    const mid = tickExec({ side: "short", sl: 226.85, tp: 219.06 });
+    mid.onTickPrice(222.0);
+    assert.deepEqual(mid._closed, []);
+    const flat = tickExec(null);
+    flat.onTickPrice(222.0);
+    assert.deepEqual(flat._closed, []);
+    const bad = tickExec({ side: "short", sl: 226.85, tp: 219.06 });
+    bad.onTickPrice(NaN);
+    assert.deepEqual(bad._closed, []);
+});
+
+test("onTickPrice long: correct SL/TP direction", () => {
+    const sl = tickExec({ side: "long", sl: 100, tp: 110 });
+    sl.onTickPrice(99);
+    assert.deepEqual(sl._closed, ["sl"]);
+    const tp = tickExec({ side: "long", sl: 100, tp: 110 });
+    tp.onTickPrice(111);
+    assert.deepEqual(tp._closed, ["tp"]);
+});

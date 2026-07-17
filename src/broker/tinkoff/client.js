@@ -35,6 +35,12 @@ export class TinkoffClient {
     this.account = null;
     this.streamUnsubscribe = null;
     this.candleSubscription = null;
+    // Optional tick-price stream (SUBSCRIBE_LAST_PRICE): rides the same market
+    // stream as candles, used live to check SL/TP on every trade tick instead of
+    // waiting ~90s for the next completed 1m candle to arrive. Re-subscribed by
+    // the shared reconnect path.
+    this.lastPriceSubscription = null;
+    this.lastPriceUnsubscribe = null;
     this.streamErrorHandler = null;
     this.streamCloseHandler = null;
     this.streamReconnectTimer = null;
@@ -710,7 +716,7 @@ export class TinkoffClient {
    * @private
    */
   _scheduleCandleReconnect(error) {
-    if (this.isClosing || !this.candleSubscription || this.streamReconnectTimer) {
+    if (this.isClosing || (!this.candleSubscription && !this.lastPriceSubscription) || this.streamReconnectTimer) {
       return;
     }
 
@@ -729,9 +735,14 @@ export class TinkoffClient {
 
       try {
         await this._runReconnectCatchUp(error);
-        await this._startCandleStream();
+        if (this.candleSubscription) {
+          await this._startCandleStream();
+        }
+        if (this.lastPriceSubscription) {
+          await this._startLastPriceStream();
+        }
         this.streamReconnectAttempts = 0;
-        console.log("[TinkoffClient] Candle stream reconnected.");
+        console.log("[TinkoffClient] Market stream reconnected.");
       } catch (reconnectError) {
         console.error("[TinkoffClient] Candle stream reconnect failed:", reconnectError.message);
         this._scheduleCandleReconnect(reconnectError);
@@ -772,6 +783,57 @@ export class TinkoffClient {
     } finally {
       this.streamUnsubscribe = null;
       this.isReplacingStream = false;
+    }
+  }
+
+  /**
+   * Subscribe to the instrument's last-trade price (tick) stream. Rides the same
+   * market stream as candles; the reconnect path re-subscribes it. Best-effort:
+   * if it drops, the completed-candle SL/TP check remains as the fallback.
+   * @param {object} instrument - { figi, uid }.
+   * @param {(price: number) => unknown} onLastPrice - Called per tick with the price.
+   */
+  async subscribeLastPrice(instrument, onLastPrice) {
+    this.lastPriceSubscription = { instrument, onLastPrice };
+    this._attachMarketStreamErrorHandler(); // idempotent; exec.init() may run before candles subscribe
+    await this._startLastPriceStream();
+  }
+
+  /** @private */
+  async _startLastPriceStream() {
+    if (!this.lastPriceSubscription) {
+      return;
+    }
+    const { instrument, onLastPrice } = this.lastPriceSubscription;
+    await this._unsubscribeCurrentLastPriceStream();
+    this.lastPriceUnsubscribe = await this.api.stream.market.lastPrice(
+      { instruments: [{ instrumentId: instrument.uid || instrument.figi, figi: instrument.figi }] },
+      (lp) => {
+        const price = this.api.helpers.toNumber(lp.price);
+        if (!Number.isFinite(price) || !onLastPrice) {
+          return;
+        }
+        Promise.resolve(onLastPrice(price)).catch((error) => {
+          console.error("[TinkoffClient] LastPrice handler error:", error.message);
+        });
+      },
+    );
+    if (this.verbose) {
+      console.log(`[TinkoffClient] Subscribed to last-price ticks for ${instrument.ticker}.`);
+    }
+  }
+
+  /** @private */
+  async _unsubscribeCurrentLastPriceStream() {
+    if (!this.lastPriceUnsubscribe) {
+      return;
+    }
+    try {
+      await this.lastPriceUnsubscribe();
+    } catch {
+      // best-effort teardown
+    } finally {
+      this.lastPriceUnsubscribe = null;
     }
   }
 
@@ -1326,6 +1388,7 @@ export class TinkoffClient {
   async unsubscribeCandles() {
     this.isClosing = true;
     this.candleSubscription = null;
+    this.lastPriceSubscription = null;
 
     if (this.streamReconnectTimer) {
       clearTimeout(this.streamReconnectTimer);
@@ -1333,6 +1396,7 @@ export class TinkoffClient {
     }
 
     await this._unsubscribeCurrentCandleStream();
+    await this._unsubscribeCurrentLastPriceStream();
 
     if (this.streamErrorHandler) {
       if (typeof this.api.stream.market.off === "function") {

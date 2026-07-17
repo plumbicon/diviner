@@ -9,7 +9,7 @@ import { TinkoffClient } from "./client.js";
 import { OrderManager } from "./order-manager.js";
 import { StateManager } from "../common/state-manager.js";
 import { PositionStore } from "../common/position-store.js";
-import { evaluateIntrabarStop, evaluateTimeExit } from "../../core/stops.js";
+import { evaluateStops, evaluateIntrabarStop, evaluateTimeExit } from "../../core/stops.js";
 import { runUtility, isUtilityRequest } from "./sandbox-utils.js";
 
 // Account utilities (no strategy) live in sandbox-utils; re-exported so the CLI
@@ -764,6 +764,54 @@ export class TinkoffExecutor {
     async init() {
         await this.refreshBalance();
         await this.syncWithAccountPosition();
+        await this._subscribeTickStops();
+    }
+
+    /**
+     * Subscribe to the last-price tick stream so SL/TP on an OPEN position are
+     * checked on every trade tick, not only when the next completed 1m candle
+     * arrives (~90s later). Cuts the stop-detection latency that dominates
+     * slippage on fast moves. Live + intrabar only; the completed-candle
+     * checkStops() remains as the fallback if the tick stream is unavailable.
+     * @private
+     */
+    async _subscribeTickStops() {
+        if (this.dryRun || !this.intrabarStops || typeof this.client.subscribeLastPrice !== "function") {
+            return;
+        }
+        try {
+            await this.client.subscribeLastPrice(this.instrument, (price) => this.onTickPrice(price));
+            console.log(`[TinkoffExecutor] Tick-price SL/TP monitoring active for ${this.instrument.ticker}.`);
+        } catch (error) {
+            // Non-fatal: fall back to completed-candle stops.
+            console.warn(`[TinkoffExecutor] Tick-price subscription failed (${error.message}); using candle stops only.`);
+        }
+    }
+
+    /**
+     * Per-tick SL/TP check for an open position. Uses the same scalar-price rule
+     * as the engine's close path (evaluateStops: short → SL at price≥sl, TP at
+     * price≤tp; SL wins). Closing is idempotent — closePosition() removes the
+     * position from state synchronously, so a following tick or the next candle's
+     * checkStops() no-ops via the hasPosition() guard (no double close).
+     * @param {number} price - Last trade price.
+     */
+    onTickPrice(price) {
+        const position = this.getPosition();
+        if (!position || !Number.isFinite(price)) {
+            return null;
+        }
+        const reason = evaluateStops(position, price);
+        if (!reason) {
+            return null;
+        }
+        const level = reason === "sl" ? position.sl : position.tp;
+        const label = reason === "sl" ? "Stop Loss" : "Take Profit";
+        console.log(
+            `[TinkoffExecutor] ${label} touched on tick: ${position.side} `
+            + `level=${level} (lastPrice=${price}) — closing at market`,
+        );
+        return this.closePosition(reason);
     }
 
     setCurrentCandle(candle) {

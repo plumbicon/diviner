@@ -420,6 +420,17 @@ export function createSimulatedBroker({
     // Lot size from the dataset's instrument metadata, so default order sizing
     // floors to whole lots like the live broker (e.g. ALRS lot=10).
     const lot = Number(metadata?.instrument?.lot) || 1;
+    // Falling back to 1 silently makes a backtest quietly unrealistic: on a
+    // lot=100 name it sizes in shares the exchange would never fill, skipping
+    // the rounding-down penalty live trading always pays. That is invisible in
+    // the report, so say it out loud — a parquet rewritten without its
+    // diviner.metadata block is the usual cause.
+    if (!Number(metadata?.instrument?.lot)) {
+        console.error(
+            "[SimulatedBroker] No instrument lot size in dataset metadata — assuming lot=1. "
+            + "Sizing will not floor to exchange lots; results may be optimistic.",
+        );
+    }
     const portfolio = new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
     const data = new SimulatedDataSource({ candles, series, metadata, portfolio, equity });

@@ -49,6 +49,40 @@ export class TinkoffClient {
     this.streamReconnectMaxDelayMs = options.streamReconnectMaxDelayMs || 60000;
     this.isClosing = false;
     this.isReplacingStream = false;
+    this.unsubscribeTimeoutMs = options.unsubscribeTimeoutMs || 5000;
+    // Heartbeat held while a live subscription exists. Node exits as soon as the
+    // event loop has nothing left to do, so a stream that dies while every
+    // pending promise is unsettled would end the process with status 0 — a
+    // silent death that looks like a clean shutdown. This ref keeps the bot
+    // alive so the reconnect path (or the operator) can act on it.
+    this.keepAliveTimer = null;
+  }
+
+  /** @private */
+  _startKeepAlive() {
+    if (this.keepAliveTimer) {
+      return;
+    }
+    this.keepAliveTimer = setInterval(() => {
+      if (this.isClosing) {
+        return;
+      }
+      const alive = Boolean(this.api.stream?.market?.connected);
+      if (!alive && !this.streamReconnectTimer) {
+        console.error(
+          "[TinkoffClient] Market stream is down with no reconnect pending — forcing one.",
+        );
+        this._scheduleCandleReconnect(new Error("stream down, no reconnect pending"));
+      }
+    }, 30000);
+  }
+
+  /** @private */
+  _stopKeepAlive() {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
   }
 
   /**
@@ -622,6 +656,7 @@ export class TinkoffClient {
     this.isClosing = false;
     this.streamReconnectAttempts = 0;
     this._attachMarketStreamErrorHandler();
+    this._startKeepAlive();
 
     await this._startCandleStream();
   }
@@ -789,12 +824,48 @@ export class TinkoffClient {
       return;
     }
 
+    const unsubscribe = this.streamUnsubscribe;
+    this.streamUnsubscribe = null;
     this.isReplacingStream = true;
     try {
-      await this.streamUnsubscribe();
+      await this._unsubscribeSafely(unsubscribe, "candle");
     } finally {
-      this.streamUnsubscribe = null;
       this.isReplacingStream = false;
+    }
+  }
+
+  /**
+   * Run a library unsubscribe without ever hanging on it.
+   *
+   * The library's unwatch() awaits a status frame that a closed stream will
+   * never send. That promise settles never — and an unsettled promise keeps
+   * nothing alive, so the event loop drains and Node exits 0. For a live bot
+   * that is worse than a crash: systemd's Restart=always is then the only thing
+   * standing between a dropped stream and a silently dead bot (observed on
+   * 2026-07-27 — A16_SMLT_real exited cleanly ~1s after a reconnect was
+   * scheduled). Skip the round-trip when the stream is already gone, and cap it
+   * otherwise; the reconnect path re-subscribes from scratch either way.
+   * @private
+   */
+  async _unsubscribeSafely(unsubscribe, label) {
+    if (!this.api.stream?.market?.connected) {
+      return; // stream already down — nothing to unsubscribe from
+    }
+    let timer;
+    try {
+      await Promise.race([
+        unsubscribe(),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("unsubscribe timed out")),
+            this.unsubscribeTimeoutMs,
+          );
+        }),
+      ]);
+    } catch (error) {
+      console.warn(`[TinkoffClient] ${label} unsubscribe skipped: ${error.message}`);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -840,13 +911,9 @@ export class TinkoffClient {
     if (!this.lastPriceUnsubscribe) {
       return;
     }
-    try {
-      await this.lastPriceUnsubscribe();
-    } catch {
-      // best-effort teardown
-    } finally {
-      this.lastPriceUnsubscribe = null;
-    }
+    const unsubscribe = this.lastPriceUnsubscribe;
+    this.lastPriceUnsubscribe = null;
+    await this._unsubscribeSafely(unsubscribe, "last-price");
   }
 
   /**
@@ -1401,6 +1468,7 @@ export class TinkoffClient {
     this.isClosing = true;
     this.candleSubscription = null;
     this.lastPriceSubscription = null;
+    this._stopKeepAlive();
 
     if (this.streamReconnectTimer) {
       clearTimeout(this.streamReconnectTimer);

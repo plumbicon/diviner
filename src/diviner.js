@@ -84,6 +84,37 @@ function registerSignals(broker) {
 }
 
 /**
+ * Errors thrown out-of-band by the broker's market-data stream. These are
+ * transient (a dropped connection, a re-subscribe the broker refused) and the
+ * client's own reconnect loop already recovers from them, so they must not kill
+ * a live bot: a crash drops tick-level SL/TP monitoring until systemd restarts.
+ */
+const RECOVERABLE_STREAM_ERROR = /Subscription error:|MarketDataStream|Stream closed unexpectedly/;
+
+/**
+ * Last-resort guard for live brokers. An unhandled rejection would otherwise
+ * terminate the process (Node's default) while a position is open. Recoverable
+ * stream noise is logged and swallowed; anything else still exits non-zero so
+ * real bugs stay loud and the supervisor restarts from a known-good state.
+ */
+function registerCrashGuard(broker) {
+    if (typeof broker.data.requestStop !== "function") {
+        return; // backtest: keep fail-fast semantics
+    }
+    const guard = (kind) => (error) => {
+        const message = error?.stack || error?.message || String(error);
+        if (RECOVERABLE_STREAM_ERROR.test(message)) {
+            console.error(`[Main] Recovered from ${kind} in market stream (reconnect will retry): ${error?.message ?? error}`);
+            return;
+        }
+        console.error(`[Main] Fatal ${kind}, exiting:`, message);
+        process.exit(1);
+    };
+    process.on("unhandledRejection", guard("unhandled rejection"));
+    process.on("uncaughtException", guard("uncaught exception"));
+}
+
+/**
  * Run diviner against a broker: utilities (no strategy) or a strategy run.
  */
 async function runBrokerMode(brokerRef, rest) {
@@ -140,6 +171,7 @@ async function runBrokerMode(brokerRef, rest) {
     );
 
     registerSignals(broker);
+    registerCrashGuard(broker);
 
     const engine = new Engine();
     const result = await engine.run({

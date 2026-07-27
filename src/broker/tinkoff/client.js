@@ -684,6 +684,18 @@ export class TinkoffClient {
       return;
     }
 
+    // Disable the library's own auto-reconnect. Its MarketStream.onClose() fires
+    // `setTimeout(() => this.reconnect(), …)` on an async method whose promise is
+    // never awaited and has no .catch(), so a failed re-subscribe (e.g. the broker
+    // answering `status 9` while our old subscription is still registered) becomes
+    // an unhandled rejection and kills the process — observed live on 2026-07-27,
+    // taking the bot down while holding a short. Ours (_scheduleCandleReconnect)
+    // is also the only path that runs the missed-candle catch-up, so racing the
+    // library's reconnect could silently skip it even when it did succeed.
+    if (this.api.stream?.market?.options) {
+      this.api.stream.market.options.autoReconnect = false;
+    }
+
     this.streamErrorHandler = (error) => {
       if (this.isClosing || this.isReplacingStream) {
         return;

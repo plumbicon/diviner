@@ -936,6 +936,12 @@ export class TinkoffExecutor {
             side,
             size: actualSize,
             entryPrice: this.currentCandle?.close ?? null,
+            // Real entry time, so a strategy adopting the position after a restart
+            // can rebuild how long it has been held. Without it the reconciled
+            // position carries `new Date()` and every hold-derived feature is wrong.
+            entryTime: this.currentCandle?.datetime instanceof Date
+                ? this.currentCandle.datetime.toISOString()
+                : null,
             sl: sl ?? null,
             tp: tp ?? null,
             exitDeadline: exitDeadline ?? null,
@@ -995,7 +1001,9 @@ export class TinkoffExecutor {
             side: position.side,
             size: position.lots,
             entryPrice: (matched && saved.entryPrice) || position.averagePrice || position.currentPrice || 0,
-            entryTime: new Date(),
+            entryTime: (matched && saved.entryTime && !Number.isNaN(Date.parse(saved.entryTime)))
+                ? new Date(saved.entryTime)
+                : new Date(),
             sl: matched ? (saved.sl ?? null) : null,
             tp: matched ? (saved.tp ?? null) : null,
             exitDeadline,

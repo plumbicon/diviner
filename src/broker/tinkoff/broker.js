@@ -296,12 +296,14 @@ export class TinkoffDataSource {
         // window rather than every minute.
         this._lastCandleWall = nowMs;
         if (!missed) {
-            if (this.verbose) {
-                console.log(
-                    `[TinkoffDataSource] No candle for ${Math.round(silentMs / 60000)}min, but REST shows `
-                    + `none missed — stream healthy, market quiet (no reconnect).`,
-                );
-            }
+            // Логируем безусловно: молчание стрима — единственный признак, по
+            // которому отличают «рынок тих» от «подписка мертва», и без этой
+            // строки простой выглядит как норма (24.08.2026 стрим молчал 10 часов
+            // при живом TCP, и в журнале не было ровно ничего).
+            console.warn(
+                `[TinkoffDataSource] No candle for ${Math.round(silentMs / 60000)}min, but REST shows `
+                + `none missed — stream healthy, market quiet (no reconnect).`,
+            );
             return;
         }
 
@@ -369,9 +371,7 @@ export class TinkoffDataSource {
                 includeWeekend: true,
             });
         } catch (error) {
-            if (this.verbose) {
-                console.warn("[TinkoffDataSource] Stall probe failed, assuming stalled:", error.message);
-            }
+            console.warn("[TinkoffDataSource] Stall probe failed, assuming stalled:", error.message);
             return true;
         }
 
@@ -471,9 +471,9 @@ export class TinkoffDataSource {
                 });
             }
         } catch (error) {
-            if (this.verbose) {
-                console.warn("[TinkoffDataSource] Schedule load for watchdog failed:", error.message);
-            }
+            // Безусловно: без расписания watchdog падает на грубое окно 06:50–23:50
+            // и может пропустить нерабочий день — знать об этом надо всегда.
+            console.warn("[TinkoffDataSource] Schedule load for watchdog failed:", error.message);
         } finally {
             this._loadingSchedule = false;
         }

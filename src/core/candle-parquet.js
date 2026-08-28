@@ -23,6 +23,12 @@ export const candleSchema = new parquet.ParquetSchema({
     // backtest serve the exact stored candles for each interval instead of
     // re-aggregating 1m — so daily/hourly closes match what the live API returns.
     interval: { type: "INT64", optional: true },
+    // Инструмент строки. Необязательная — однобумажный файл её опускает
+    // (совместимость со всеми уже скачанными листингами: читатель берёт тикер
+    // из metadata). Мультитикерный файл помечает каждую строку, и тогда один
+    // паркет несёт всю вселенную: кросс-секционной стратегии нужен доступ к
+    // любой бумаге, а не только к той, на которой её запустили.
+    ticker: { type: "UTF8", optional: true },
 });
 
 /**
@@ -133,6 +139,9 @@ export async function writeCandleRecordsAsParquet(
         if (Number.isFinite(record.interval)) {
             row.interval = record.interval;
         }
+        if (record.ticker) {
+            row.ticker = record.ticker;
+        }
         await writer.appendRow(row);
     }
 
@@ -167,6 +176,39 @@ export async function writeCandleSeriesAsParquet(series, outputPath = null, meta
 
     all.sort((a, b) =>
         a.datetime.getTime() - b.datetime.getTime() || a.interval - b.interval);
+
+    return writeCandleRecordsAsParquet(all, outputPath, metadata);
+}
+
+/**
+ * Записать в один Parquet несколько инструментов: каждая строка помечается и
+ * интервалом, и тикером. Нужно кросс-секционным стратегиям — они смотрят на всю
+ * вселенную сразу, и держать её россыпью однобумажных файлов бессмысленно.
+ *
+ * Метаданные получают `tickers` (список) и `instruments` (тикер → описание
+ * инструмента: лот, биржа, figi). Однобумажные поля верхнего уровня остаются
+ * заполненными, когда инструмент один, — старые читатели такой файл поймут.
+ *
+ * @param {Map<string, Map<number, Array<object>>>} bySymbol - тикер → (минуты → свечи).
+ * @param {string|null} outputPath - Путь; при null возвращается буфер.
+ * @param {object} metadata - Метаданные датасета.
+ * @returns {Promise<Buffer|null>} Буфер для stdout-режима.
+ */
+export async function writeMultiSymbolParquet(bySymbol, outputPath = null, metadata = {}) {
+    const all = [];
+    for (const [ticker, series] of bySymbol) {
+        for (const [minutes, records] of series) {
+            const intervalMinutes = Number(minutes);
+            for (const record of records) {
+                all.push({ ...record, interval: intervalMinutes, ticker });
+            }
+        }
+    }
+
+    all.sort((a, b) =>
+        a.datetime.getTime() - b.datetime.getTime()
+        || a.interval - b.interval
+        || (a.ticker < b.ticker ? -1 : a.ticker > b.ticker ? 1 : 0));
 
     return writeCandleRecordsAsParquet(all, outputPath, metadata);
 }

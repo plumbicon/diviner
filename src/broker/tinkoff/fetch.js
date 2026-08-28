@@ -379,6 +379,17 @@ async function main() {
  */
 async function mergeIntoExistingFile({ path, seriesByMinutes, instrument, options }) {
     const existing = await loadDataset(path);
+    // Мультитикерный файл (собранный src/bundle.js) сюда дописывать нельзя: у него
+    // нет общего `series`, и слияние молча оставило бы в файле одну свежую бумагу
+    // вместо всей вселенной. Листинги — источник правды, сборка — производный
+    // артефакт: докачиваем в однобумажный листинг и пересобираем вселенную.
+    if (Array.isArray(existing.metadata?.tickers)) {
+        throw new Error(
+            `${path} is a multi-ticker bundle (${existing.symbols.length} tickers) — `
+            + "fetch merges into single-ticker listings only. "
+            + "Fetch into data/tinkoff/<TICKER>_<YEAR>_1m.parquet, then rebuild with src/bundle.js.",
+        );
+    }
     const merged = new Map(existing.series);
 
     for (const [minutes, records] of seriesByMinutes) {

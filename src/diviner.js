@@ -6,6 +6,7 @@ import { Engine } from "./core/engine.js";
 import { TemporalView } from "./core/temporal-view.js";
 import { MarketDataCache } from "./core/market-cache.js";
 import { loadStrategy } from "./core/strategy-loader.js";
+import { StreamingCandleSink } from "./core/candle-sink.js";
 import { encodeBacktestResult } from "./core/json-encoder.js";
 import { createLogger } from "./core/logger.js";
 
@@ -163,7 +164,10 @@ async function runBrokerMode(brokerRef, rest) {
         logger: (message) => console.error(message),
     });
 
-    const initialData = broker.data.candles ?? [];
+    // Мультитикерный датасет: своей единой истории у него нет, а копить поток по
+    // всей вселенной объектами нельзя — стратегия ходит за историей в context.
+    const initialData = broker.data.candles
+        ?? (broker.data.getSymbols?.().length > 1 ? new StreamingCandleSink() : []);
     const strategy = new StrategyClass(
         initialData,
         Number(config.balance) || 0,

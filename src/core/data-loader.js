@@ -194,6 +194,11 @@ async function readColumnar(reader, metadata, baseMinutesMeta) {
     metadata, symbols, bySymbol, instruments,
     /**
      * Хронологический поток по нескольким бумагам (слияние без копирования).
+     *
+     * Последняя свеча каждой минуты помечается `isBatchEnd`. Кросс-секционное
+     * решение возможно только когда минута собрана целиком: сравнивать скоры по
+     * вселенной, увидев половину бумаг, нельзя. Флаг ставится заглядыванием на
+     * одну свечу вперёд — иначе «минута закончилась» не определить.
      * @param {number} minutes - Интервал.
      * @param {Array<string>} [only] - Подмножество тикеров.
      * @returns {Generator<object>} Свечи по возрастанию времени, тай-брейк по тикеру.
@@ -204,7 +209,7 @@ async function readColumnar(reader, metadata, baseMinutesMeta) {
         const series = bySymbol.get(ticker)?.get(minutes);
         if (series && series.length > 0) heads.push({ ticker, series, i: 0 });
       }
-      for (;;) {
+      const next = () => {
         let best = -1;
         for (let k = 0; k < heads.length; k += 1) {
           const h = heads[k];
@@ -214,10 +219,19 @@ async function readColumnar(reader, metadata, baseMinutesMeta) {
           const diff = h.series.tsAt(h.i) - bh.series.tsAt(bh.i);
           if (diff < 0 || (diff === 0 && h.ticker < bh.ticker)) best = k;
         }
-        if (best < 0) return;
+        if (best < 0) return null;
         const h = heads[best];
-        yield h.series.at(h.i);
+        const candle = h.series.at(h.i);
         h.i += 1;
+        return candle;
+      };
+
+      let held = next();
+      while (held) {
+        const ahead = next();
+        held.isBatchEnd = !ahead || ahead.datetime.getTime() !== held.datetime.getTime();
+        yield held;
+        held = ahead;
       }
     },
   };

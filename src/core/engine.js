@@ -76,7 +76,10 @@ export class Engine {
                 broker.exec.closePosition("time");
             }
 
-            await strategy.next();
+            // Свеча передаётся аргументом: в мультитикерном прогоне история в
+            // strategy.data не копится (её там негде держать), и стратегия берёт
+            // текущую свечу отсюда. Однобумажные стратегии аргумент игнорируют.
+            await strategy.next(candle);
             broker.exec.syncStrategyState(strategy);
 
             if (typeof broker.exec.drainOrders === "function") {

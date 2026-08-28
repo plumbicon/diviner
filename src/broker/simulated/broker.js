@@ -1,4 +1,6 @@
 import { Portfolio } from "../../core/portfolio.js";
+import { SlotPortfolio } from "../../core/slot-portfolio.js";
+import { MultiSymbolExecutor } from "./multi-executor.js";
 import { PerformanceMetrics } from "../../core/metrics.js";
 import { loadDataset } from "../../core/data-loader.js";
 import { evaluateIntrabarStop } from "../../core/stops.js";
@@ -26,6 +28,7 @@ export const options = [
     { flags: "--leverage <n>", description: "Short-side leverage: scales position size and locked margin (default 1 = unleveraged)", default: "1" },
     { flags: "--fill-next-open", description: "Fill orders at the open of the next candle (more realistic than current-close fill)" },
     { flags: "--intrabar-stops", description: "Evaluate SL/TP intrabar by candle high/low and fill at the level (default off = close-only). Used by A07." },
+    { flags: "--slots <n>", description: "Multi-symbol datasets only: how many positions to hold at once (one ticker per slot, budget = equity/n)", default: "1" },
     { flags: "--model-liquidation", description: "With --intrabar-stops + leverage>1: gap-aware stop fills + margin-call liquidation (loss capped at posted margin). Off = stops always fill at the level (no liquidation)." },
 ];
 
@@ -59,6 +62,7 @@ export async function createBroker(config = {}) {
         fillOnNextOpen: Boolean(config.fillNextOpen),
         intrabarStops: Boolean(config.intrabarStops),
         modelLiquidation: Boolean(config.modelLiquidation),
+        slots: Number(config.slots) || 1,
         meta: {
             historyFile: config.sourceName || "",
             strategyFile: config.strategy || "",
@@ -512,6 +516,7 @@ export function createSimulatedBroker({
     fillOnNextOpen = false,
     intrabarStops = false,
     modelLiquidation = false,
+    slots = 1,
     meta = {},
 } = {}) {
     // Lot size from the dataset's instrument metadata, so default order sizing
@@ -531,13 +536,20 @@ export function createSimulatedBroker({
             + "Sizing will not floor to exchange lots; results may be optimistic.",
         );
     }
-    const portfolio = new Portfolio({ cash: initialCash, commission, lot, leverage });
+    // Мультитикерный прогон: касса одна, позиций несколько, лот берётся у
+    // инструмента сделки. Однобумажный путь остаётся ровно прежним.
+    const portfolio = multiSymbol
+        ? new SlotPortfolio({ cash: initialCash, commission, slots, leverage })
+        : new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
     const data = new SimulatedDataSource({
-        candles, series, metadata, portfolio, equity,
+        candles, series, metadata, portfolio: multiSymbol ? null : portfolio,
+        equity: multiSymbol ? null : equity,
         bySymbol, symbols, instruments, mergeStream,
     });
-    const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen, intrabarStops, modelLiquidation });
+    const exec = multiSymbol
+        ? new MultiSymbolExecutor({ portfolio, fillOnNextOpen, intrabarStops, instruments })
+        : new SimulatedExecutor({ portfolio, fillOnNextOpen, intrabarStops, modelLiquidation });
 
     return {
         data,
@@ -554,13 +566,26 @@ export function createSimulatedBroker({
          */
         finalize() {
             if (multiSymbol) {
-                // Отчёт по вселенной строится не здесь: у одной кассы несколько
-                // одновременных позиций, и «последняя свеча» у каждой своя.
-                // Этим занимается мультипозиционный исполнитель.
-                throw new Error(
-                    "Multi-symbol dataset has no single-instrument report: "
-                    + "run it through the multi-position executor.",
-                );
+                // «Последней свечи» у вселенной нет — у каждой бумаги своя, поэтому
+                // хвост доводит исполнитель по последним известным ценам. Шкала
+                // отчёта — концы минут (по одной отметке капитала на минуту), а не
+                // свечи: их на минуту приходит столько, сколько бумаг во вселенной.
+                exec.flush();
+                const timeline = exec.timeline.map((datetime) => ({ datetime, close: 1 }));
+                return {
+                    backtest_parameters: {
+                        history_file: meta.historyFile || "",
+                        strategy_file: meta.strategyFile || "",
+                        fill_mode: fillOnNextOpen ? "next-open" : "current-close",
+                        symbols: symbols || [],
+                        slots,
+                    },
+                    performance_metrics: new PerformanceMetrics({
+                        data: timeline, equity: exec.equity,
+                        trades: portfolio.trades, initialCash,
+                    }).compile(),
+                    trade_log: portfolio.trades,
+                };
             }
             if (candles.length > 0) {
                 const last = candles.at(-1);

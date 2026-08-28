@@ -33,7 +33,7 @@ export class MarketDataCache {
      * @param {object} params - { from, to, interval, until }.
      * @returns {Promise<Array<object>>} Candles in [from, to).
      */
-    async getHistory({ from = null, to = null, interval = "1m", until } = {}) {
+    async getHistory({ from = null, to = null, interval = "1m", until, ticker = null } = {}) {
         const fromTs = from ? toDate(from).getTime() : -Infinity;
         const toTs = to ? toDate(to).getTime() : Infinity;
         const intervalMs = (getCandleIntervalConfig(interval).minutes || 1) * 60 * 1000;
@@ -41,10 +41,12 @@ export class MarketDataCache {
         // Only cache fully-settled ranges; let live-edge requests pass through.
         const settled = Number.isFinite(toTs) && toTs <= Date.now() - intervalMs;
         if (!settled) {
-            return this.dataSource.getHistory({ from, to, interval, until });
+            return this.dataSource.getHistory({ from, to, interval, until, ticker });
         }
 
-        const key = String(interval);
+        // Тикер обязан входить в ключ: иначе запрос по второй бумаге попадёт в
+        // покрытие первой и молча вернёт чужие свечи.
+        const key = `${ticker ?? ""}|${interval}`;
         const entry = this.byInterval.get(key);
 
         if (entry && fromTs >= entry.fromTs && toTs <= entry.toTs) {
@@ -57,6 +59,7 @@ export class MarketDataCache {
             from: new Date(newFromTs),
             to: new Date(newToTs),
             interval,
+            ticker,
         });
         this.byInterval.set(key, { fromTs: newFromTs, toTs: newToTs, candles });
 

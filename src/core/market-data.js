@@ -518,18 +518,27 @@ export function buildCandleDerivedTradingSchedule(
     const intervalMs = Math.max(Number(intervalMinutes) || 1, 1) * 60 * 1000;
     const candlesByDate = new Map();
 
-    for (const candle of candles || []) {
-        const datetime = toDate(candle.datetime || candle.time);
-        const ts = datetime.getTime();
+    const add = (ts) => {
         if (!Number.isFinite(ts) || ts < fromTs || ts >= toTs) {
-            continue;
+            return;
         }
-
-        const dateParts = getMoscowDateParts(datetime);
+        const dateParts = getMoscowDateParts(new Date(ts));
         if (!candlesByDate.has(dateParts.dateKey)) {
             candlesByDate.set(dateParts.dateKey, []);
         }
         candlesByDate.get(dateParts.dateKey).push({ ts });
+    };
+
+    // Колоночной серии хватает колонки времени — собирать объект на каждую свечу
+    // ради одного поля незачем, а расписание строится по всему листингу целиком.
+    if (candles && typeof candles.tsAt === "function") {
+        for (let i = 0; i < candles.length; i += 1) {
+            add(candles.tsAt(i));
+        }
+    } else {
+        for (const candle of candles || []) {
+            add(toDate(candle.datetime || candle.time).getTime());
+        }
     }
 
     return Array.from(candlesByDate.entries())

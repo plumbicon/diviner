@@ -48,6 +48,10 @@ export async function createBroker(config = {}) {
     const broker = createSimulatedBroker({
         candles:       dataset.candles,
         series:        dataset.series,
+        bySymbol:      dataset.bySymbol,
+        symbols:       dataset.symbols,
+        instruments:   dataset.instruments,
+        mergeStream:   dataset.mergeStream ? dataset.mergeStream.bind(dataset) : null,
         metadata,
         initialCash:   Number(config.balance),
         commission:    Number(config.commission),
@@ -86,15 +90,66 @@ export async function createBroker(config = {}) {
  * bar is included (it is the one being processed).
  */
 export class SimulatedDataSource {
-    constructor({ candles = [], series = null, metadata = {}, portfolio = null, equity = null } = {}) {
+    constructor({
+        candles = [], series = null, metadata = {}, portfolio = null, equity = null,
+        bySymbol = null, symbols = null, instruments = null, mergeStream = null,
+    } = {}) {
         this.candles = candles;
         this.series = series instanceof Map ? series : null;
         this.metadata = metadata || {};
         this.portfolio = portfolio;
         this.equity = equity;
-        this.baseMinutes = this.series && this.series.size > 0
-            ? Math.min(...this.series.keys())
-            : (Number(this.metadata.intervalMinutes) || 1);
+        // Мультитикерный датасет: физически данные лежат по бумагам, общий
+        // хронологический поток даёт mergeStream (слиянием, без копирования).
+        this.bySymbol = bySymbol instanceof Map ? bySymbol : null;
+        this.symbols = symbols || (this.bySymbol ? [...this.bySymbol.keys()].sort() : []);
+        this.instruments = instruments instanceof Map ? instruments : new Map();
+        this._mergeStream = mergeStream;
+        this.baseMinutes = this._resolveBaseMinutes();
+    }
+
+    /** @private */
+    _resolveBaseMinutes() {
+        if (this.series && this.series.size > 0) return Math.min(...this.series.keys());
+        if (this.bySymbol && this.bySymbol.size > 0) {
+            const intervals = new Set();
+            for (const perInterval of this.bySymbol.values()) {
+                for (const minutes of perInterval.keys()) intervals.add(minutes);
+            }
+            if (intervals.size > 0) return Math.min(...intervals);
+        }
+        return Number(this.metadata.intervalMinutes) || 1;
+    }
+
+    /** Тикеры, доступные датасету. @returns {Array<string>} Тикеры. */
+    getSymbols() {
+        return this.symbols;
+    }
+
+    /**
+     * Описание инструмента (лот, биржа, figi).
+     * @param {string} [ticker] - Тикер; по умолчанию — инструмент датасета.
+     * @returns {object} Метаданные инструмента.
+     */
+    getInstrument(ticker = null) {
+        if (ticker && this.instruments.has(ticker)) return this.instruments.get(ticker);
+        return this.metadata.instrument || { ticker: this.metadata.ticker || ticker, lot: 1 };
+    }
+
+    /**
+     * Серия нужного интервала для нужной бумаги.
+     * @param {number} minutes - Интервал в минутах.
+     * @param {string|null} ticker - Тикер; null — серия датасета по умолчанию.
+     * @returns {Array<object>|object|null} Массив свечей либо CandleSeries.
+     * @private
+     */
+    _seriesFor(minutes, ticker) {
+        if (ticker && this.bySymbol) {
+            return this.bySymbol.get(ticker)?.get(minutes) ?? null;
+        }
+        if (this.series) return this.series.get(minutes) ?? null;
+        // Однобумажный датасет: тикер, совпадающий с его собственным, — не ошибка.
+        return null;
     }
 
     /**
@@ -105,14 +160,30 @@ export class SimulatedDataSource {
      * @returns {AsyncGenerator<object>} Candle stream.
      */
     async *stream() {
-        for (let i = 0; i < this.candles.length; i += 1) {
-            if (i > 0) {
-                this._markEquity(this.candles[i - 1]);
+        // Мультитикерный датасет: единый поток по всей вселенной, свечи несут
+        // поле `ticker`. Отметку equity здесь не делаем — при нескольких открытых
+        // позициях она считается по ценам всех удерживаемых бумаг сразу, и это
+        // забота мультипозиционного исполнителя, а не источника данных.
+        if (!this.candles && this._mergeStream) {
+            for (const candle of this._mergeStream(this.baseMinutes)) {
+                yield candle;
             }
-            yield this.candles[i];
+            return;
         }
-        if (this.candles.length > 0) {
-            this._markEquity(this.candles[this.candles.length - 1]);
+
+        const candles = this.candles;
+        const n = candles.length;
+        const at = typeof candles.at === "function"
+            ? (i) => candles.at(i)
+            : (i) => candles[i];
+        for (let i = 0; i < n; i += 1) {
+            if (i > 0) {
+                this._markEquity(at(i - 1));
+            }
+            yield at(i);
+        }
+        if (n > 0) {
+            this._markEquity(at(n - 1));
         }
     }
 
@@ -142,7 +213,7 @@ export class SimulatedDataSource {
      * @param {Date|string|number} [params.until] - Upper data-freshness bound.
      * @returns {Array<object>} Candles.
      */
-    async getHistory({ from = null, to = null, interval = "1m", until = Infinity } = {}) {
+    async getHistory({ from = null, to = null, interval = "1m", until = Infinity, ticker = null } = {}) {
         const fromTs = from ? toDate(from).getTime() : -Infinity;
         const toTs = to ? toDate(to).getTime() : Infinity;
         const untilTs = until === Infinity ? Infinity : toDate(until).getTime();
@@ -155,13 +226,29 @@ export class SimulatedDataSource {
         const config = getCandleIntervalConfig(interval);
         const minutes = config.minutes;
 
-        const stored = this.series?.get(minutes);
+        const stored = this._seriesFor(minutes, ticker);
         if (!stored) {
-            const available = [...(this.series?.keys() || [])]
-                .sort((a, b) => a - b)
-                .join(", ");
+            if (!ticker && this.bySymbol && !this.series) {
+                throw new Error(
+                    "Multi-symbol dataset needs an explicit ticker in the history request: "
+                    + `getCandles({ ticker: "…", … }). Available: [${this.symbols.join(", ")}].`,
+                );
+            }
+            if (ticker && this.bySymbol && !this.bySymbol.has(ticker)) {
+                throw new Error(
+                    `Backtest data has no candles for ${ticker}. `
+                    + `The dataset holds [${this.symbols.join(", ")}]. `
+                    + `Re-bundle the universe with this ticker: node src/bundle.js --out <file> …`,
+                );
+            }
+            const available = [...(
+                ticker && this.bySymbol
+                    ? this.bySymbol.get(ticker)?.keys() || []
+                    : this.series?.keys() || []
+            )].sort((a, b) => a - b).join(", ");
             throw new Error(
-                `Backtest data has no ${config.label} (${minutes}m) candles. `
+                `Backtest data has no ${config.label} (${minutes}m) candles`
+                + `${ticker ? ` for ${ticker}` : ""}. `
                 + `The parquet file stores only interval(s) [${available}m]. `
                 + `Re-fetch the listing with this interval, e.g.: `
                 + `node src/broker/tinkoff/fetch.js --security <TICKER> --from-date <YYYY-MM-DD> `
@@ -188,10 +275,16 @@ export class SimulatedDataSource {
      * @param {object} params - Request.
      * @returns {Array<object>} Trading days.
      */
-    async getTradingSchedule(params = {}) {
-        return buildCandleDerivedTradingSchedule(this.candles, {
+    async getTradingSchedule({ ticker = null, ...params } = {}) {
+        // Расписание выводится из самих свечей, поэтому у каждой бумаги оно своё:
+        // на неликвидной сессия начинается позже, и общее расписание вселенной
+        // соврало бы про её открытие.
+        const source = ticker && this.bySymbol
+            ? this._seriesFor(this.baseMinutes, ticker)
+            : this.candles;
+        return buildCandleDerivedTradingSchedule(source, {
             ...params,
-            exchange: this.metadata.instrument?.exchange
+            exchange: this.getInstrument(ticker).exchange
                 || this.metadata.exchange
                 || DEFAULT_EXCHANGE,
             intervalMinutes: this.metadata.intervalMinutes,
@@ -408,6 +501,10 @@ export class SimulatedExecutor {
 export function createSimulatedBroker({
     candles = [],
     series = null,
+    bySymbol = null,
+    symbols = null,
+    instruments = null,
+    mergeStream = null,
     metadata = {},
     initialCash = 10000,
     commission = 0.0005,
@@ -419,13 +516,16 @@ export function createSimulatedBroker({
 } = {}) {
     // Lot size from the dataset's instrument metadata, so default order sizing
     // floors to whole lots like the live broker (e.g. ALRS lot=10).
+    // Мультитикерный датасет: лот у каждой бумаги свой, единый лот портфеля здесь
+    // бессмыслен — размер считает мультипозиционный исполнитель по инструменту сделки.
+    const multiSymbol = !candles && Boolean(bySymbol);
     const lot = Number(metadata?.instrument?.lot) || 1;
     // Falling back to 1 silently makes a backtest quietly unrealistic: on a
     // lot=100 name it sizes in shares the exchange would never fill, skipping
     // the rounding-down penalty live trading always pays. That is invisible in
     // the report, so say it out loud — a parquet rewritten without its
     // diviner.metadata block is the usual cause.
-    if (!Number(metadata?.instrument?.lot)) {
+    if (!multiSymbol && !Number(metadata?.instrument?.lot)) {
         console.error(
             "[SimulatedBroker] No instrument lot size in dataset metadata — assuming lot=1. "
             + "Sizing will not floor to exchange lots; results may be optimistic.",
@@ -433,7 +533,10 @@ export function createSimulatedBroker({
     }
     const portfolio = new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
-    const data = new SimulatedDataSource({ candles, series, metadata, portfolio, equity });
+    const data = new SimulatedDataSource({
+        candles, series, metadata, portfolio, equity,
+        bySymbol, symbols, instruments, mergeStream,
+    });
     const exec = new SimulatedExecutor({ portfolio, fillOnNextOpen, intrabarStops, modelLiquidation });
 
     return {
@@ -450,8 +553,17 @@ export function createSimulatedBroker({
          * @returns {object} Backtest report.
          */
         finalize() {
+            if (multiSymbol) {
+                // Отчёт по вселенной строится не здесь: у одной кассы несколько
+                // одновременных позиций, и «последняя свеча» у каждой своя.
+                // Этим занимается мультипозиционный исполнитель.
+                throw new Error(
+                    "Multi-symbol dataset has no single-instrument report: "
+                    + "run it through the multi-position executor.",
+                );
+            }
             if (candles.length > 0) {
-                const last = candles[candles.length - 1];
+                const last = candles.at(-1);
 
                 // Flush any order buffered on the last tick: no next candle,
                 // so settle at last candle's close.
@@ -517,6 +629,17 @@ function candlePeriodEnd(startTs, minutes) {
 function sliceAscending(candles, fromTs, toTs) {
     const n = candles.length;
     if (n === 0) return [];
+
+    // Колоночная серия (CandleSeries) знает свои границы двоичным поиском без
+    // сборки объектов; массив объектов ищем как раньше. Наружу в обоих случаях
+    // отдаём обычный массив свечей — так его ждут все стратегии.
+    if (typeof candles.lowerBound === "function") {
+        const lo = candles.lowerBound(fromTs);
+        const hi = candles.lowerBound(toTs);
+        const out = new Array(Math.max(0, hi - lo));
+        for (let i = lo; i < hi; i += 1) out[i - lo] = candles.at(i);
+        return out;
+    }
 
     let lo = 0;
     let hi = n;

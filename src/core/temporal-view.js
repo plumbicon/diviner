@@ -41,8 +41,29 @@ export class TemporalView {
         return this.metadata;
     }
 
-    getInstrumentMetadata() {
+    /**
+     * Описание инструмента. Для мультитикерного датасета — по конкретной бумаге:
+     * лот и биржа у каждой свои, и брать их из общих метаданных нельзя.
+     * @param {string} [ticker] - Тикер; без него — инструмент датасета.
+     * @returns {object} Метаданные инструмента.
+     */
+    getInstrumentMetadata(ticker = null) {
+        if (ticker && typeof this.dataSource?.getInstrument === "function") {
+            return this.dataSource.getInstrument(ticker);
+        }
         return this.metadata.instrument || this.metadata;
+    }
+
+    /**
+     * Тикеры, доступные стратегии. Кросс-секционной стратегии это и есть её
+     * вселенная; однобумажный датасет отдаёт свой единственный инструмент.
+     * @returns {Array<string>} Тикеры.
+     */
+    getSymbols() {
+        const symbols = this.dataSource?.getSymbols?.();
+        if (symbols?.length) return symbols;
+        const own = this.metadata.ticker || this.metadata.instrument?.ticker;
+        return own ? [own] : [];
     }
 
     getExchange() {

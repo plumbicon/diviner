@@ -22,8 +22,8 @@ export class PerformanceMetrics {
      * @returns {object} Performance metrics.
      */
     compile() {
-        const start = this.data[0].datetime;
-        const end = this.data[this.data.length - 1].datetime;
+        const start = this.data.at(0).datetime;
+        const end = this.data.at(-1).datetime;
         const durationDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
         const equityFinal = this.equity[this.equity.length - 1] || this.initialCash;
         const equityPeak = this.equity.reduce(
@@ -35,10 +35,10 @@ export class PerformanceMetrics {
         const totalReturn = equityFinal - this.initialCash;
         const totalReturnPct = (totalReturn / this.initialCash) * 100;
         const buyAndHoldReturn = (
-            (this.data[this.data.length - 1].close - this.data[0].close) / this.data[0].close
+            (this.data.at(-1).close - this.data.at(0).close) / this.data.at(0).close
         ) * this.initialCash;
         const buyAndHoldReturnPct = (
-            (this.data[this.data.length - 1].close - this.data[0].close) / this.data[0].close
+            (this.data.at(-1).close - this.data.at(0).close) / this.data.at(0).close
         ) * 100;
         const winningTrades = this.trades.filter((trade) => (trade.pnl || 0) > 0);
         const losingTrades = this.trades.filter((trade) => (trade.pnl || 0) <= 0);
@@ -141,7 +141,7 @@ export class PerformanceMetrics {
 
         const timeToIndex = new Map();
         for (let i = 0; i < this.data.length; i += 1) {
-            timeToIndex.set(this.data[i].datetime.getTime(), i);
+            timeToIndex.set(this.data.at(i).datetime.getTime(), i);
         }
 
         const barsWithPosition = this.trades.reduce((sum, trade) => {
@@ -174,7 +174,7 @@ export class PerformanceMetrics {
         // Last equity value per Moscow calendar day
         const dailyEquity = new Map();
         for (let i = 0; i < this.data.length; i++) {
-            const dk = mskDateKey(this.data[i].datetime);
+            const dk = mskDateKey(this.data.at(i).datetime);
             dailyEquity.set(dk, this.equity[i] ?? this.initialCash);
         }
 

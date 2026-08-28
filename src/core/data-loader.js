@@ -182,15 +182,21 @@ async function readColumnar(reader, metadata, baseMinutesMeta) {
     instruments.set(symbol, metadata.instruments?.[symbol] || { ticker: symbol, lot: 1 });
   }
 
-  // Общий `series`/`candles` отдаём только когда бумага одна: склеивать всю
-  // вселенную во второй физический массив значит удвоить память ради того, что
-  // мультитикерному движку не нужно — ему нужен поток, а не массив.
-  const single = symbols.length === 1 ? bySymbol.get(symbols[0]) : null;
-  const baseMinutes = single ? Math.min(...single.keys()) : baseMinutesMeta;
+  // Собранный файл — всегда датасет-вселенная, даже если бумага в нём одна:
+  // доступ к данным идёт по тикеру. Общего `candles`/`series` у него нет, и это
+  // намеренно — склеивать вселенную во второй физический массив значит удвоить
+  // память ради того, что мультитикерному движку не нужно: ему нужен поток.
+  const baseMinutes = (() => {
+    const intervals = new Set();
+    for (const perInterval of bySymbol.values()) {
+      for (const minutes of perInterval.keys()) intervals.add(minutes);
+    }
+    return intervals.size > 0 ? Math.min(...intervals) : baseMinutesMeta;
+  })();
 
   return {
-    candles: single ? single.get(baseMinutes) : null,
-    series: single,
+    candles: null,
+    series: null,
     metadata, symbols, bySymbol, instruments,
     /**
      * Хронологический поток по нескольким бумагам (слияние без копирования).

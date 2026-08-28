@@ -24,6 +24,9 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { candleSchema, PARQUET_METADATA_KEY } from "./core/candle-parquet.js";
 
+// Запас дневной истории перед --from: 21-дневное окно фич плюс праздники.
+const HISTORY_LOOKBACK_DAYS = 40;
+
 /** Дата строки Parquet → Date. @private */
 function toDate(ts) {
     if (typeof ts === "bigint") return new Date(Number(ts / 1_000_000n));
@@ -107,6 +110,13 @@ export async function bundle(inputs, options = {}) {
     const allow = tickers ? new Set(tickers) : null;
     const fromTs = from ? new Date(`${from}T00:00:00.000+03:00`).getTime() : -Infinity;
     const toTs   = to   ? new Date(`${to}T23:59:59.999+03:00`).getTime()   :  Infinity;
+    // Нижняя граница режет только минутки. Дневные свечи нужны стратегиям как
+    // история d-1..d-5 (окно 21 календарный день), и если обрезать их по той же
+    // дате, первые недели прогона молча выпадут: истории для фич не наберётся.
+    // Верхняя граница общая — заглядывать вперёд нельзя ни на каком интервале.
+    const historyFromTs = from
+        ? fromTs - HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
+        : -Infinity;
 
     // Открываем все источники сразу: слияние по времени требует одновременного
     // доступа к головам всех потоков.
@@ -144,8 +154,9 @@ export async function bundle(inputs, options = {}) {
             const row = await src.cursor.next();
             if (!row) return;
             const ts = toDate(row.datetime).getTime();
-            if (ts < fromTs || ts > toTs) continue;
             const interval = row.interval != null ? Number(row.interval) : src.baseMinutes;
+            const lowerBound = interval > src.baseMinutes ? historyFromTs : fromTs;
+            if (ts < lowerBound || ts > toTs) continue;
             heap.push({ ts, ticker: src.ticker, interval, src, row });
             return;
         }

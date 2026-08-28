@@ -1,5 +1,5 @@
 import { Portfolio } from "../../core/portfolio.js";
-import { SlotPortfolio } from "../../core/slot-portfolio.js";
+import { MultiPortfolio } from "../../core/multi-portfolio.js";
 import { MultiSymbolExecutor } from "./multi-executor.js";
 import { PerformanceMetrics } from "../../core/metrics.js";
 import { loadDataset } from "../../core/data-loader.js";
@@ -28,7 +28,6 @@ export const options = [
     { flags: "--leverage <n>", description: "Short-side leverage: scales position size and locked margin (default 1 = unleveraged)", default: "1" },
     { flags: "--fill-next-open", description: "Fill orders at the open of the next candle (more realistic than current-close fill)" },
     { flags: "--intrabar-stops", description: "Evaluate SL/TP intrabar by candle high/low and fill at the level (default off = close-only). Used by A07." },
-    { flags: "--slots <n>", description: "Multi-symbol datasets only: how many positions to hold at once (one ticker per slot, budget = equity/n)", default: "1" },
     { flags: "--model-liquidation", description: "With --intrabar-stops + leverage>1: gap-aware stop fills + margin-call liquidation (loss capped at posted margin). Off = stops always fill at the level (no liquidation)." },
 ];
 
@@ -62,7 +61,6 @@ export async function createBroker(config = {}) {
         fillOnNextOpen: Boolean(config.fillNextOpen),
         intrabarStops: Boolean(config.intrabarStops),
         modelLiquidation: Boolean(config.modelLiquidation),
-        slots: Number(config.slots) || 1,
         meta: {
             historyFile: config.sourceName || "",
             strategyFile: config.strategy || "",
@@ -516,7 +514,6 @@ export function createSimulatedBroker({
     fillOnNextOpen = false,
     intrabarStops = false,
     modelLiquidation = false,
-    slots = 1,
     meta = {},
 } = {}) {
     // Lot size from the dataset's instrument metadata, so default order sizing
@@ -537,9 +534,11 @@ export function createSimulatedBroker({
         );
     }
     // Мультитикерный прогон: касса одна, позиций несколько, лот берётся у
-    // инструмента сделки. Однобумажный путь остаётся ровно прежним.
+    // инструмента сделки. Сколько бумаг держать и как делить между ними депозит
+    // портфель не знает — это решение стратегии, она передаёт сумму в ордере.
+    // Однобумажный путь остаётся ровно прежним.
     const portfolio = multiSymbol
-        ? new SlotPortfolio({ cash: initialCash, commission, slots, leverage })
+        ? new MultiPortfolio({ cash: initialCash, commission, leverage })
         : new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
     const data = new SimulatedDataSource({
@@ -578,7 +577,6 @@ export function createSimulatedBroker({
                         strategy_file: meta.strategyFile || "",
                         fill_mode: fillOnNextOpen ? "next-open" : "current-close",
                         symbols: symbols || [],
-                        slots,
                     },
                     performance_metrics: new PerformanceMetrics({
                         data: timeline, equity: exec.equity,

@@ -1,8 +1,8 @@
 import { evaluateIntrabarStop } from "../../core/stops.js";
 
 /**
- * Исполнитель для мультитикерного бэктеста: одна касса, k одновременных позиций
- * по разным бумагам.
+ * Исполнитель для мультитикерного бэктеста: одна касса, несколько одновременных
+ * позиций по разным бумагам.
  *
  * Движок остаётся однопозиционным по своему контракту — и это намеренно. Он
  * обрабатывает по одной свече за такт, а у свечи есть тикер, поэтому
@@ -10,10 +10,14 @@ import { evaluateIntrabarStop } from "../../core/stops.js";
  * бумаги, чья свеча сейчас в работе**. Так проверки SL/TP и таймаута движка
  * работают над мультипозиционным портфелем без единой правки в `core/engine.js`.
  *
- * Слот резервируется в момент постановки ордера, а не заливки: капитал
- * распределяется решением, а не случайностью порядка прихода свечей. Иначе два
- * ордера на последний свободный слот привели бы к тому, что второй молча
- * пропадает.
+ * Сколько бумаг держать и в какой пропорции делить депозит — **не его дело**.
+ * Это решение стратегии: она смотрит на капитал (`getEquity`), свои открытые
+ * позиции и неисполненные ордера и передаёт в ордере сумму (`budget`) либо
+ * готовый размер (`size`). Исполнитель отвечает за механику: перевести сумму в
+ * лоты по цене исполнения, проверить кассу, вести позиции и стопы.
+ *
+ * Позиции ведутся по бумагам: на счёте по инструменту бывает одна нетто-позиция
+ * — это ограничение биржи, поэтому повторный ордер по занятой бумаге отклоняется.
  *
  * Заливка — по open следующей свечи ТОЙ ЖЕ бумаги (`fillOnNextOpen`), как в
  * однобумажном исполнителе. Стопы исполняются внутри свечи по уровню, в обход
@@ -22,7 +26,7 @@ import { evaluateIntrabarStop } from "../../core/stops.js";
 export class MultiSymbolExecutor {
     /**
      * @param {object} params - Параметры.
-     * @param {import("../../core/slot-portfolio.js").SlotPortfolio} params.portfolio - Портфель.
+     * @param {import("../../core/multi-portfolio.js").MultiPortfolio} params.portfolio - Портфель.
      * @param {boolean} [params.fillOnNextOpen] - Заливать по open следующей свечи.
      * @param {boolean} [params.intrabarStops] - Внутрисвечные SL/TP.
      * @param {Map<string, object>} [params.instruments] - Тикер → инструмент (лот).
@@ -37,10 +41,8 @@ export class MultiSymbolExecutor {
         this.currentTicker = null;
         /** Последняя виденная цена бумаги — для переоценки и финального закрытия. */
         this.lastCandle = new Map();
-        /** Тикер → отложенный ордер { type, slot, sl, tp, exitDeadline, size, reason }. */
+        /** Тикер → отложенный ордер { type, budget, size, sl, tp, exitDeadline, reason }. */
         this._pending = new Map();
-        /** Слоты, занятые под ещё не залитые ордера. */
-        this._reserved = new Set();
 
         /** Точки капитала и их время — по одной на минуту (конец батча). */
         this.equity = [];
@@ -65,8 +67,7 @@ export class MultiSymbolExecutor {
 
     /** Позиция бумаги, чья свеча в работе. @returns {object|null} Позиция. */
     getPosition() {
-        const found = this.currentTicker ? this.portfolio.positionOf(this.currentTicker) : null;
-        return found ? found.position : null;
+        return this.currentTicker ? this.portfolio.positionOf(this.currentTicker) : null;
     }
 
     /** Свободный кэш. @returns {number} Кэш. */
@@ -81,14 +82,14 @@ export class MultiSymbolExecutor {
      * @returns {object|null} Сделка.
      */
     checkStops(candle) {
-        const found = this.portfolio.positionOf(candle?.ticker);
-        if (!found) return null;
-        const reason = evaluateIntrabarStop(found.position, candle);
+        const position = this.portfolio.positionOf(candle?.ticker);
+        if (!position) return null;
+        const reason = evaluateIntrabarStop(position, candle);
         if (!reason) return null;
 
-        this._cancelPending(candle.ticker);
-        return this.portfolio.close(found.slot, {
-            price: reason === "sl" ? found.position.sl : found.position.tp,
+        this._pending.delete(candle.ticker);
+        return this.portfolio.close(candle.ticker, {
+            price: reason === "sl" ? position.sl : position.tp,
             datetime: candle.datetime,
             reason,
         });
@@ -101,18 +102,17 @@ export class MultiSymbolExecutor {
      * @returns {object|null} Сделка при немедленном закрытии.
      */
     closePosition(reason = "manual", ticker = this.currentTicker) {
-        const found = this.portfolio.positionOf(ticker);
-        if (!found) return null;
+        if (!this.portfolio.positionOf(ticker)) return null;
 
         if (this.fillOnNextOpen) {
             // Один буфер на бумагу: повторный сигнал выхода в том же такте
             // (например, стоп и расписание сразу) не должен ставить второй ордер.
             if (!this._pending.has(ticker)) {
-                this._pending.set(ticker, { type: "close", ticker, slot: found.slot, reason });
+                this._pending.set(ticker, { type: "close", ticker, reason });
             }
             return null;
         }
-        return this.portfolio.close(found.slot, {
+        return this.portfolio.close(ticker, {
             price: this.lastCandle.get(ticker)?.close, datetime: this.currentCandle?.datetime, reason,
         });
     }
@@ -135,8 +135,9 @@ export class MultiSymbolExecutor {
     // ── контракт стратегии ──────────────────────────────────────────────────
 
     /**
-     * Открыть шорт по бумаге. Слот резервируется сразу.
-     * @param {object} order - { ticker, size, sl, tp, exitDeadline }.
+     * Открыть шорт по бумаге. Сумму (`budget`) или размер (`size`) задаёт
+     * стратегия — распределение депозита между бумагами это её решение.
+     * @param {object} order - { ticker, budget, size, sl, tp, exitDeadline }.
      * @returns {boolean} Принят ли ордер.
      */
     sell(order = {}) {
@@ -145,20 +146,16 @@ export class MultiSymbolExecutor {
 
     /**
      * Открыть лонг по бумаге.
-     * @param {object} order - { ticker, size, sl, tp, exitDeadline }.
+     * @param {object} order - { ticker, budget, size, sl, tp, exitDeadline }.
      * @returns {boolean} Принят ли ордер.
      */
     buy(order = {}) {
         return this._queueOpen("long", order);
     }
 
-    /** Открытые позиции. @returns {Array<{slot: number, position: object}>} Позиции. */
+    /** Открытые позиции. @returns {Array<object>} Позиции. */
     getPositions() {
-        const out = [];
-        this.portfolio.positions.forEach((position, slot) => {
-            if (position) out.push({ slot, position });
-        });
-        return out;
+        return [...this.portfolio.positions.values()];
     }
 
     /**
@@ -167,7 +164,16 @@ export class MultiSymbolExecutor {
      * @returns {object|null} Позиция.
      */
     getPositionOf(ticker) {
-        return this.portfolio.positionOf(ticker)?.position ?? null;
+        return this.portfolio.positionOf(ticker);
+    }
+
+    /**
+     * Бумаги с неисполненными ордерами. Стратегии это нужно, чтобы считать свою
+     * занятость: ордер поставлен, но позиции ещё нет.
+     * @returns {Array<string>} Тикеры.
+     */
+    getPendingTickers() {
+        return [...this._pending.keys()];
     }
 
     /** Есть ли по бумаге позиция или неисполненный ордер. @returns {boolean} Занята ли. */
@@ -175,34 +181,21 @@ export class MultiSymbolExecutor {
         return Boolean(this.portfolio.positionOf(ticker)) || this._pending.has(ticker);
     }
 
-    /** Сколько слотов свободно с учётом резервов. @returns {number} Свободно. */
-    freeSlots() {
-        let n = 0;
-        this.portfolio.positions.forEach((position, slot) => {
-            if (!position && !this._reserved.has(slot)) n += 1;
-        });
-        return n;
-    }
-
     /** Капитал по последним известным ценам удерживаемых бумаг. @returns {number} Капитал. */
     getEquity() {
         return this.portfolio.equity(
-            (_slot, position) => this.lastCandle.get(position.ticker)?.close ?? position.entryPrice,
+            (ticker) => this.lastCandle.get(ticker)?.close ?? null,
         );
     }
 
     // ── внутреннее ──────────────────────────────────────────────────────────
 
     /** @private */
-    _queueOpen(side, { ticker = this.currentTicker, size = null, sl = null, tp = null, exitDeadline = null } = {}) {
+    _queueOpen(side, { ticker = this.currentTicker, size = null, budget = null,
+                      sl = null, tp = null, exitDeadline = null } = {}) {
         if (!ticker || this.isBusy(ticker)) return false;
-        const slot = this.portfolio.positions.findIndex(
-            (position, i) => !position && !this._reserved.has(i),
-        );
-        if (slot < 0) return false;
 
-        const order = { type: `open-${side}`, ticker, slot, size, sl, tp, exitDeadline };
-        this._reserved.add(slot);
+        const order = { type: `open-${side}`, ticker, size, budget, sl, tp, exitDeadline };
         if (this.fillOnNextOpen) {
             this._pending.set(ticker, order);
             return true;
@@ -215,31 +208,20 @@ export class MultiSymbolExecutor {
     /** @private */
     _settle(order, price, datetime) {
         this._pending.delete(order.ticker);
-        this._reserved.delete(order.slot);
         if (!Number.isFinite(price)) return;
 
         if (order.type === "close") {
-            const found = this.portfolio.positionOf(order.ticker);
-            if (found) this.portfolio.close(found.slot, { price, datetime, reason: order.reason });
+            this.portfolio.close(order.ticker, { price, datetime, reason: order.reason });
             return;
         }
-        if (this.portfolio.positions[order.slot]) return;   // слот успели занять — не удваиваем
-        this.portfolio.open(order.slot, {
+        this.portfolio.open(order.ticker, {
             side: order.type === "open-long" ? "long" : "short",
-            price, datetime, ticker: order.ticker,
+            price, datetime,
             lot: Number(this.instruments.get(order.ticker)?.lot) || 1,
             size: order.size,
-            budget: this.portfolio.budgetFor(this.getEquity()),
+            budget: order.budget,
             sl: order.sl, tp: order.tp, exitDeadline: order.exitDeadline,
         });
-    }
-
-    /** @private */
-    _cancelPending(ticker) {
-        const pending = this._pending.get(ticker);
-        if (!pending) return;
-        this._pending.delete(ticker);
-        this._reserved.delete(pending.slot);
     }
 
     /**
@@ -251,9 +233,9 @@ export class MultiSymbolExecutor {
             const candle = this.lastCandle.get(order.ticker);
             this._settle(order, candle?.close, candle?.datetime);
         }
-        for (const { slot, position } of this.getPositions()) {
+        for (const position of this.getPositions()) {
             const candle = this.lastCandle.get(position.ticker);
-            this.portfolio.close(slot, {
+            this.portfolio.close(position.ticker, {
                 price: candle?.close ?? position.entryPrice,
                 datetime: candle?.datetime ?? position.entryTime,
                 reason: "eod",

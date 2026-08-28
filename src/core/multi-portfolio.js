@@ -1,58 +1,49 @@
 import { SIZING_SLIPPAGE_PAD } from "./portfolio.js";
 
 /**
- * Портфель на k слотов с общей кассой.
+ * Портфель на несколько одновременных позиций с общей кассой.
  *
- * Кросс-секционная стратегия держит несколько бумаг одновременно, но касса у неё
- * одна: слот получает бюджет `капитал / k`, а не собственный счёт. Отсюда два
- * отличия от {@link Portfolio}: размер считается от выделенного бюджета, а не от
- * всего кэша, и лот берётся у инструмента сделки — у бумаг вселенной он разный.
+ * Позиции хранятся по бумагам: на счёте по инструменту бывает только одна нетто-
+ * позиция, и это ограничение биржи, а не политика. А вот **как делить депозит
+ * между бумагами — решает стратегия**, портфель об этом не знает. Он умеет
+ * перевести выделенную сумму в размер позиции (округление до лотов, резерв под
+ * комиссию и проскальзывание), но саму сумму получает извне.
  *
- * Арифметика (округление до лотов, резерв под комиссию и проскальзывание, маржа,
- * P&L) — копия Portfolio. При slots=1 бюджет слота равен всему кэшу, поэтому
- * прогон обязан совпасть с однопозиционным портфелем цифра в цифру; это и
+ * Отличие от {@link Portfolio} только в этом: размер считается от переданного
+ * бюджета, а не от всего кэша, и лот берётся у инструмента сделки — у бумаг
+ * вселенной он разный. Арифметика скопирована, поэтому портфель с одной позицией
+ * и бюджетом во весь кэш обязан совпасть с однопозиционным цифра в цифру; это и
  * проверяется тестом.
  */
-export class SlotPortfolio {
+export class MultiPortfolio {
     /**
      * @param {object} params - Параметры.
      * @param {number} [params.cash] - Стартовый капитал.
      * @param {number} [params.commission] - Комиссия за сторону.
-     * @param {number} [params.slots] - Число слотов (одновременных позиций).
      * @param {number} [params.leverage] - Плечо шорта.
      */
-    constructor({ cash = 10000, commission = 0.0005, slots = 1, leverage = 1 } = {}) {
+    constructor({ cash = 10000, commission = 0.0005, leverage = 1 } = {}) {
         this.initialCash = cash;
         this.cash = cash;
         this.commission = commission;
-        this.slots = Math.max(1, Math.floor(slots));
         this.leverage = Number.isFinite(Number(leverage)) && Number(leverage) > 0 ? Number(leverage) : 1;
-        this.positions = new Array(this.slots).fill(null);
+        /** Тикер → позиция. @type {Map<string, object>} */
+        this.positions = new Map();
         this.trades = [];
     }
 
-    /** Число занятых слотов. @returns {number} Занято. */
+    /** Число открытых позиций. @returns {number} Открыто. */
     get openCount() {
-        let n = 0;
-        for (const position of this.positions) if (position) n += 1;
-        return n;
+        return this.positions.size;
     }
 
     /**
-     * Позиция по бумаге (одна бумага — один слот).
+     * Позиция по бумаге.
      * @param {string} ticker - Тикер.
-     * @returns {{slot: number, position: object}|null} Слот и позиция.
+     * @returns {object|null} Позиция.
      */
     positionOf(ticker) {
-        for (let i = 0; i < this.slots; i += 1) {
-            if (this.positions[i]?.ticker === ticker) return { slot: i, position: this.positions[i] };
-        }
-        return null;
-    }
-
-    /** Индекс первого свободного слота или -1. @returns {number} Слот. */
-    freeSlot() {
-        return this.positions.indexOf(null);
+        return this.positions.get(ticker) ?? null;
     }
 
     /**
@@ -72,23 +63,20 @@ export class SlotPortfolio {
     }
 
     /**
-     * Бюджет слота: доля капитала, но не больше свободного кэша.
-     * @param {number} equity - Текущий капитал.
-     * @returns {number} Бюджет.
-     */
-    budgetFor(equity) {
-        return Math.min(equity / this.slots, this.cash);
-    }
-
-    /**
-     * Открыть позицию в слоте.
-     * @param {number} slot - Индекс слота.
+     * Открыть позицию по бумаге.
+     *
+     * Либо `size` (стратегия посчитала размер сама), либо `budget` — сумма, из
+     * которой размер получается округлением вниз до лотов по цене исполнения.
+     * Без обоих берётся весь свободный кэш: так ведёт себя однопозиционный
+     * Portfolio, и однобумажные стратегии на этом стоят.
+     *
+     * @param {string} ticker - Тикер.
      * @param {object} order - Параметры ордера.
      * @returns {object|null} Позиция либо null, если размер/кэш не позволяют.
      */
-    open(slot, { side = "short", price, datetime, ticker, lot = 1, size = null,
-                 budget = null, sl = null, tp = null, exitDeadline = null }) {
-        if (this.positions[slot]) return null;
+    open(ticker, { side = "short", price, datetime, lot = 1, size = null,
+                   budget = null, sl = null, tp = null, exitDeadline = null }) {
+        if (this.positions.has(ticker)) return null;
         const leverage = side === "short" ? this.leverage : 1;
         const actualSize = size || this.sizeFor(price, lot, budget ?? this.cash, leverage);
         if (actualSize <= 0) return null;
@@ -103,21 +91,22 @@ export class SlotPortfolio {
             this.cash -= margin;
         }
 
-        this.positions[slot] = {
+        const position = {
             entryTime: datetime, entryPrice: price, size: actualSize, side,
             ticker, lot, sl, tp, exitDeadline,
         };
-        return this.positions[slot];
+        this.positions.set(ticker, position);
+        return position;
     }
 
     /**
-     * Закрыть слот по цене.
-     * @param {number} slot - Индекс слота.
+     * Закрыть позицию по бумаге.
+     * @param {string} ticker - Тикер.
      * @param {object} params - { price, datetime, reason }.
      * @returns {object|null} Сделка.
      */
-    close(slot, { price, datetime, reason = "manual" }) {
-        const position = this.positions[slot];
+    close(ticker, { price, datetime, reason = "manual" }) {
+        const position = this.positions.get(ticker);
         if (!position) return null;
         const { size, entryPrice, side } = position;
         const fee = size * (entryPrice + price) * this.commission;
@@ -130,7 +119,7 @@ export class SlotPortfolio {
             this.cash += (size * entryPrice) / this.leverage + pnl;
         }
 
-        this.positions[slot] = null;
+        this.positions.delete(ticker);
         const trade = {
             entryTime: position.entryTime, exitTime: datetime,
             entryPrice, exitPrice: price, size, side,
@@ -142,16 +131,14 @@ export class SlotPortfolio {
     }
 
     /**
-     * Капитал: кэш плюс маржа и нереализованный P&L по открытым слотам.
-     * @param {(slot: number, position: object) => number|null} priceOf - Текущая цена слота.
+     * Капитал: кэш плюс маржа и нереализованный P&L по открытым позициям.
+     * @param {(ticker: string, position: object) => number|null} priceOf - Текущая цена бумаги.
      * @returns {number} Капитал.
      */
     equity(priceOf) {
         let total = this.cash;
-        for (let i = 0; i < this.slots; i += 1) {
-            const position = this.positions[i];
-            if (!position) continue;
-            const price = priceOf(i, position) ?? position.entryPrice;
+        for (const [ticker, position] of this.positions) {
+            const price = priceOf(ticker, position) ?? position.entryPrice;
             if (position.side === "long") {
                 total += position.size * price;
             } else {

@@ -30,10 +30,31 @@ diviner src/broker/tinkoff/broker.js --strategy <путь-к-стратегии>
 T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-date 2024-01-01 \
   --till-date 2024-12-31 --interval 1 --parquet > data/tinkoff/SBER_2024_1m.parquet
 
+# отобрать шортируемые ликвидные бумаги через API (список тикеров в stdout)
+T_INVEST_TOKEN=<token> node src/universe.js --table
+
+# дописать свежий период к существующему листингу (только рост, без укорачивания)
+node src/append.js --into data/tinkoff/ALRS_2026_1m.parquet /tmp/ALRS_fresh.parquet
+
 # сборка вселенной в один мультитикерный Parquet (для кросс-секционных стратегий)
 node src/bundle.js --out data/tinkoff/CORE62_2026_1m.parquet \
   --tickers ALRS,ROSN,SBER --from 2026-01-01 --to 2026-06-08 data/tinkoff/*_2026_1m.parquet
 ```
+
+### Состав вселенной
+
+`src/universe.js` спрашивает у брокера все акции и отбирает пригодные к торговле
+по флагам инструмента: `shortEnabledFlag` (шорт разрешён), `liquidityFlag`
+(ликвидность), `apiTradeAvailableFlag` и `sellAvailableFlag`, за вычетом
+внебиржи, блокировок и бумаг только для квалов; плюс порог по глубине минутной
+истории (`--min-history-days`). Отдельно считается стоимость лота — на счёте в
+10 000 ₽ с четырьмя слотами бумага с лотом дороже 2 500 ₽ не покупается физически
+(`--max-lot-cost`).
+
+Смысл в том, чтобы состав вселенной обновлялся сам: бумага, которой отключили
+шорт, выпадает из списка на следующем запуске, а не живёт в захардкоженной
+константе, пока кто-то не заметит. `--show-rejected` показывает, кого и почему
+отсеяли — без этого неожиданное исчезновение бумаги превращается в гадание.
 
 ### Мультитикерные датасеты
 

@@ -68,6 +68,13 @@ export class MultiSymbolTinkoffExecutor {
         }
 
         this.accountRubBalance = 0;
+        this._balanceAt = 0;
+        // Как часто перечитывать остаток вне зависимости от сделок: со счёта
+        // деньги уходят и помимо наших заявок — комиссия за операцию, абонентская
+        // плата, вывод. Кэш при этом становится завышенным, и заявка уходит на
+        // сумму, которой уже нет.
+        this.balanceMaxAgeMs = Number.isFinite(options.balanceMaxAgeMs)
+            ? options.balanceMaxAgeMs : 60_000;
         this.currentCandle = null;
         this.currentTicker = null;
         this.lastCandle = new Map();
@@ -89,6 +96,14 @@ export class MultiSymbolTinkoffExecutor {
         this.currentCandle = candle;
         this.currentTicker = candle?.ticker ?? null;
         if (candle?.ticker) this.lastCandle.set(candle.ticker, candle);
+
+        // Конец минуты — момент, когда стратегия считает бюджет. Ставим обновление
+        // остатка в очередь заявок: движок ждёт её через drainOrders(), поэтому к
+        // следующему решению цифра будет свежей. Синхронно спросить нельзя —
+        // стратегия вызывает getEquity() без await.
+        if (candle?.isBatchEnd && Date.now() - this._balanceAt > this.balanceMaxAgeMs) {
+            this._enqueue("balance", () => this.refreshBalance());
+        }
     }
 
     /** Позиция бумаги текущей свечи (движок спрашивает про неё). */
@@ -368,6 +383,10 @@ export class MultiSymbolTinkoffExecutor {
             console.error(`[MultiExec] ${ticker}: заявка не прошла — ${error.message}`);
             this._abortEntry(ticker);
         }
+        // Вход занял маржу: без перечитывания остаток остался бы доходовым, а
+        // getEquity() посчитал бы маржу дважды — и следующий слот запросил бы
+        // больше, чем есть на счёте.
+        await this.refreshBalance();
     }
 
     /** Откат оптимистично открытой позиции, если вход не состоялся. @private */
@@ -403,7 +422,14 @@ export class MultiSymbolTinkoffExecutor {
     /** Обновить рублёвый остаток счёта. */
     async refreshBalance() {
         if (!this.client?.getRubBalance) return this.accountRubBalance;
-        this.accountRubBalance = await this.client.getRubBalance(this.client.accountId);
+        try {
+            this.accountRubBalance = await this.client.getRubBalance(this.client.accountId);
+            this._balanceAt = Date.now();
+        } catch (error) {
+            // Не роняем такт: работаем на прошлом значении, но не помечаем его
+            // свежим, чтобы попытка повторилась на следующей минуте.
+            console.error(`[MultiExec] Остаток счёта не получен — ${error.message}`);
+        }
         return this.accountRubBalance;
     }
 

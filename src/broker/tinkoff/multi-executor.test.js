@@ -13,9 +13,14 @@ const instruments = [
 
 function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = {}) {
     const placed = [];
+    const state = { balance, calls: 0, fail: false };
     const client = {
         accountId: "acc1",
-        async getRubBalance() { return balance; },
+        async getRubBalance() {
+            state.calls += 1;
+            if (state.fail) throw new Error("брокер молчит");
+            return state.balance;
+        },
         async getInstrumentPosition(figi) { return positions[figi] ?? null; },
         async getTradingStatus(figi) { return status[figi] ?? { marketOrderAvailableFlag: true }; },
     };
@@ -30,7 +35,7 @@ function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = 
         client, instruments, interval: 1,
         options: { orderManager, stateDir: mkdtempSync(join(tmpdir(), "mexec-")), commission: 0.0005 },
     });
-    return { exec, placed, client };
+    return { exec, placed, client, state };
 }
 
 const candle = (ticker, close, extra = {}) => ({
@@ -160,4 +165,67 @@ test("капитал складывает кэш, маржу и нереализ
     const size = exec.getPositionOf("AAA").size;
     exec.setCurrentCandle(candle("AAA", 90));             // шорт в плюсе на 10 за штуку
     assert.equal(Math.round(exec.getEquity()), Math.round(10_000 + size * 100 + size * 10));
+});
+
+
+test("остаток перечитывается после ВХОДА, а не только после выхода", async () => {
+    const { exec, state } = build();
+    await exec.init();
+    const before = state.calls;
+    exec.setCurrentCandle(candle("AAA", 50));
+    state.balance = 7_000;                       // биржа заняла маржу
+    exec.sell({ ticker: "AAA", budget: 3000 });
+    await exec.drainOrders();
+    assert.ok(state.calls > before, "запрос остатка после входа был");
+    assert.equal(exec.getBalance(), 7_000, "кэш обновлён");
+});
+
+test("капитал не удваивает маржу открытой позиции", async () => {
+    const { exec, state } = build();
+    await exec.init();
+    exec.setCurrentCandle(candle("AAA", 100));
+    exec.sell({ ticker: "AAA", budget: 2500 });
+    const lots = exec.getPositionOf("AAA").size;
+    // Брокер занял маржу: свободный кэш упал ровно на неё.
+    state.balance = 10_000 - lots * 100;
+    await exec.drainOrders();
+    // Цена не двигалась → капитал обязан остаться прежним.
+    assert.equal(Math.round(exec.getEquity()), 10_000);
+});
+
+test("на конце минуты остаток перечитывается, если устарел", async () => {
+    const { exec, state } = build();
+    await exec.init();
+    exec._balanceAt = Date.now() - 120_000;      // прошлое чтение давно
+    const before = state.calls;
+    state.balance = 8_110;                       // ушла абонентская плата
+    exec.setCurrentCandle(candle("AAA", 50, { isBatchEnd: true }));
+    await exec.drainOrders();
+    assert.equal(state.calls, before + 1);
+    assert.equal(exec.getBalance(), 8_110);
+});
+
+test("свежий остаток на конце минуты повторно не запрашивается", async () => {
+    const { exec, state } = build();
+    await exec.init();
+    const before = state.calls;
+    exec.setCurrentCandle(candle("AAA", 50, { isBatchEnd: true }));
+    await exec.drainOrders();
+    assert.equal(state.calls, before, "лишнего запроса нет");
+});
+
+test("отказ при чтении остатка не роняет такт и не помечает значение свежим", async () => {
+    const { exec, state } = build();
+    await exec.init();
+    const known = exec.getBalance();
+    state.fail = true;
+    exec._balanceAt = Date.now() - 120_000;
+    exec.setCurrentCandle(candle("AAA", 50, { isBatchEnd: true }));
+    await exec.drainOrders();
+    assert.equal(exec.getBalance(), known, "работаем на прошлом значении");
+    state.fail = false;
+    state.balance = 5_555;
+    exec.setCurrentCandle(candle("BBB", 50, { isBatchEnd: true }));
+    await exec.drainOrders();
+    assert.equal(exec.getBalance(), 5_555, "попытка повторилась на следующей минуте");
 });

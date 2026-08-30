@@ -639,14 +639,39 @@ export class TinkoffClient {
   }
 
   /**
-   * Подписка на свечи
+   * Подписка на свечи одного инструмента или сразу нескольких.
+   *
+   * gRPC-подписка принимает массив инструментов, поэтому вся вселенная живёт в
+   * одном стриме — отдельное соединение на бумагу не нужно и упёрлось бы в лимит
+   * подписочных запросов (100/мин). Свеча в колбэке получает поле `ticker`,
+   * восстановленное по figi/uid: иначе в общем потоке бумаги неразличимы.
+   *
+   * @param {object|Array<object>} instrumentOrList - Инструмент или список.
+   * @param {number} interval - Интервал свечей в минутах.
+   * @param {Function} onCandle - Обработчик свечи.
+   * @param {object} [options] - { waitingClose, onReconnectCatchUp }.
    */
-  async subscribeCandles(instrument, interval, onCandle, options = {}) {
+  async subscribeCandles(instrumentOrList, interval, onCandle, options = {}) {
+    const instruments = Array.isArray(instrumentOrList) ? instrumentOrList : [instrumentOrList];
+    if (instruments.length === 0) {
+      throw new Error("subscribeCandles requires at least one instrument");
+    }
     const candleInterval = this._mapIntervalToSubscription(interval);
     const waitingClose = options.waitingClose ?? true;
 
+    // figi и uid оба ведут на тикер: брокер помечает свечу тем идентификатором,
+    // которым её запросили, и они не всегда совпадают между версиями API.
+    const tickerByKey = new Map();
+    for (const item of instruments) {
+      if (item.figi) tickerByKey.set(item.figi, item.ticker);
+      if (item.uid) tickerByKey.set(item.uid, item.ticker);
+      if (item.instrumentUid) tickerByKey.set(item.instrumentUid, item.ticker);
+    }
+
     this.candleSubscription = {
-      instrument,
+      instrument: instruments[0],
+      instruments,
+      tickerByKey,
       interval,
       candleInterval,
       waitingClose,
@@ -670,7 +695,8 @@ export class TinkoffClient {
     }
 
     const {
-      instrument,
+      instruments,
+      tickerByKey,
       interval,
       candleInterval,
       waitingClose,
@@ -680,25 +706,29 @@ export class TinkoffClient {
     try {
       await this._unsubscribeCurrentCandleStream();
 
+      const label = instruments.length === 1
+        ? instruments[0].ticker
+        : `${instruments.length} instruments`;
       if (this.verbose) {
         console.log(
-          `[TinkoffClient] Subscribing to ${waitingClose ? "closed " : ""}candles for ${instrument.ticker}, interval: ${interval}min`,
+          `[TinkoffClient] Subscribing to ${waitingClose ? "closed " : ""}candles for ${label}, interval: ${interval}min`,
         );
       }
 
       this.streamUnsubscribe = await this.api.stream.market.candles(
         {
-          instruments: [
-            {
-              figi: instrument.figi,
-              instrumentId: instrument.uid || instrument.figi,
-              interval: candleInterval,
-            },
-          ],
+          instruments: instruments.map((item) => ({
+            figi: item.figi,
+            instrumentId: item.uid || item.figi,
+            interval: candleInterval,
+          })),
           waitingClose,
         },
         (candle) => {
           const formattedCandle = this._formatCandle(candle);
+          formattedCandle.ticker = tickerByKey.get(formattedCandle.instrumentUid)
+            ?? tickerByKey.get(formattedCandle.figi)
+            ?? instruments[0].ticker;
           if (onCandle) {
             Promise.resolve(onCandle(formattedCandle)).catch((error) => {
               console.error("[TinkoffClient] Candle handler error:", error.message);
@@ -1527,6 +1557,10 @@ export class TinkoffClient {
   _formatCandle(candle) {
     const c = candle.candle || candle;
     return {
+      // Идентификаторы нужны, когда в одном стриме идут несколько бумаг: без них
+      // свечи неразличимы. Для однобумажной подписки поля просто игнорируются.
+      figi: c.figi || null,
+      instrumentUid: c.instrumentUid || null,
       datetime: new Date(c.time),
       open: this.api.helpers.toNumber(c.open),
       high: this.api.helpers.toNumber(c.high),

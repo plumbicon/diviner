@@ -183,7 +183,8 @@ program
     .option("--allow-qual", "Не исключать бумаги для квалифицированных инвесторов", false)
     .option("--table", "Человекочитаемая таблица вместо списка тикеров", false)
     .option("--json", "Полные записи в JSON", false)
-    .option("--show-rejected", "Показать отсеянные и причины", false);
+    .option("--show-rejected", "Показать отсеянные и причины", false)
+    .option("--out <path>", "Записать файл вселенной для multi-broker (--universe-file)");
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     program.parse();
@@ -193,6 +194,24 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         maxLotCost: Number(opts.maxLotCost),
         allowQual: Boolean(opts.allowQual),
     });
+
+    if (opts.out) {
+        // Формат, который читает src/broker/tinkoff/multi-broker.js. Кэш
+        // инструментов он заполнит сам при первом резолве — здесь только состав.
+        const { writeFile, mkdir } = await import("node:fs/promises");
+        const { dirname } = await import("node:path");
+        await mkdir(dirname(opts.out), { recursive: true });
+        await writeFile(opts.out, JSON.stringify({
+            tickers: selected.map((s) => s.ticker),
+            selectedAt: new Date().toISOString(),
+            filters: {
+                minHistoryDays: Number(opts.minHistoryDays),
+                maxLotCost: Number(opts.maxLotCost) || null,
+                allowQual: Boolean(opts.allowQual),
+            },
+        }, null, 2));
+        console.error(`[universe] ${selected.length} тикеров → ${opts.out}`);
+    }
 
     if (opts.json) {
         console.log(JSON.stringify({ selected, rejected }, null, 2));

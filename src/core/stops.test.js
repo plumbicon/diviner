@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { evaluateStops, evaluateIntrabarStop } from "./stops.js";
+import { evaluateStops, evaluateIntrabarStop, classifyStopExit } from "./stops.js";
 
 const bar = (high, low) => ({ high, low, close: (high + low) / 2 });
 
@@ -36,4 +36,16 @@ test("no touch → null; no position/candle → null", () => {
     assert.equal(evaluateIntrabarStop(pos, bar(101, 99)), null);
     assert.equal(evaluateIntrabarStop(null, bar(103, 97)), null);
     assert.equal(evaluateIntrabarStop(pos, null), null);
+});
+
+test("трейлинг отличается от защитного стопа по расположению уровня", () => {
+    // Шорт: защитный стоп выше входа, трейлинг взводится только после хода в плюс.
+    assert.equal(classifyStopExit({ side: "short", entryPrice: 100, sl: 105 }), "sl");
+    assert.equal(classifyStopExit({ side: "short", entryPrice: 100, sl: 98 }), "trail");
+    // Лонг — зеркально.
+    assert.equal(classifyStopExit({ side: "long", entryPrice: 100, sl: 95 }), "sl");
+    assert.equal(classifyStopExit({ side: "long", entryPrice: 100, sl: 102 }), "trail");
+    // Без уровня или без входа судить не о чем — остаёмся на консервативном "sl".
+    assert.equal(classifyStopExit({ side: "short", entryPrice: 100, sl: null }), "sl");
+    assert.equal(classifyStopExit(null), "sl");
 });

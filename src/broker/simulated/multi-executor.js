@@ -1,4 +1,4 @@
-import { evaluateIntrabarStop } from "../../core/stops.js";
+import { evaluateIntrabarStop, classifyStopExit } from "../../core/stops.js";
 
 /**
  * Исполнитель для мультитикерного бэктеста: одна касса, несколько одновременных
@@ -91,7 +91,8 @@ export class MultiSymbolExecutor {
         return this.portfolio.close(candle.ticker, {
             price: reason === "sl" ? position.sl : position.tp,
             datetime: candle.datetime,
-            reason,
+            // Ярлык тот же, что в live: защитный стоп и трейлинг — разные события.
+            reason: reason === "sl" ? classifyStopExit(position) : reason,
         });
     }
 

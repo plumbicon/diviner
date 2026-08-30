@@ -11,6 +11,8 @@ const instruments = [
     { ticker: "BBB", figi: "figi_BBB", uid: "uid_BBB", lot: 10, exchange: "MOEX" },
 ];
 
+const figiToTicker = { figi_AAA: "AAA", figi_BBB: "BBB" };
+
 function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = {}) {
     const placed = [];
     const state = { balance, calls: 0, fail: false };
@@ -24,13 +26,22 @@ function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = 
         async getInstrumentPosition(figi) { return positions[figi] ?? null; },
         async getTradingStatus(figi) { return status[figi] ?? { marketOrderAvailableFlag: true }; },
     };
+    // Имена методов и форма ответа — как у настоящих OrderManager/клиента:
+    // заглушка с выдуманным интерфейсом пропустила бы вызов несуществующего метода.
     const orderManager = {
-        async placeMarketOrder(order) {
+        async postMarketOrder(order) {
             placed.push(order);
-            if (orders.throwOn === order.instrument.ticker) throw new Error("отказ биржи");
-            return { executedLots: orders.executedLots ?? order.quantity };
+            if (orders.throwOn === figiToTicker[order.figi]) throw new Error("отказ биржи");
+            return { __lots: orders.executedLots ?? order.quantity };
+        },
+        async closePosition({ figi, instrumentId, quantity, currentSide, orderId }) {
+            const direction = currentSide === "long" ? "sell" : "buy";
+            return this.postMarketOrder({ figi, instrumentId, quantity, direction, orderId });
         },
     };
+    client.getOrderExecutionSummary = (result) => ({
+        lotsExecuted: result?.__lots ?? 0, avgPrice: null, statusName: "FILL",
+    });
     const exec = new MultiSymbolTinkoffExecutor({
         client, instruments, interval: 1,
         options: { orderManager, stateDir: mkdtempSync(join(tmpdir(), "mexec-")), commission: 0.0005 },
@@ -228,4 +239,28 @@ test("отказ при чтении остатка не роняет такт �
     exec.setCurrentCandle(candle("BBB", 50, { isBatchEnd: true }));
     await exec.drainOrders();
     assert.equal(exec.getBalance(), 5_555, "попытка повторилась на следующей минуте");
+});
+
+test("трейлинг помечается как trail, защитный стоп — как sl", async () => {
+    const { exec } = build();
+    await exec.init();
+    // Защитный стоп: уровень ВЫШЕ входа (шорт ушёл против нас).
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 3000, sl: 52.5 });
+    await exec.drainOrders();
+    const hitSl = candle("AAA", 52, { high: 53 });
+    exec.setCurrentCandle(hitSl);
+    exec.checkStops(hitSl);
+    await exec.drainOrders();
+    assert.equal(exec.sessionTrades.at(-1).reason, "sl");
+
+    // Трейлинг: уровень НИЖЕ входа (замок прибыли уже взведён).
+    exec.setCurrentCandle(candle("BBB", 100));
+    exec.sell({ ticker: "BBB", budget: 3000, sl: 97 });
+    await exec.drainOrders();
+    const hitTrail = candle("BBB", 97.5, { high: 98 });
+    exec.setCurrentCandle(hitTrail);
+    exec.checkStops(hitTrail);
+    await exec.drainOrders();
+    assert.equal(exec.sessionTrades.at(-1).reason, "trail");
 });

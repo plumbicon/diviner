@@ -15,7 +15,7 @@
 import { join } from "node:path";
 import { OrderManager } from "./order-manager.js";
 import { PositionStore } from "../common/position-store.js";
-import { evaluateIntrabarStop } from "../../core/stops.js";
+import { evaluateIntrabarStop, classifyStopExit } from "../../core/stops.js";
 import { buildOrderId, quotationToNumber } from "./broker.js";
 import { SIZING_SLIPPAGE_PAD } from "../../core/portfolio.js";
 
@@ -127,7 +127,8 @@ export class MultiSymbolTinkoffExecutor {
         if (!slot?.position) return null;
         const reason = evaluateIntrabarStop(slot.position, candle);
         if (!reason) return null;
-        return this.closePosition(reason, candle.ticker);
+        // sl покрывает и защитный стоп, и трейлинг — в отчёте это разные события.
+        return this.closePosition(reason === "sl" ? classifyStopExit(slot.position) : reason, candle.ticker);
     }
 
     syncStrategyState(strategy) {
@@ -368,16 +369,29 @@ export class MultiSymbolTinkoffExecutor {
                 this._abortEntry(ticker);
                 return;
             }
-            const result = await this.orderManager.placeMarketOrder({
-                instrument, direction, quantity: lots,
+            const result = await this.orderManager.postMarketOrder({
+                figi: instrument.figi,
+                instrumentId: instrument.uid || instrument.figi,
+                quantity: lots,
+                direction,
                 orderId: this._orderId(ticker, "open", direction),
                 confirmMarginTrade: this.confirmMarginTrade,
             });
-            this.sessionTrades.push({ kind: "open", ticker, direction, lots, at: new Date() });
-            if (result?.executedLots != null && result.executedLots !== lots && slot.position) {
-                console.warn(`[MultiExec] ${ticker}: исполнено ${result.executedLots} из ${lots} лотов — правим состояние.`);
-                slot.position.size = result.executedLots;
-                if (result.executedLots <= 0) this._abortEntry(ticker);
+            const summary = this.client.getOrderExecutionSummary(result);
+            const executed = summary.lotsExecuted ?? lots;
+            this.sessionTrades.push({
+                kind: "open", ticker, direction, lots: executed,
+                at: new Date(), fillPrice: summary.avgPrice ?? null,
+            });
+            const fill = summary.avgPrice != null ? ` @ ${summary.avgPrice}` : "";
+            console.log(
+                `[MultiExec] Open order executed: ${ticker} ${direction} ${executed}/${lots} lots${fill}`
+                + ` (${summary.statusName})`,
+            );
+            if (executed !== lots && slot.position) {
+                console.warn(`[MultiExec] ${ticker}: исполнено ${executed} из ${lots} лотов — правим состояние.`);
+                slot.position.size = executed;
+                if (executed <= 0) this._abortEntry(ticker);
             }
         } catch (error) {
             console.error(`[MultiExec] ${ticker}: заявка не прошла — ${error.message}`);
@@ -399,15 +413,34 @@ export class MultiSymbolTinkoffExecutor {
     /** @private */
     async _closeRealPosition(ticker, position, reason) {
         const instrument = this.byTicker.get(ticker);
+        const slot = this.slots.get(ticker);
         try {
             const direction = position.side === "short" ? "buy" : "sell";
-            await this.orderManager.placeMarketOrder({
-                instrument, direction, quantity: position.size,
+            const result = await this.orderManager.closePosition({
+                figi: instrument.figi,
+                instrumentId: instrument.uid || instrument.figi,
+                quantity: position.size,
+                currentSide: position.side,
                 orderId: this._orderId(ticker, "close", direction),
-                confirmMarginTrade: this.confirmMarginTrade,
             });
-            this.sessionTrades.push({ kind: "close", ticker, reason, lots: position.size, at: new Date() });
-            console.log(`[MultiExec] ${ticker}: позиция закрыта (${reason}), ${position.size} лот(ов).`);
+            const summary = this.client.getOrderExecutionSummary(result);
+            const executed = summary.lotsExecuted ?? position.size;
+            if (executed <= 0) throw new Error(`ордер не исполнен (${summary.statusName})`);
+            if (executed < position.size) {
+                // Закрылись не полностью — остаток возвращаем в состояние, иначе
+                // он останется на счёте без нашего ведома и без защиты.
+                slot.position = { ...position, size: position.size - executed };
+                console.warn(`[MultiExec] ${ticker}: закрыто ${executed} из ${position.size} лотов, остаток под наблюдением.`);
+            }
+            this.sessionTrades.push({
+                kind: "close", ticker, reason, lots: executed,
+                at: new Date(), fillPrice: summary.avgPrice ?? null,
+            });
+            const fill = summary.avgPrice != null ? ` @ ${summary.avgPrice}` : "";
+            console.log(
+                `[MultiExec] Close order executed: ${ticker} ${position.side} ${executed}/${position.size} lots`
+                + `${fill} [reason=${reason}] (${summary.statusName})`,
+            );
         } catch (error) {
             // Позиция на счёте осталась, а в состоянии её уже нет — это худший из
             // возможных рассинхронов, поэтому говорим громко.

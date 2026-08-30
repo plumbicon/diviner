@@ -79,3 +79,26 @@ export function evaluateTimeExit(position, now) {
     }
     return now >= position.exitDeadline ? "time" : null;
 }
+
+/**
+ * Различить трейлинг-стоп и защитный стоп-лосс.
+ *
+ * Движок для обоих отдаёт `sl` — это один и тот же механизм, отличается только
+ * уровень. Но для отчёта это разные события: защитный стоп означает, что сделка
+ * пошла против нас на несколько процентов, а трейлинг — что прибыль зафиксирована
+ * храповиком. Писать «закрыто по стоп-лоссу» на прибыльном выходе значит вводить
+ * читателя в заблуждение.
+ *
+ * Признак: для шорта защитный стоп стоит ВЫШЕ цены входа, а трейлинг взводится
+ * только после хода в нашу сторону и всегда оказывается НИЖЕ входа. Для лонга —
+ * зеркально.
+ *
+ * @param {{side: string, entryPrice: number, sl: number|null}|null} position - Позиция.
+ * @returns {'trail'|'sl'} Уточнённая причина.
+ */
+export function classifyStopExit(position) {
+    if (!position || position.sl == null || !(position.entryPrice > 0)) return "sl";
+    return position.side === "short"
+        ? (position.sl < position.entryPrice ? "trail" : "sl")
+        : (position.sl > position.entryPrice ? "trail" : "sl");
+}

@@ -4,7 +4,7 @@
  * кросс-секционных стратегий.
  *
  * Отдельный модуль рядом с однобумажным `broker.js`, а не замена ему: тот держит
- * боевых ботов A16, и его поведение меняться не должно. Здесь только сборка —
+ * однобумажных боевых ботов, и его поведение меняться не должно. Здесь только сборка —
  * вся логика в {@link MultiSymbolTinkoffDataSource} и
  * {@link MultiSymbolTinkoffExecutor}.
  *
@@ -15,7 +15,7 @@
  *
  * Usage:
  *   T_INVEST_TOKEN=<t> diviner src/broker/tinkoff/multi-broker.js \
- *     --strategy src/strategies/A19/A19.js --account <id> \
+ *     --strategy <путь-к-стратегии> --account <id> \
  *     --universe-file data/universe.json --intrabar-stops
  */
 import { readFile, writeFile, mkdir } from "node:fs/promises";

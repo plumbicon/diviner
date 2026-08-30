@@ -872,7 +872,7 @@ export class TinkoffClient {
    * nothing alive, so the event loop drains and Node exits 0. For a live bot
    * that is worse than a crash: systemd's Restart=always is then the only thing
    * standing between a dropped stream and a silently dead bot (observed on
-   * 2026-07-27 — A16_SMLT_real exited cleanly ~1s after a reconnect was
+   * 2026-07-27 — a live bot exited cleanly ~1s after a reconnect was
    * scheduled). Skip the round-trip when the stream is already gone, and cap it
    * otherwise; the reconnect path re-subscribes from scratch either way.
    * @private

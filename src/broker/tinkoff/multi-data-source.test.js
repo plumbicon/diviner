@@ -121,3 +121,67 @@ test("подписка уходит списком инструментов", as
     assert.equal(src.getInstrument("BBB").figi, "figi_BBB");
     await src.requestStop();
 });
+
+// ── сторож молчания ───────────────────────────────────────────────────────────
+const MSK = 3 * 3600_000;
+/** Источник со сторожем и подставным расписанием. @private */
+function withWatchdog(schedule) {
+    const src = new MultiSymbolTinkoffDataSource({
+        client: fakeClient(), instruments, stallTimeoutMin: 30, batchGraceMs: 10,
+    });
+    src.getTradingSchedule = async () => schedule;
+    return src;
+}
+const mskDay = (iso) => new Date(new Date(iso).getTime() - MSK);   // МСК → UTC
+
+test("вне сессии тишина не вызывает переподписку", async () => {
+    // Торговый день, сессия 06:50–23:50 МСК; проверяем в 03:00 МСК.
+    const src = withWatchdog([{
+        dateKey: "2026-08-31", isTradingDay: true,
+        startTime: mskDay("2026-08-31T06:50:00Z").toISOString(),
+        endTime: mskDay("2026-08-31T23:50:00Z").toISOString(),
+    }]);
+    let reconnected = false;
+    src._forceReconnect = async () => { reconnected = true; };
+    src._lastCandleWall = mskDay("2026-08-31T00:00:00Z").getTime();   // молчит 3 часа
+    await src._checkStall(mskDay("2026-08-31T03:00:00Z"));
+    assert.equal(reconnected, false, "ночью переподписки быть не должно");
+    await src.requestStop();
+});
+
+test("внутри сессии затяжная тишина вызывает переподписку", async () => {
+    const src = withWatchdog([{
+        dateKey: "2026-08-31", isTradingDay: true,
+        startTime: mskDay("2026-08-31T06:50:00Z").toISOString(),
+        endTime: mskDay("2026-08-31T23:50:00Z").toISOString(),
+    }]);
+    let reconnected = false;
+    src._forceReconnect = async () => { reconnected = true; };
+    src._lastCandleWall = mskDay("2026-08-31T08:00:00Z").getTime();
+    await src._checkStall(mskDay("2026-08-31T08:45:00Z"));            // 45 мин тишины
+    assert.equal(reconnected, true);
+    await src.requestStop();
+});
+
+test("в неторговый день сторож молчит", async () => {
+    const src = withWatchdog([{ dateKey: "2026-08-31", isTradingDay: false }]);
+    let reconnected = false;
+    src._forceReconnect = async () => { reconnected = true; };
+    src._lastCandleWall = mskDay("2026-08-31T00:00:00Z").getTime();
+    await src._checkStall(mskDay("2026-08-31T12:00:00Z"));
+    assert.equal(reconnected, false);
+    await src.requestStop();
+});
+
+test("без расписания работает запасное московское окно", async () => {
+    const src = withWatchdog([]);          // расписание недоступно
+    let reconnected = false;
+    src._forceReconnect = async () => { reconnected = true; };
+    src._lastCandleWall = mskDay("2026-08-31T00:00:00Z").getTime();
+    await src._checkStall(mskDay("2026-08-31T04:00:00Z"));            // до 06:50 — вне окна
+    assert.equal(reconnected, false, "отказ расписания не должен включать сторожа ночью");
+    src._lastCandleWall = mskDay("2026-08-31T08:00:00Z").getTime();
+    await src._checkStall(mskDay("2026-08-31T09:00:00Z"));            // внутри окна
+    assert.equal(reconnected, true, "и не должен выключать его днём");
+    await src.requestStop();
+});

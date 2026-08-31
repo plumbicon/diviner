@@ -68,6 +68,9 @@ export class MultiSymbolTinkoffDataSource {
         this._stallTimeoutMs = Math.max(0, Number(stallTimeoutMin) || 0) * 60 * 1000;
         this._lastCandleWall = Date.now();
         this._stallTimer = null;
+        // dateKey (МСК) → границы сессии. Расписание одно на всю биржу, поэтому
+        // достаточно спросить его по одному инструменту.
+        this._sessionCache = new Map();
     }
 
     /** Тикеры вселенной. @returns {Array<string>} Тикеры. */
@@ -193,24 +196,73 @@ export class MultiSymbolTinkoffDataSource {
         }
     }
 
+    /**
+     * Идёт ли сейчас биржевая сессия. Расписание берётся у брокера и кэшируется
+     * по дням; при недоступности — широкое московское окно, чтобы отказ
+     * расписания не выключал сторожа совсем.
+     * @param {Date} now - Момент проверки.
+     * @returns {Promise<boolean>} Внутри сессии.
+     * @private
+     */
+    async _isWithinTradingSession(now) {
+        const dateKey = new Date(now.getTime() + MSK_OFFSET_MS).toISOString().slice(0, 10);
+        if (!this._sessionCache.has(dateKey)) {
+            try {
+                const days = await this.getTradingSchedule({ ticker: this.instruments[0].ticker });
+                for (const day of days || []) {
+                    const key = day.dateKey || day.date?.slice(0, 10);
+                    if (!key) continue;
+                    this._sessionCache.set(key, {
+                        isTradingDay: Boolean(day.isTradingDay),
+                        openTs: day.startTime ? new Date(day.startTime).getTime() : null,
+                        closeTs: day.endTime ? new Date(day.endTime).getTime() : null,
+                    });
+                }
+            } catch { /* ниже отработает запасное окно */ }
+        }
+        const entry = this._sessionCache.get(dateKey);
+        if (entry) {
+            if (!entry.isTradingDay) return false;
+            if (entry.openTs && entry.closeTs) {
+                const ts = now.getTime();
+                return ts >= entry.openTs && ts <= entry.closeTs;
+            }
+            return true;
+        }
+        const msk = new Date(now.getTime() + MSK_OFFSET_MS);
+        const minutes = msk.getUTCHours() * 60 + msk.getUTCMinutes();
+        return minutes >= 6 * 60 + 50 && minutes <= 23 * 60 + 50;
+    }
+
     /** Сторож молчания всего стрима. @private */
     _startStallWatchdog() {
         if (this._stallTimeoutMs <= 0 || this._stallTimer) return;
         this._stallTimer = setInterval(() => {
-            const silent = Date.now() - this._lastCandleWall;
-            if (silent < this._stallTimeoutMs) return;
-            // Тишина по ВСЕЙ вселенной — это отказ стрима, а не спокойный рынок:
-            // хотя бы одна ликвидная бумага обязана торговаться каждую минуту.
-            console.warn(
-                `[MultiTinkoff] Тишина ${Math.round(silent / 60000)} мин по всем `
-                + `${this.instruments.length} инструментам — переподписка.`,
-            );
-            this._lastCandleWall = Date.now();
-            this._forceReconnect().catch((error) => {
-                console.error(`[MultiTinkoff] Переподписка не удалась: ${error.message}`);
+            this._checkStall(new Date()).catch((error) => {
+                console.error(`[MultiTinkoff] Сторож молчания упал: ${error.message}`);
             });
         }, 60_000);
         this._stallTimer.unref?.();
+    }
+
+    /** @private */
+    async _checkStall(now) {
+        // Вне сессии тишина — норма, а не отказ. Без этой проверки сторож всю
+        // ночь переподписывался каждые полчаса, дёргая соединение на ровном месте.
+        if (!await this._isWithinTradingSession(now)) {
+            this._lastCandleWall = now.getTime();
+            return;
+        }
+        const silent = now.getTime() - this._lastCandleWall;
+        if (silent < this._stallTimeoutMs) return;
+        // Тишина по ВСЕЙ вселенной при открытой сессии — отказ стрима, а не
+        // спокойный рынок: хотя бы одна ликвидная бумага торгуется каждую минуту.
+        console.warn(
+            `[MultiTinkoff] Тишина ${Math.round(silent / 60000)} мин по всем `
+            + `${this.instruments.length} инструментам при открытой сессии — переподписка.`,
+        );
+        this._lastCandleWall = now.getTime();
+        await this._forceReconnect();
     }
 
     /**

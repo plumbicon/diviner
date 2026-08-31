@@ -26,6 +26,9 @@ import {
 } from "../../core/market-data.js";
 
 const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SCHEDULE_LOOKBACK_DAYS = 21;   // столько истории нужно фичам
+const SCHEDULE_AHEAD_DAYS = 14;
 
 export class MultiSymbolTinkoffDataSource {
     /**
@@ -282,10 +285,22 @@ export class MultiSymbolTinkoffDataSource {
      * @param {object} params - { ticker, from, to }.
      * @returns {Promise<Array<object>>} Торговые дни.
      */
-    async getTradingSchedule({ ticker, ...params } = {}) {
+    async getTradingSchedule({ ticker, from, to, ...params } = {}) {
         const instrument = ticker ? this.byTicker.get(ticker) : this.instruments[0];
-        return this._provider(instrument?.ticker ?? this.instruments[0].ticker)
-            .getTradingSchedule({ exchange: instrument?.exchange || DEFAULT_EXCHANGE, ...params });
+        // Биржевое расписание живое, а не выводимое из данных: без диапазона дат
+        // API отдаёт пустой список. Молча вернуть пустоту здесь — значит оставить
+        // стратегию без единого торгового дня и без единой ошибки в логе.
+        const now = Date.now();
+        const range = {
+            from: from ?? new Date(now - SCHEDULE_LOOKBACK_DAYS * DAY_MS),
+            to:   to   ?? new Date(now + SCHEDULE_AHEAD_DAYS * DAY_MS),
+        };
+        const days = await this._provider(instrument?.ticker ?? this.instruments[0].ticker)
+            .getTradingSchedule({ exchange: instrument?.exchange || DEFAULT_EXCHANGE, ...range, ...params });
+        if (!days?.length) {
+            console.warn(`[MultiTinkoff] ${ticker ?? "?"}: расписание торгов пустое — стратегия сочтёт день неторговым.`);
+        }
+        return days;
     }
 
     /** Остановить поток и снять подписку. */

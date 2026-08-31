@@ -19,6 +19,9 @@ import { evaluateIntrabarStop, classifyStopExit } from "../../core/stops.js";
 import { buildOrderId, quotationToNumber } from "./broker.js";
 import { SIZING_SLIPPAGE_PAD } from "../../core/portfolio.js";
 
+// Через сколько повторить закрытие по дедлайну, если бумага занята заявкой.
+const DEADLINE_RETRY_MS = 15_000;
+
 export class MultiSymbolTinkoffExecutor {
     /**
      * @param {object} params - Параметры.
@@ -327,10 +330,18 @@ export class MultiSymbolTinkoffExecutor {
         // конец сессии по бумаге не пришло ни одной свечи.
         slot.exitTimer = setTimeout(() => {
             slot.exitTimer = null;
-            if (slot.position) {
-                console.log(`[MultiExec] ${ticker}: дедлайн ${new Date(exitDeadline).toISOString()} — закрываем по рынку.`);
-                this.closePosition("time", ticker);
-            }
+            if (!slot.position) return;
+            console.log(`[MultiExec] ${ticker}: дедлайн ${new Date(exitDeadline).toISOString()} — закрываем по рынку.`);
+            if (this.closePosition("time", ticker)) return;
+            // Закрыть не дали (по бумаге висит заявка). Таймер уже израсходован, и
+            // без повтора позиция уехала бы за сессию: свечей под её конец может
+            // не прийти вовсе, а значит и повтора по свече не будет.
+            console.warn(`[MultiExec] ${ticker}: дедлайн отложен — повтор через ${Math.round(DEADLINE_RETRY_MS / 1000)} с.`);
+            slot.exitTimer = setTimeout(() => {
+                slot.exitTimer = null;
+                if (slot.position) this.closePosition("time", ticker);
+            }, DEADLINE_RETRY_MS);
+            slot.exitTimer.unref?.();
         }, delay);
         slot.exitTimer.unref?.();
     }
@@ -428,8 +439,18 @@ export class MultiSymbolTinkoffExecutor {
             if (executed <= 0) throw new Error(`ордер не исполнен (${summary.statusName})`);
             if (executed < position.size) {
                 // Закрылись не полностью — остаток возвращаем в состояние, иначе
-                // он останется на счёте без нашего ведома и без защиты.
-                slot.position = { ...position, size: position.size - executed };
+                // он останется на счёте без нашего ведома и без защиты. Файл
+                // состояния был очищен при постановке заявки, поэтому пишем заново:
+                // иначе после рестарта остаток подняли бы со счёта без уровней.
+                const rest = { ...position, size: position.size - executed };
+                slot.position = rest;
+                slot.store.save({
+                    figi: instrument.figi, ticker, side: rest.side, size: rest.size,
+                    entryPrice: rest.entryPrice ?? null,
+                    entryTime: rest.entryTime instanceof Date ? rest.entryTime.toISOString() : null,
+                    sl: rest.sl ?? null, tp: rest.tp ?? null, exitDeadline: rest.exitDeadline ?? null,
+                });
+                this._armExitDeadline(ticker, rest.exitDeadline);
                 console.warn(`[MultiExec] ${ticker}: закрыто ${executed} из ${position.size} лотов, остаток под наблюдением.`);
             }
             this.sessionTrades.push({
@@ -442,11 +463,22 @@ export class MultiSymbolTinkoffExecutor {
                 + `${fill} [reason=${reason}] (${summary.statusName})`,
             );
         } catch (error) {
-            // Позиция на счёте осталась, а в состоянии её уже нет — это худший из
-            // возможных рассинхронов, поэтому говорим громко.
+            // Позиция снята с учёта ДО отправки заявки (оптимистично). Если заявка
+            // не прошла, на счёте она осталась — и оставить состояние пустым нельзя:
+            // бумага считалась бы свободной, стратегия вошла бы в неё повторно и
+            // удвоила экспозицию, а прежняя позиция осталась бы без стопа и дедлайна.
+            slot.position = position;
+            slot.store.save({
+                figi: instrument.figi, ticker, side: position.side, size: position.size,
+                entryPrice: position.entryPrice ?? null,
+                entryTime: position.entryTime instanceof Date ? position.entryTime.toISOString() : null,
+                sl: position.sl ?? null, tp: position.tp ?? null,
+                exitDeadline: position.exitDeadline ?? null,
+            });
+            this._armExitDeadline(ticker, position.exitDeadline);
             console.error(
                 `[MultiExec] ${ticker}: ЗАКРЫТЬ НЕ УДАЛОСЬ (${error.message}). `
-                + "Позиция может остаться открытой на счёте — проверить вручную.",
+                + "Позиция возвращена в состояние под защиту стопа и дедлайна; попробуем на следующей свече.",
             );
         }
         await this.refreshBalance();

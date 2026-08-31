@@ -185,3 +185,20 @@ test("без расписания работает запасное москов
     assert.equal(reconnected, true, "и не должен выключать его днём");
     await src.requestStop();
 });
+
+test("свеча старше уже отданной минуты отбрасывается, время не идёт назад", async () => {
+    const src = new MultiSymbolTinkoffDataSource({
+        client: fakeClient(), instruments, batchGraceMs: 10, stallTimeoutMin: 0,
+    });
+    const got = await drain(src, 2, () => {
+        src._accept(candle("AAA", 5));
+        src._accept(candle("BBB", 5));          // CCC молчит, пачка уйдёт по таймеру
+    });
+    assert.equal(got.length, 2);
+    // Догрузка после переподключения подаёт старую минуту МОЛЧАВШЕЙ бумаги: по
+    // ней дедупликация не сработает, спасает только граница отданной минуты.
+    src._accept(candle("CCC", 2));
+    assert.equal(src._buckets.size, 0, "пачка за прошедшую минуту не создаётся");
+    assert.equal(src._droppedLate, 1);
+    await src.requestStop();
+});

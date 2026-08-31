@@ -264,3 +264,60 @@ test("трейлинг помечается как trail, защитный ст�
     await exec.drainOrders();
     assert.equal(exec.sessionTrades.at(-1).reason, "trail");
 });
+
+test("провал закрытия возвращает позицию в состояние, а не оставляет фантомный флэт", async () => {
+    const { exec } = build();
+    await exec.init();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 4000, sl: 52, exitDeadline: Date.now() + 3_600_000 });
+    await exec.drainOrders();
+    const before = exec.getPositionOf("AAA");
+    assert.ok(before, "позиция открыта");
+
+    // Биржа отказывает на закрытии.
+    const om = exec.orderManager;
+    om.closePosition = async () => { throw new Error("отказ биржи"); };
+    exec.closePosition("signal", "AAA");
+    await exec.drainOrders();
+
+    const after = exec.getPositionOf("AAA");
+    assert.ok(after, "позиция обязана вернуться в состояние");
+    assert.equal(after.size, before.size);
+    assert.equal(after.sl, 52, "уровень защиты сохранён");
+    assert.equal(exec.isBusy("AAA"), true, "бумага занята — повторного входа не будет");
+});
+
+test("частичное закрытие оставляет остаток с уровнями и дедлайном", async () => {
+    const { exec } = build();
+    await exec.init();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 4000, sl: 52, exitDeadline: Date.now() + 3_600_000 });
+    await exec.drainOrders();
+    const size = exec.getPositionOf("AAA").size;
+    assert.ok(size > 1, "нужен размер больше одного лота");
+
+    // Биржа исполняет только один лот из нескольких.
+    exec.client.getOrderExecutionSummary = () => ({ lotsExecuted: 1, avgPrice: 50, statusName: "PARTIAL" });
+    exec.closePosition("signal", "AAA");
+    await exec.drainOrders();
+    const rest = exec.getPositionOf("AAA");
+    assert.ok(rest, "остаток под наблюдением");
+    assert.equal(rest.size, size - 1);
+    assert.equal(rest.sl, 52, "остаток не остался без стопа");
+});
+
+test("дедлайн повторяется, если бумага занята заявкой", async () => {
+    const { exec } = build();
+    await exec.init();
+    exec.setCurrentCandle(candle("AAA", 50));
+    // Дедлайн через 20 мс, а очередь заявок держим занятой.
+    exec.sell({ ticker: "AAA", budget: 4000, exitDeadline: Date.now() + 20 });
+    await exec.drainOrders();
+    const slot = exec.slots.get("AAA");
+    exec._inFlight.add("AAA");                       // имитируем висящую заявку
+    await new Promise((r) => setTimeout(r, 60));     // дедлайн сработал и был отклонён
+    assert.ok(slot.exitTimer, "таймер перевзведён, а не потерян");
+    assert.ok(exec.getPositionOf("AAA"), "позиция ещё на месте");
+    exec._inFlight.delete("AAA");
+    slot.exitTimer = null;
+});

@@ -62,6 +62,12 @@ export class MultiSymbolTinkoffDataSource {
 
         this._queue = [];
         this._notify = null;
+        // Время последней отданной минуты. Дедупликация ведётся по бумагам, а
+        // порядок выдачи — общий: без этой границы догрузка после переподключения
+        // (она подаёт старые свечи молчавших бумаг) создала бы пачку за минуту,
+        // которая уже ушла в движок, и время в потоке пошло бы назад.
+        this._lastFlushedTs = 0;
+        this._droppedLate = 0;
         this._closed = false;
         this._catchUpFrom = null;
 
@@ -147,6 +153,16 @@ export class MultiSymbolTinkoffDataSource {
             }
             return;
         }
+        if (time <= this._lastFlushedTs) {
+            this._droppedLate += 1;
+            if (this._droppedLate === 1 || this._droppedLate % 100 === 0) {
+                console.warn(
+                    `[MultiTinkoff] ${ticker}: свеча ${candle.datetime.toISOString()} старше уже`
+                    + ` отданной минуты — отброшена (всего ${this._droppedLate}).`,
+                );
+            }
+            return;
+        }
         this._lastTimeByTicker.set(ticker, time);
         this._lastCandleWall = Date.now();
 
@@ -185,6 +201,7 @@ export class MultiSymbolTinkoffDataSource {
                 candle.isBatchEnd = index === tickers.length - 1;
                 this._queue.push(candle);
             });
+            this._lastFlushedTs = Math.max(this._lastFlushedTs, minute);
             if (this.verbose) {
                 console.log(`[MultiTinkoff] минута ${new Date(minute).toISOString()}: ${tickers.length} бумаг`);
             }
@@ -272,13 +289,18 @@ export class MultiSymbolTinkoffDataSource {
      */
     async _forceReconnect() {
         if (this._closed) return;
-        try {
-            await this._catchUpAll();
-        } catch (error) {
-            console.warn(`[MultiTinkoff] Догрузка перед переподпиской не удалась: ${error.message}`);
-        }
+        // Границы снимаем ДО переподписки: иначе первая же живая свеча сдвинет
+        // «последнее известное» вперёд, и пропущенный интервал не догрузится.
+        // А сама догрузка — после: это 86 последовательных REST-запросов, и держать
+        // стрим отключённым всё это время незачем.
+        const bounds = new Map(this._lastTimeByTicker);
         await this.client._startCandleStream();
         console.log("[MultiTinkoff] Подписка на свечи восстановлена (процесс жив).");
+        try {
+            await this._catchUpAll(bounds);
+        } catch (error) {
+            console.warn(`[MultiTinkoff] Догрузка после переподписки не удалась: ${error.message}`);
+        }
     }
 
     /**
@@ -287,10 +309,11 @@ export class MultiSymbolTinkoffDataSource {
      * ордер по нему исполнился бы далеко от смоделированной цены.
      * @private
      */
-    async _catchUpAll() {
+    async _catchUpAll(bounds = null) {
         const now = new Date();
         for (const ticker of this.getSymbols()) {
-            const lower = this._lastTimeByTicker.get(ticker) ?? this._catchUpFrom?.getTime() ?? null;
+            const lower = (bounds ?? this._lastTimeByTicker).get(ticker)
+                ?? this._catchUpFrom?.getTime() ?? null;
             if (lower === null) continue;
             const from = new Date(lower + 1);
             if (from >= now) continue;

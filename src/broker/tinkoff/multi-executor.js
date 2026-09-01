@@ -501,6 +501,15 @@ export class MultiSymbolTinkoffExecutor {
                 slot.position.size = executed;
                 if (executed <= 0) this._abortEntry(ticker);
             }
+            // Цена входа — та, по которой залилось, а не та, по которой решали.
+            // Позицию открываем оптимистично по close сигнальной свечи, но
+            // держать эту цену дальше нельзя: от entryPrice считается MFE, а
+            // значит момент взвода трейлинга и вся отчётность по сделке.
+            // В бэктесте entryPrice — цена заливки, и живой контур должен
+            // совпадать с ним, иначе трейлинг взводится раньше на величину
+            // проскальзывания. Уровни SL/TP не трогаем: их стратегия считает от
+            // цены решения — так же, как в бэктесте.
+            this._applyFillPrice(ticker, summary.avgPrice);
         } catch (error) {
             console.error(`[MultiExec] ${ticker}: заявка не прошла — ${error.message}`);
             this._abortEntry(ticker);
@@ -510,6 +519,35 @@ export class MultiSymbolTinkoffExecutor {
         // getEquity() посчитал бы маржу дважды — и следующий слот запросил бы
         // больше, чем есть на счёте.
         await this.refreshBalance();
+    }
+
+    /**
+     * Заменить оптимистичную цену входа фактической ценой исполнения.
+     * @param {string} ticker - Тикер.
+     * @param {number|null} avgPrice - Средняя цена исполнения от брокера.
+     * @private
+     */
+    _applyFillPrice(ticker, avgPrice) {
+        const slot = this.slots.get(ticker);
+        const position = slot?.position;
+        if (!position || !Number.isFinite(avgPrice) || avgPrice <= 0) return;
+        if (avgPrice === position.entryPrice) return;
+        const drift = ((avgPrice - position.entryPrice) / position.entryPrice) * 100;
+        position.entryPrice = avgPrice;
+        slot.store.save({
+            figi: this.byTicker.get(ticker)?.figi ?? null,
+            ticker, side: position.side, size: position.size,
+            entryPrice: avgPrice,
+            entryTime: position.entryTime instanceof Date ? position.entryTime.toISOString() : null,
+            sl: position.sl ?? null, tp: position.tp ?? null,
+            exitDeadline: position.exitDeadline ?? null,
+        });
+        if (this.verbose || Math.abs(drift) >= 0.1) {
+            console.log(
+                `[MultiExec] ${ticker}: цена входа уточнена по заливке `
+                + `${avgPrice} (${drift >= 0 ? "+" : ""}${drift.toFixed(2)}% к цене решения).`,
+            );
+        }
     }
 
     /** Откат оптимистично открытой позиции, если вход не состоялся. @private */

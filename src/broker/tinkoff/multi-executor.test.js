@@ -42,7 +42,9 @@ function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = 
         },
     };
     client.getOrderExecutionSummary = (result) => ({
-        lotsExecuted: result?.__lots ?? 0, avgPrice: null, statusName: "FILL",
+        lotsExecuted: result?.__lots ?? 0,
+        avgPrice: orders.avgPrice ?? null,
+        statusName: "FILL",
     });
     const exec = new MultiSymbolTinkoffExecutor({
         client, instruments, interval: 1,
@@ -396,4 +398,49 @@ test("отказ по одной бумаге не блокирует остал
     await exec.drainOrders();
     assert.equal(placed.length, 2);
     assert.deepEqual(exec.getBlocked().map((b) => b.ticker), ["AAA"]);
+});
+
+// ── цена входа берётся из заливки, а не из цены решения ─────────────────────
+// Позиция открывается оптимистично по close сигнальной свечи. Если оставить эту
+// цену, от неё будет считаться MFE — то есть момент взвода трейлинга, — и живой
+// контур разойдётся с бэктестом на величину проскальзывания.
+
+test("цена входа заменяется фактической ценой исполнения", async () => {
+    const { exec } = build({ orders: { avgPrice: 49.4 } });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));            // решали по 50
+    const position = exec.sell({ ticker: "AAA", budget: 5000 });
+    assert.equal(position.entryPrice, 50, "до заливки — цена решения");
+    await exec.drainOrders();
+    assert.equal(exec.getPositionOf("AAA").entryPrice, 49.4, "после заливки — цена сделки");
+});
+
+test("уровни SL и TP уточнением цены не двигаются", async () => {
+    const { exec } = build({ orders: { avgPrice: 49.4 } });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 5000, sl: 52.5, tp: 47.5 });
+    await exec.drainOrders();
+    const position = exec.getPositionOf("AAA");
+    assert.equal(position.sl, 52.5, "стоп считает стратегия от цены решения — как в бэктесте");
+    assert.equal(position.tp, 47.5);
+});
+
+test("без цены исполнения от брокера остаётся цена решения", async () => {
+    const { exec } = build({ orders: { avgPrice: null } });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 5000 });
+    await exec.drainOrders();
+    assert.equal(exec.getPositionOf("AAA").entryPrice, 50, "выдумывать цену нечем");
+});
+
+test("уточнённая цена входа переживает перезапуск", async () => {
+    const { exec } = build({ orders: { avgPrice: 49.4 } });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 5000 });
+    await exec.drainOrders();
+    const saved = exec.slots.get("AAA").store.load();
+    assert.equal(saved.entryPrice, 49.4, "в файл состояния записана цена сделки");
 });

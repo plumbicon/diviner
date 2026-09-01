@@ -22,6 +22,29 @@ import { SIZING_SLIPPAGE_PAD } from "../../core/portfolio.js";
 // Через сколько повторить закрытие по дедлайну, если бумага занята заявкой.
 const DEADLINE_RETRY_MS = 15_000;
 
+// Отказы, которые повтором не лечатся: инструмент недоступен этому счёту, пока
+// пользователь не пройдёт тест в приложении или пока биржа не снимет запрет.
+// Сообщения приходят транслитом, поэтому ищем по латинскому написанию тоже.
+const PERMANENT_REJECTIONS = [
+    /neobxodimo projti/i,           // «необходимо пройти соответствующий тест»
+    /необходимо пройти/i,
+    /not available for short/i,
+    /instrument is not available/i,
+    /trading is not available/i,
+];
+
+// Отказы из-за нехватки денег: зависят от кассы, снимаются при её росте.
+const SOFT_REJECTIONS = [
+    /not enough assets/i,
+    /insufficient/i,
+    /недостаточно/i,
+];
+
+// Во сколько раз должна вырасти касса, чтобы снять мягкую блокировку. Отказ
+// пришёл на конкретную сумму залога — пробовать снова имеет смысл, когда денег
+// стало ощутимо больше, а не после копеечного движения баланса.
+const BLOCK_RELEASE_RATIO = 1.25;
+
 export class MultiSymbolTinkoffExecutor {
     /**
      * @param {object} params - Параметры.
@@ -83,6 +106,13 @@ export class MultiSymbolTinkoffExecutor {
         this.lastCandle = new Map();
         /** Тикер → true, пока ордер по бумаге в очереди. */
         this._inFlight = new Set();
+        /**
+         * Тикер → причина отказа биржи, из-за которой бумагу нельзя торговать.
+         * Без этого стратегия каждый раз отдаёт свободный слот одному и тому же
+         * лучшему кандидату, заявка по нему отклоняется, слот откатывается — и
+         * бумага, которую взять можно, шанса не получает вовсе.
+         */
+        this._blocked = new Map();
         this.orderQueue = Promise.resolve();
         this.sessionTrades = [];
     }
@@ -177,6 +207,67 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /**
+     * Заблокирована ли бумага отказом биржи.
+     *
+     * Отказы бывают двух родов. «Нужен тест в Профиле» и запрет инструмента —
+     * до конца процесса: повтор через минуту ничего не меняет. Нехватка залога
+     * зависит от кассы, поэтому снимается, когда свободных денег стало заметно
+     * больше, чем в момент отказа, — обычно после закрытия позиции.
+     *
+     * @param {string} ticker - Тикер.
+     * @returns {boolean} Торговать нельзя.
+     */
+    isBlocked(ticker) {
+        const block = this._blocked.get(ticker);
+        if (!block) return false;
+        if (block.permanent) return true;
+        if (this.accountRubBalance > block.balanceAt * BLOCK_RELEASE_RATIO) {
+            this._blocked.delete(ticker);
+            console.log(
+                `[MultiExec] ${ticker}: блокировка снята — касса выросла `
+                + `с ${block.balanceAt.toFixed(0)} до ${this.accountRubBalance.toFixed(0)} ₽.`,
+            );
+            return false;
+        }
+        return true;
+    }
+
+    /** Заблокированные бумаги и причины — для отчёта на выходе. */
+    getBlocked() {
+        return [...this._blocked].map(([ticker, b]) => ({ ticker, ...b }));
+    }
+
+    /**
+     * Запомнить отказ биржи по бумаге.
+     * @param {string} ticker - Тикер.
+     * @param {string} message - Текст ошибки от API.
+     * @private
+     */
+    _blockTicker(ticker, message) {
+        if (this._blocked.has(ticker)) return;
+        const permanent = PERMANENT_REJECTIONS.some((rx) => rx.test(message));
+        const soft = SOFT_REJECTIONS.some((rx) => rx.test(message));
+        // Незнакомую ошибку блокируем мягко: она может быть разовой (таймаут,
+        // сеть), но крутить её каждую минуту всё равно незачем.
+        if (!permanent && !soft) {
+            this._blocked.set(ticker, {
+                permanent: false, balanceAt: this.accountRubBalance, message,
+            });
+            console.warn(`[MultiExec] ${ticker}: незнакомый отказ, бумага отложена до роста кассы.`);
+            return;
+        }
+        this._blocked.set(ticker, {
+            permanent, balanceAt: this.accountRubBalance, message,
+        });
+        console.warn(
+            permanent
+                ? `[MultiExec] ${ticker}: бумага исключена до перезапуска — биржа отказывает постоянно.`
+                : `[MultiExec] ${ticker}: не хватает залога, бумага отложена до роста кассы `
+                  + `(сейчас ${this.accountRubBalance.toFixed(0)} ₽).`,
+        );
+    }
+
+    /**
      * Капитал: свободный кэш плюс маржа и нереализованный P&L по позициям.
      * @returns {number} Капитал.
      */
@@ -220,6 +311,12 @@ export class MultiSymbolTinkoffExecutor {
 
         if (slot.position || this._inFlight.has(ticker)) {
             if (this.verbose) console.log(`[MultiExec] ${ticker}: пропуск — бумага уже занята`);
+            return null;
+        }
+        // Страховка на случай, если стратегия блокировку не спросила: иначе
+        // отказ повторится и слот снова уйдёт впустую.
+        if (this.isBlocked(ticker)) {
+            if (this.verbose) console.log(`[MultiExec] ${ticker}: пропуск — бумага заблокирована отказом`);
             return null;
         }
         // Разогревочная свеча из догрузки: состояние обновляет, торговать не должна —
@@ -407,6 +504,7 @@ export class MultiSymbolTinkoffExecutor {
         } catch (error) {
             console.error(`[MultiExec] ${ticker}: заявка не прошла — ${error.message}`);
             this._abortEntry(ticker);
+            this._blockTicker(ticker, error.message || "");
         }
         // Вход занял маржу: без перечитывания остаток остался бы доходовым, а
         // getEquity() посчитал бы маржу дважды — и следующий слот запросил бы

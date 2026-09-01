@@ -188,6 +188,13 @@ export async function createBroker(config = {}) {
             const held = exec.getPositions().map((p) => `${p.ticker} ${p.side} ${p.size}`);
             console.log(`[MultiBroker] За сессию: ${opens} входов / ${closes} выходов. Кэш ${exec.getBalance().toFixed(2)} ₽.`);
             console.log(`[MultiBroker] Открыто на выходе: ${held.length ? held.join(", ") : "нет"}.`);
+            const blocked = exec.getBlocked?.() ?? [];
+            if (blocked.length) {
+                console.log(
+                    "[MultiBroker] Отклонены биржей: "
+                    + blocked.map((b) => `${b.ticker} (${b.permanent ? "постоянно" : "нет залога"})`).join(", "),
+                );
+            }
             await client.close();
         },
     };

@@ -182,6 +182,16 @@ export class MultiSymbolExecutor {
         return Boolean(this.portfolio.positionOf(ticker)) || this._pending.has(ticker);
     }
 
+    /**
+     * Заблокирована ли бумага отказом биржи. В симуляции отказов нет, но метод
+     * обязан существовать: стратегия спрашивает его безусловно, и молчаливый
+     * `undefined` из-за необязательного вызова снял бы защиту в бою.
+     * @returns {boolean} Всегда false.
+     */
+    isBlocked() {
+        return false;
+    }
+
     /** Капитал по последним известным ценам удерживаемых бумаг. @returns {number} Капитал. */
     getEquity() {
         return this.portfolio.equity(

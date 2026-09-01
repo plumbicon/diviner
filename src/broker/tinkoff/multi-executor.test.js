@@ -31,7 +31,9 @@ function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = 
     const orderManager = {
         async postMarketOrder(order) {
             placed.push(order);
-            if (orders.throwOn === figiToTicker[order.figi]) throw new Error("отказ биржи");
+            if (orders.throwOn === figiToTicker[order.figi]) {
+                throw new Error(orders.throwMessage ?? "отказ биржи");
+            }
             return { __lots: orders.executedLots ?? order.quantity };
         },
         async closePosition({ figi, instrumentId, quantity, currentSide, orderId }) {
@@ -320,4 +322,78 @@ test("дедлайн повторяется, если бумага занята 
     assert.ok(exec.getPositionOf("AAA"), "позиция ещё на месте");
     exec._inFlight.delete("AAA");
     slot.exitTimer = null;
+});
+
+// ── блокировка бумаги после отказа биржи ────────────────────────────────────
+// Найдено в бою: свободный слот раз за разом уходил лучшему кандидату, биржа
+// отклоняла заявку, слот откатывался — и так до конца дня. Отказ должен
+// запоминаться, иначе следующий кандидат шанса не получает.
+
+test("постоянный отказ биржи исключает бумагу до перезапуска", async () => {
+    const { exec, placed } = build({
+        orders: { throwOn: "AAA", throwMessage: "Dlya torgovli e`tim instrumentom neobxodimo projti test" },
+    });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.ok(exec.sell({ ticker: "AAA", budget: 5000 }), "первая попытка уходит в биржу");
+    await exec.drainOrders();
+
+    assert.equal(exec.isBlocked("AAA"), true, "после отказа бумага заблокирована");
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null, "повторная заявка не ставится");
+    await exec.drainOrders();
+    assert.equal(placed.length, 1, "в биржу ушла ровно одна заявка, а не по одной в минуту");
+});
+
+test("постоянная блокировка не снимается ростом кассы", async () => {
+    const { exec, state } = build({
+        balance: 1000,
+        orders: { throwOn: "AAA", throwMessage: "trading is not available for this instrument" },
+    });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 500 });
+    await exec.drainOrders();
+
+    state.balance = 100_000;
+    await exec.refreshBalance();
+    assert.equal(exec.isBlocked("AAA"), true, "тест в приложении деньгами не заменяется");
+});
+
+test("нехватка залога снимается, когда касса выросла", async () => {
+    const { exec, state } = build({
+        balance: 1000,
+        orders: { throwOn: "AAA", throwMessage: "Not enough assets for a margin trade" },
+    });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 500 });
+    await exec.drainOrders();
+    assert.equal(exec.isBlocked("AAA"), true, "на той же кассе повторять незачем");
+
+    state.balance = 1200;                    // +20%, порога 25% не хватает
+    await exec.refreshBalance();
+    assert.equal(exec.isBlocked("AAA"), true, "копеечный рост кассы блокировку не снимает");
+
+    state.balance = 2000;                    // закрылась позиция, денег заметно больше
+    await exec.refreshBalance();
+    assert.equal(exec.isBlocked("AAA"), false, "после роста кассы бумагу можно пробовать снова");
+
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.ok(exec.sell({ ticker: "AAA", budget: 500 }), "заявка снова принимается");
+    await exec.drainOrders();
+});
+
+test("отказ по одной бумаге не блокирует остальные", async () => {
+    const { exec, placed } = build({ orders: { throwOn: "AAA", throwMessage: "neobxodimo projti test" } });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 5000 });
+    await exec.drainOrders();
+
+    exec.setCurrentCandle(candle("BBB", 100));
+    assert.ok(exec.sell({ ticker: "BBB", budget: 2500 }), "слот достаётся следующему кандидату");
+    await exec.drainOrders();
+    assert.equal(placed.length, 2);
+    assert.deepEqual(exec.getBlocked().map((b) => b.ticker), ["AAA"]);
 });

@@ -16,6 +16,13 @@
  *   forQualInvestorFlag    нужен статус квала — исключается (--allow-qual вернёт);
  *   first1minCandleDate    есть ли минутная история достаточной глубины.
  *
+ * Отдельно проверяются тесты. Требование «пройдите тест в разделе Профиль» —
+ * не свойство инструмента, а отношение «инструмент × счёт», и во флагах Share
+ * его нет вовсе: список нужных тестов лежит на активе (`getAssetBy` →
+ * `requiredTests`), а список сданных — у пользователя (`users.getInfo` →
+ * `qualifiedForWorkWith`). Без этой сверки непройденный тест выясняется только
+ * отказом настоящей заявки в бою.
+ *
  * Отдельно считается стоимость лота (последняя цена × lot): на счёте в 10 000 ₽
  * с четырьмя слотами бумага с лотом дороже 2 500 ₽ не покупается физически,
  * сколько бы хорошо она ни скорилась. Это не свойство инструмента, а свойство
@@ -28,9 +35,14 @@
  */
 import { Command } from "commander";
 import { TinkoffInvestApi } from "tinkoff-invest-api";
-import { InstrumentStatus } from "tinkoff-invest-api/dist/generated/common.js";
+import { InstrumentStatus, InstrumentType } from "tinkoff-invest-api/dist/generated/common.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Сколько карточек активов тянуть параллельно. getAssetBy — вызов на актив,
+// на нашей вселенной это меньше сотни запросов; четыре в полёте укладываются
+// в лимиты и не растягивают сборку.
+const ASSET_CONCURRENCY = 4;
 
 /** Quotation → число. @private */
 function quotationToNumber(q) {
@@ -75,6 +87,22 @@ export function rejectionReasons(share, options = {}) {
 }
 
 /**
+ * Какие тесты нужны бумаге и сданы ли они счётом.
+ *
+ * Вынесено отдельной чистой функцией: сверка списков — единственное место, где
+ * можно ошибиться, а живой API для её проверки не нужен.
+ *
+ * @param {Array<string>} requiredTests - Тесты, которых требует актив.
+ * @param {Array<string>} passedTests - Тесты, сданные владельцем счёта.
+ * @returns {Array<string>} Несданные тесты; пустой список = бумага доступна.
+ */
+export function missingTests(requiredTests = [], passedTests = []) {
+    if (!requiredTests?.length) return [];
+    const passed = new Set(passedTests || []);
+    return requiredTests.filter((t) => !passed.has(t));
+}
+
+/**
  * Повтор транзиентных отказов gRPC с нарастающей паузой.
  * @param {Function} call - Вызов, возвращающий промис.
  * @param {string} label - Имя метода для лога.
@@ -95,6 +123,85 @@ async function withRetry(call, label, attempts = 4) {
         }
     }
     throw lastError;
+}
+
+/**
+ * Отсеять бумаги, для которых счёт не сдал требуемые тесты.
+ *
+ * Работает по уже отобранному списку: карточка актива тянется на каждую бумагу
+ * отдельно, и делать это для всей биржи незачем. Любая ошибка API здесь — повод
+ * предупредить, а не отбросить вселенную: лучше вернуть состав без этой
+ * проверки, чем не вернуть ничего.
+ *
+ * @param {object} api - TinkoffInvestApi.
+ * @param {Array<object>} selected - Прошедшие флаговый отбор (правится на месте).
+ * @param {Array<object>} rejected - Отсеянные (пополняется).
+ * @returns {Promise<{passedTests: Array<string>|null, checked: number}>} Итог сверки.
+ * @private
+ */
+async function filterByRequiredTests(api, selected, rejected) {
+    let passedTests;
+    try {
+        ({ qualifiedForWorkWith: passedTests } = await withRetry(
+            () => api.users.getInfo({}), "users.getInfo",
+        ));
+    } catch (error) {
+        console.error(
+            `[universe] тесты счёта недоступны (${error.message?.split("\n")[0]}) — `
+            + "проверка пропущена, непройденный тест выяснится отказом заявки.",
+        );
+        return { passedTests: null, checked: 0 };
+    }
+
+    let assetByInstrument;
+    try {
+        const { assets } = await withRetry(() => api.instruments.getAssets({
+            instrumentType: InstrumentType.INSTRUMENT_TYPE_SHARE,
+            instrumentStatus: InstrumentStatus.INSTRUMENT_STATUS_BASE,
+        }), "instruments.getAssets");
+        assetByInstrument = new Map();
+        for (const asset of assets) {
+            for (const instrument of asset.instruments || []) {
+                assetByInstrument.set(instrument.uid, asset.uid);
+            }
+        }
+    } catch (error) {
+        console.error(`[universe] список активов недоступен (${error.message?.split("\n")[0]}) — проверка пропущена.`);
+        return { passedTests, checked: 0 };
+    }
+
+    // Карточки активов — пачками: последовательно это минуты, без ограничения
+    // одновременных вызовов упираемся в лимит запросов.
+    const queue = [...selected];
+    let checked = 0;
+    const worker = async () => {
+        for (let item = queue.shift(); item; item = queue.shift()) {
+            const assetUid = assetByInstrument.get(item.uid);
+            if (!assetUid) continue;
+            try {
+                const { asset } = await withRetry(
+                    () => api.instruments.getAssetBy({ id: assetUid }), `getAssetBy ${item.ticker}`, 2,
+                );
+                item.requiredTests = asset?.requiredTests ?? [];
+                checked += 1;
+            } catch {
+                // Карточка не пришла — бумагу не трогаем. Отбрасывать рабочее
+                // имя из-за сетевого сбоя хуже, чем оставить его непроверенным.
+                item.requiredTests = null;
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: ASSET_CONCURRENCY }, worker));
+
+    for (let i = selected.length - 1; i >= 0; i -= 1) {
+        const item = selected[i];
+        const missing = missingTests(item.requiredTests, passedTests);
+        if (missing.length > 0) {
+            item.reasons = [`не сдан тест: ${missing.join(", ")}`];
+            rejected.push(...selected.splice(i, 1));
+        }
+    }
+    return { passedTests, checked };
 }
 
 /**
@@ -133,6 +240,18 @@ export async function selectUniverse(options = {}) {
             reasons,
         };
         (reasons.length === 0 ? selected : rejected).push(record);
+    }
+
+    // Тесты — до цен: незачем спрашивать котировки по бумагам, которые всё
+    // равно выпадут.
+    if (selected.length > 0 && options.checkTests !== false) {
+        const { passedTests, checked } = await filterByRequiredTests(api, selected, rejected);
+        if (passedTests) {
+            console.error(
+                `[universe] проверено активов: ${checked}; счёт сдал тесты: `
+                + `${passedTests.length ? passedTests.join(", ") : "нет"}.`,
+            );
+        }
     }
 
     // Стоимость лота — одним запросом на весь отобранный набор.
@@ -181,6 +300,7 @@ program
     .option("--min-history-days <n>", "Минимальная глубина минутной истории, дней", "400")
     .option("--max-lot-cost <rub>", "Отбросить бумаги, у которых лот дороже (0 = без фильтра)", "0")
     .option("--allow-qual", "Не исключать бумаги для квалифицированных инвесторов", false)
+    .option("--no-check-tests", "Не сверять требуемые тесты инструментов с пройденными на счёте")
     .option("--table", "Человекочитаемая таблица вместо списка тикеров", false)
     .option("--json", "Полные записи в JSON", false)
     .option("--show-rejected", "Показать отсеянные и причины", false)
@@ -193,6 +313,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         minHistoryDays: Number(opts.minHistoryDays),
         maxLotCost: Number(opts.maxLotCost),
         allowQual: Boolean(opts.allowQual),
+        checkTests: opts.checkTests !== false,
     });
 
     if (opts.out) {
@@ -208,6 +329,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                 minHistoryDays: Number(opts.minHistoryDays),
                 maxLotCost: Number(opts.maxLotCost) || null,
                 allowQual: Boolean(opts.allowQual),
+                checkTests: opts.checkTests !== false,
             },
         }, null, 2));
         console.error(`[universe] ${selected.length} тикеров → ${opts.out}`);

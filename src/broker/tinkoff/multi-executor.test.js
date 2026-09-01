@@ -171,15 +171,17 @@ test("сверка со счётом поднимает реальные поз�
     assert.equal(exec.getPositionOf("AAA"), null);
 });
 
-test("капитал складывает кэш, маржу и нереализованный P&L", async () => {
-    const { exec } = build();
+test("капитал = касса минус стоимость шорта, прибыль учитывается", async () => {
+    const { exec, state } = build();
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 100));
     exec.sell({ ticker: "AAA", budget: 5000 });
     await exec.drainOrders();
     const size = exec.getPositionOf("AAA").size;
-    exec.setCurrentCandle(candle("AAA", 90));             // шорт в плюсе на 10 за штуку
-    assert.equal(Math.round(exec.getEquity()), Math.round(10_000 + size * 100 + size * 10));
+    state.balance = 10_000 + size * 100;                 // брокер зачислил выручку от продажи
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 90));            // шорт в плюсе на 10 за штуку
+    assert.equal(Math.round(exec.getEquity()), Math.round(10_000 + size * 10));
 });
 
 
@@ -188,21 +190,22 @@ test("остаток перечитывается после ВХОДА, а не
     await exec.init();
     const before = state.calls;
     exec.setCurrentCandle(candle("AAA", 50));
-    state.balance = 7_000;                       // биржа заняла маржу
+    state.balance = 7_000;                       // касса на счёте изменилась
     exec.sell({ ticker: "AAA", budget: 3000 });
     await exec.drainOrders();
     assert.ok(state.calls > before, "запрос остатка после входа был");
     assert.equal(exec.getBalance(), 7_000, "кэш обновлён");
 });
 
-test("капитал не удваивает маржу открытой позиции", async () => {
+test("капитал не удваивает выручку от продажи в шорт", async () => {
     const { exec, state } = build();
     await exec.init();
     exec.setCurrentCandle(candle("AAA", 100));
     exec.sell({ ticker: "AAA", budget: 2500 });
     const lots = exec.getPositionOf("AAA").size;
-    // Брокер занял маржу: свободный кэш упал ровно на неё.
-    state.balance = 10_000 - lots * 100;
+    // Брокер ЗАЧИСЛИЛ выручку от продажи: касса выросла, а не упала. Прежняя
+    // версия теста предполагала обратное — и именно поэтому пропустила ошибку.
+    state.balance = 10_000 + lots * 100;
     await exec.drainOrders();
     // Цена не двигалась → капитал обязан остаться прежним.
     assert.equal(Math.round(exec.getEquity()), 10_000);
@@ -443,4 +446,82 @@ test("уточнённая цена входа переживает переза
     await exec.drainOrders();
     const saved = exec.slots.get("AAA").store.load();
     assert.equal(saved.entryPrice, 49.4, "в файл состояния записана цена сделки");
+});
+
+// ── капитал счёта ───────────────────────────────────────────────────────────
+// Брокерская касса включает выручку от продажи в шорт. Если прибавить к ней ещё
+// и номинал позиции (как это делает симуляция, где залог из кассы списан), капитал
+// удваивается на всю короткую позицию, а стратегия берёт от него долю на
+// следующий слот — и позиции разрастаются в течение сессии.
+
+test("шорт по цене входа: капитал равен исходному депозиту", async () => {
+    const { exec, state } = build({ balance: 10_000 });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", size: 100 });
+    await exec.drainOrders();
+
+    state.balance = 15_000;                 // брокер зачислил выручку 100 × 50
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.equal(exec.getEquity(), 10_000, "выручка от шорта не создаёт капитал");
+});
+
+test("прибыль по шорту увеличивает капитал ровно на прибыль", async () => {
+    const { exec, state } = build({ balance: 10_000 });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", size: 100 });
+    await exec.drainOrders();
+
+    state.balance = 15_000;
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 45));   // цена упала на 5
+    assert.equal(exec.getEquity(), 10_500, "100 бумаг × 5 ₽ прибыли");
+});
+
+test("лот больше единицы учитывается в стоимости позиции", async () => {
+    const { exec, state } = build({ balance: 10_000 });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("BBB", 37.3));  // лот 10
+    exec.sell({ ticker: "BBB", size: 14 });      // 140 бумаг
+    await exec.drainOrders();
+
+    state.balance = 10_000 + 140 * 37.3;
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("BBB", 37.3));
+    assert.equal(Math.round(exec.getEquity()), 10_000);
+});
+
+test("лонг: капитал равен кассе плюс стоимость бумаг", async () => {
+    const { exec, state } = build({ balance: 10_000 });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.buy({ ticker: "AAA", size: 100 });
+    await exec.drainOrders();
+
+    state.balance = 5_000;                  // за покупку списали 100 × 50
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 55));
+    assert.equal(exec.getEquity(), 10_500, "рост бумаг увеличивает капитал");
+});
+
+test("несколько шортов не раздувают капитал друг за другом", async () => {
+    const { exec, state } = build({ balance: 10_000 });
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", size: 100 });
+    await exec.drainOrders();
+    state.balance = 15_000;
+    await exec.refreshBalance();
+
+    exec.setCurrentCandle(candle("BBB", 100));   // лот 10 → 20 лотов = 200 бумаг
+    exec.sell({ ticker: "BBB", size: 20 });
+    await exec.drainOrders();
+    state.balance = 15_000 + 20_000;
+    await exec.refreshBalance();
+
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.setCurrentCandle(candle("BBB", 100));
+    assert.equal(exec.getEquity(), 10_000, "две короткие позиции — капитал прежний");
 });

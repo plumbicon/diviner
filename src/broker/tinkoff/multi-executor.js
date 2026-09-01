@@ -268,7 +268,24 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /**
-     * Капитал: свободный кэш плюс маржа и нереализованный P&L по позициям.
+     * Капитал счёта: денежный остаток плюс стоимость длинных позиций минус
+     * стоимость коротких.
+     *
+     * Считается НЕ так, как в симуляции, и это принципиально. `MultiPortfolio`
+     * при открытии шорта списывает залог из своей кассы, поэтому там капитал
+     * восстанавливают, прибавляя номинал обратно. Брокерская касса живёт по
+     * противоположному правилу: выручка от продажи в шорт в неё уже зачислена.
+     * Прибавить номинал ещё раз — посчитать деньги дважды, и капитал раздувается
+     * на всю короткую позицию. Дальше это множится само: каждый новый шорт
+     * увеличивает мнимый капитал, а стратегия берёт от него долю на следующий
+     * слот, так что позиции растут в течение сессии.
+     *
+     * Проверка на живом счёте: касса 27 989 ₽, шортов на 19 198 ₽ — капитал
+     * 8 791 ₽, ровно то, что показывает `getPortfolio().totalAmountPortfolio`.
+     *
+     * Плечо в формуле не участвует: оно определяет требуемый залог, а не
+     * тождество «капитал = деньги + активы − обязательства».
+     *
      * @returns {number} Капитал.
      */
     getEquity() {
@@ -277,9 +294,8 @@ export class MultiSymbolTinkoffExecutor {
             const position = slot.position;
             if (!position) continue;
             const price = this.lastCandle.get(ticker)?.close ?? position.entryPrice;
-            const shares = position.size * (this.byTicker.get(ticker)?.lot || 1);
-            total += (shares * position.entryPrice) / this.leverage
-                + shares * (position.entryPrice - price);
+            const value = position.size * (this.byTicker.get(ticker)?.lot || 1) * price;
+            total += position.side === "short" ? -value : value;
         }
         return total;
     }

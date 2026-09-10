@@ -191,9 +191,28 @@ async function runBrokerMode(brokerRef, rest) {
             result.trade_log = [];
         }
         // Raw write so the JSON report bypasses the timestamped logger.
-        process.stdout.write(`${encodeBacktestResult(result)}\n`);
+        await writeFully(process.stdout, `${encodeBacktestResult(result)}\n`);
     }
     process.exit(0);
+}
+
+/**
+ * Записать строку в поток и дождаться, пока она уйдёт в приёмник.
+ *
+ * process.exit() не ждёт незавершённых записей. Для файла это безобидно — туда
+ * Node пишет синхронно, — а в канал запись асинхронна, и выход обрывал вывод на
+ * границе буфера: ровно 65 536 байт на macOS. Потребители, читающие отчёт через
+ * pipe (spawnSync в gen_logs.mjs, fetch-candles.mjs), получали обрезанный JSON и
+ * молча теряли самые активные тикеры — у них отчёт как раз длиннее 64 КБ.
+ *
+ * @param {import("node:stream").Writable} stream - Поток вывода.
+ * @param {string} text - Содержимое отчёта.
+ * @returns {Promise<void>} Разрешается после того, как запись подтверждена.
+ */
+export function writeFully(stream, text) {
+    return new Promise((resolve, reject) => {
+        stream.write(text, (error) => (error ? reject(error) : resolve()));
+    });
 }
 
 async function main() {

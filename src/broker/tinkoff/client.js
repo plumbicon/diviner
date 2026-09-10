@@ -49,6 +49,11 @@ export class TinkoffClient {
     this.streamReconnectMaxDelayMs = options.streamReconnectMaxDelayMs || 60000;
     this.isClosing = false;
     this.isReplacingStream = false;
+    // Держится на всё время асинхронного переподключения. Таймер обнуляется в
+    // начале колбэка, поэтому сам по себе он «идёт ли переподключение» не
+    // отвечает — без этого флага сторож видит «стрим мёртв, переподключения
+    // нет» и запускает второе поверх первого.
+    this.isReconnecting = false;
     this.unsubscribeTimeoutMs = options.unsubscribeTimeoutMs || 5000;
     // Heartbeat held while a live subscription exists. Node exits as soon as the
     // event loop has nothing left to do, so a stream that dies while every
@@ -68,7 +73,7 @@ export class TinkoffClient {
         return;
       }
       const alive = Boolean(this.api.stream?.market?.connected);
-      if (!alive && !this.streamReconnectTimer) {
+      if (!alive && !this.streamReconnectTimer && !this.isReconnecting) {
         console.error(
           "[TinkoffClient] Market stream is down with no reconnect pending — forcing one.",
         );
@@ -793,7 +798,8 @@ export class TinkoffClient {
    * @private
    */
   _scheduleCandleReconnect(error) {
-    if (this.isClosing || (!this.candleSubscription && !this.lastPriceSubscription) || this.streamReconnectTimer) {
+    if (this.isClosing || (!this.candleSubscription && !this.lastPriceSubscription)
+        || this.streamReconnectTimer || this.isReconnecting) {
       return;
     }
 
@@ -809,6 +815,8 @@ export class TinkoffClient {
 
     this.streamReconnectTimer = setTimeout(async () => {
       this.streamReconnectTimer = null;
+      this.isReconnecting = true;
+      let failure = null;
 
       try {
         await this._runReconnectCatchUp(error);
@@ -821,8 +829,16 @@ export class TinkoffClient {
         this.streamReconnectAttempts = 0;
         console.log("[TinkoffClient] Market stream reconnected.");
       } catch (reconnectError) {
+        failure = reconnectError;
         console.error("[TinkoffClient] Candle stream reconnect failed:", reconnectError.message);
-        this._scheduleCandleReconnect(reconnectError);
+      } finally {
+        this.isReconnecting = false;
+      }
+
+      // Повтор ставится только после снятия флага: изнутри try его отбросила бы
+      // собственная проверка в _scheduleCandleReconnect.
+      if (failure) {
+        this._scheduleCandleReconnect(failure);
       }
     }, delay);
   }

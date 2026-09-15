@@ -187,3 +187,25 @@ test("отчёт называет вселенную прогона", async () =
     assert.ok(Number.isFinite(report.performance_metrics.returnPct));
     assert.equal(report.performance_metrics.tradesCount, 2);
 });
+
+test("closeAtLast закрывает сразу по цене последней сделки и снимает висящий ордер", () => {
+    const broker = makeBroker({ aaa: [100, 101, 102, 103], bbb: [50, 50, 50, 50] });
+    const exec = broker.exec;
+    const aaa = bars("AAA", [100, 101, 102, 103]);
+    exec.setCurrentCandle(aaa[0]);
+    assert.equal(exec.buy({ ticker: "AAA", budget: 5000 }), true);
+    exec.setCurrentCandle(aaa[1]);                       // заливка по open 101
+    const position = exec.getPositionOf("AAA");
+    assert.equal(position?.entryPrice, 101);
+    exec.setCurrentCandle(aaa[2]);                       // последняя свеча бумаги: close 102
+    exec.closePosition("time", "AAA");                   // обычный выход ждал бы следующей свечи
+    assert.deepEqual(exec.getPendingTickers(), ["AAA"]);
+    const trade = exec.closeAtLast("time", "AAA", new Date(base + 10 * MIN));
+    assert.equal(trade.exitPrice, 102);
+    assert.equal(trade.exitTime.getTime(), base + 10 * MIN);
+    assert.equal(exec.getPositionOf("AAA"), null);
+    assert.deepEqual(exec.getPendingTickers(), []);
+    exec.setCurrentCandle(aaa[3]);                       // следующая свеча уже ничего не заливает
+    assert.equal(exec.getPositions().length, 0);
+    assert.equal(exec.closeAtLast("time", "AAA"), null);
+});

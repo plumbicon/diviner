@@ -119,6 +119,28 @@ export class MultiSymbolExecutor {
     }
 
     /**
+     * Закрыть позицию немедленно по цене последней сделки бумаги (close её последней свечи),
+     * сняв висящий ордер на закрытие. Нужен для выхода «в тот же день», когда следующей свечи
+     * бумаги сегодня уже не будет: без него ордер ждал бы open следующей свечи — хоть через ночь,
+     * хоть через два месяца простоя торгов.
+     * @param {string} [reason] - Причина выхода.
+     * @param {string} [ticker] - Бумага; по умолчанию — текущая.
+     * @param {Date|null} [datetime] - Время выхода; по умолчанию — время последней свечи бумаги.
+     * @returns {object|null} Сделка.
+     */
+    closeAtLast(reason = "manual", ticker = this.currentTicker, datetime = null) {
+        const position = this.portfolio.positionOf(ticker);
+        if (!position) return null;
+        if (this._pending.get(ticker)?.type === "close") this._pending.delete(ticker);
+        const candle = this.lastCandle.get(ticker);
+        return this.portfolio.close(ticker, {
+            price: candle?.close ?? position.entryPrice,
+            datetime: datetime ?? candle?.datetime ?? this.currentCandle?.datetime,
+            reason,
+        });
+    }
+
+    /**
      * Состояние в стратегию. Здесь же — отметка капитала на конце минуты:
      * при нескольких открытых позициях она считается по ценам всех удерживаемых
      * бумаг сразу, поэтому одна точка на минуту, а не на свечу.

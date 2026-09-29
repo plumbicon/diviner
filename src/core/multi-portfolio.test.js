@@ -99,3 +99,45 @@ test("закрытие снимает позицию и пишет сделку 
     assert.equal(pf.positionOf("AAA"), null);
     assert.equal(pf.openCount, 0);
 });
+
+test("плечо по бумаге: потолок из ставки риска, общий --leverage остаётся верхней границей", () => {
+    // SBER разрешает ×4 (dshort 0.25), у MTLR потолка нет — работает общее плечо ×3.
+    const caps = { SBER: 4, MTLR: Infinity };
+    const p = new MultiPortfolio({ cash: 10000, commission: 0, leverage: 3, leverageFor: (t) => caps[t] });
+    assert.equal(p.leverageOf("SBER"), 3, "потолок бумаги выше общего — берётся общий");
+    assert.equal(p.leverageOf("MTLR"), 3);
+
+    const tight = new MultiPortfolio({ cash: 10000, commission: 0, leverage: 5, leverageFor: (t) => ({ SBER: 4, VTBR: 1.5 }[t]) });
+    assert.equal(tight.leverageOf("SBER"), 4);
+    assert.equal(tight.leverageOf("VTBR"), 1.5);
+    assert.equal(tight.leverageOf("XXXX"), 5, "бумага без ставки ограничений не получает");
+});
+
+test("плечо по бумаге: размер, залог и возврат залога считаются по плечу позиции", () => {
+    const p = new MultiPortfolio({ cash: 10000, commission: 0, leverage: 5, leverageFor: (t) => ({ A: 4, B: 1 }[t]) });
+    const a = p.open("A", { side: "short", price: 100, lot: 1, budget: 1000, datetime: new Date() });
+    const b = p.open("B", { side: "short", price: 100, lot: 1, budget: 1000, datetime: new Date() });
+    assert.equal(a.leverage, 4);
+    assert.equal(b.leverage, 1);
+    // Бюджет 1000 при плече 4 даёт объём ≈4000 (минус запас на проскальзывание), при плече 1 — ≈1000.
+    assert.ok(a.size > 3.5 * b.size, `объём с плечом 4 должен быть вчетверо больше: ${a.size} против ${b.size}`);
+    // Залог: notional/плечо, то есть примерно бюджет в обоих случаях.
+    const lockedA = (a.size * 100) / 4, lockedB = (b.size * 100) / 1;
+    assert.equal(p.cash, 10000 - lockedA - lockedB);
+
+    // Закрытие в ноль возвращает ровно залог этой позиции.
+    p.close("A", { price: 100, datetime: new Date() });
+    assert.ok(Math.abs(p.cash - (10000 - lockedB)) < 1e-9, "залог возвращён по плечу позиции, а не по общему");
+});
+
+test("плечо по бумаге: капитал учитывает залог каждой позиции по её плечу", () => {
+    const p = new MultiPortfolio({ cash: 10000, commission: 0, leverage: 4, leverageFor: (t) => ({ A: 4, B: 2 }[t]) });
+    const a = p.open("A", { side: "short", price: 100, lot: 1, size: 40, datetime: new Date() });
+    const b = p.open("B", { side: "short", price: 100, lot: 1, size: 20, datetime: new Date() });
+    assert.equal(p.cash, 10000 - (40 * 100) / 4 - (20 * 100) / 2);
+    // Цены не двигались — капитал равен стартовому.
+    assert.ok(Math.abs(p.equity(() => 100) - 10000) < 1e-9);
+    // Обе бумаги упали на 1%: прибыль шорта 0.01 × notional.
+    assert.ok(Math.abs(p.equity(() => 99) - (10000 + 40 + 20)) < 1e-9);
+    assert.ok(a && b);
+});

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { Portfolio } from "../../core/portfolio.js";
 import { MultiPortfolio } from "../../core/multi-portfolio.js";
 import { MultiSymbolExecutor } from "./multi-executor.js";
@@ -29,7 +30,32 @@ export const options = [
     { flags: "--fill-next-open", description: "Fill orders at the open of the next candle (more realistic than current-close fill)" },
     { flags: "--intrabar-stops", description: "Evaluate SL/TP intrabar by candle high/low and fill at the level (default off = close-only). Used by A07." },
     { flags: "--model-liquidation", description: "With --intrabar-stops + leverage>1: gap-aware stop fills + margin-call liquidation (loss capped at posted margin). Off = stops always fill at the level (no liquidation)." },
+    { flags: "--risk-rates <file>", description: "JSON with per-instrument short risk rates: {TICKER: 0.25} or {TICKER: {dshort: 0.25}}. Short leverage of a name is capped at 1/dshort, --leverage stays the upper bound. Multi-symbol runs only." },
 ];
+
+/**
+ * Потолки плеча шорта из файла ставок риска.
+ *
+ * Формат — либо {TICKER: 0.25}, либо {TICKER: {dshort: 0.25}}: ставка риска брокера,
+ * плечо бумаги равно 1/dshort. Бумага без ставки ограничений не получает: остаётся
+ * общий --leverage. Файл читается один раз, ошибка чтения — исключение, а не тихий
+ * откат к плечу без лимитов: молча посчитать более выгодный прогон хуже, чем упасть.
+ *
+ * @param {string|null} file - Путь к JSON.
+ * @returns {((ticker: string) => number)|null} Плечо бумаги или null, если файла нет.
+ */
+export function loadShortLeverageCaps(file) {
+    if (!file) return null;
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    const caps = new Map();
+    for (const [ticker, value] of Object.entries(raw)) {
+        const dshort = Number(typeof value === "object" && value !== null ? value.dshort : value);
+        if (Number.isFinite(dshort) && dshort > 0) caps.set(ticker, 1 / dshort);
+    }
+    if (caps.size === 0) throw new Error(`--risk-rates: в ${file} нет ни одной ставки dshort`);
+    console.error(`[SimulatedBroker] ставки риска: ${caps.size} бумаг, плечо шорта ограничено 1/dshort`);
+    return (ticker) => caps.get(ticker) ?? Infinity;
+}
 
 /**
  * Plugin entry point: build a simulated broker from CLI config.
@@ -58,6 +84,7 @@ export async function createBroker(config = {}) {
         initialCash:   Number(config.balance),
         commission:    Number(config.commission),
         leverage:      Number(config.leverage),
+        riskRates:     config.riskRates ?? null,
         fillOnNextOpen: Boolean(config.fillNextOpen),
         intrabarStops: Boolean(config.intrabarStops),
         modelLiquidation: Boolean(config.modelLiquidation),
@@ -511,6 +538,7 @@ export function createSimulatedBroker({
     initialCash = 10000,
     commission = 0.0005,
     leverage = 1,
+    riskRates = null,
     fillOnNextOpen = false,
     intrabarStops = false,
     modelLiquidation = false,
@@ -537,8 +565,11 @@ export function createSimulatedBroker({
     // инструмента сделки. Сколько бумаг держать и как делить между ними депозит
     // портфель не знает — это решение стратегии, она передаёт сумму в ордере.
     // Однобумажный путь остаётся ровно прежним.
+    // Ставки риска шорта по бумагам: у каждой свой потолок плеча (1/dshort), и он ниже
+    // общего --leverage. Без файла поведение прежнее — одно плечо на всю вселенную.
+    const leverageFor = multiSymbol ? loadShortLeverageCaps(riskRates) : null;
     const portfolio = multiSymbol
-        ? new MultiPortfolio({ cash: initialCash, commission, leverage })
+        ? new MultiPortfolio({ cash: initialCash, commission, leverage, leverageFor })
         : new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
     const data = new SimulatedDataSource({

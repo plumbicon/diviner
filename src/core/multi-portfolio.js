@@ -22,11 +22,15 @@ export class MultiPortfolio {
      * @param {number} [params.commission] - Комиссия за сторону.
      * @param {number} [params.leverage] - Плечо шорта.
      */
-    constructor({ cash = 10000, commission = 0.0005, leverage = 1 } = {}) {
+    constructor({ cash = 10000, commission = 0.0005, leverage = 1, leverageFor = null } = {}) {
         this.initialCash = cash;
         this.cash = cash;
         this.commission = commission;
         this.leverage = Number.isFinite(Number(leverage)) && Number(leverage) > 0 ? Number(leverage) : 1;
+        // Плечо по бумаге: биржа и брокер ограничивают шорт ставкой риска, и потолок у
+        // каждой бумаги свой. Функция возвращает разрешённое плечо тикера; общий --leverage
+        // остаётся верхней границей. Без неё поведение прежнее — одно плечо на всё.
+        this.leverageFor = typeof leverageFor === "function" ? leverageFor : null;
         /** Тикер → позиция. @type {Map<string, object>} */
         this.positions = new Map();
         this.trades = [];
@@ -44,6 +48,19 @@ export class MultiPortfolio {
      */
     positionOf(ticker) {
         return this.positions.get(ticker) ?? null;
+    }
+
+    /**
+     * Плечо, с которым открывается шорт по бумаге: минимум из общего и разрешённого
+     * по этой бумаге. Лонги в симуляторе без плеча.
+     * @param {string} ticker - Тикер.
+     * @returns {number} Плечо.
+     */
+    leverageOf(ticker) {
+        if (!this.leverageFor) return this.leverage;
+        const own = Number(this.leverageFor(ticker));
+        if (!Number.isFinite(own) || own <= 0) return this.leverage;
+        return Math.min(this.leverage, own);
     }
 
     /**
@@ -77,7 +94,7 @@ export class MultiPortfolio {
     open(ticker, { side = "short", price, datetime, lot = 1, size = null,
                    budget = null, sl = null, tp = null, exitDeadline = null }) {
         if (this.positions.has(ticker)) return null;
-        const leverage = side === "short" ? this.leverage : 1;
+        const leverage = side === "short" ? this.leverageOf(ticker) : 1;
         const actualSize = size || this.sizeFor(price, lot, budget ?? this.cash, leverage);
         if (actualSize <= 0) return null;
 
@@ -93,7 +110,7 @@ export class MultiPortfolio {
 
         const position = {
             entryTime: datetime, entryPrice: price, size: actualSize, side,
-            ticker, lot, sl, tp, exitDeadline,
+            ticker, lot, sl, tp, exitDeadline, leverage,
         };
         this.positions.set(ticker, position);
         return position;
@@ -116,7 +133,9 @@ export class MultiPortfolio {
             this.cash += size * price * (1 - this.commission);
         } else {
             pnl = size * (entryPrice - price) - fee;
-            this.cash += (size * entryPrice) / this.leverage + pnl;
+            // Возвращается залог именно этой позиции: при плече по бумаге общий
+            // this.leverage к ней отношения не имеет.
+            this.cash += (size * entryPrice) / (position.leverage || this.leverage) + pnl;
         }
 
         this.positions.delete(ticker);
@@ -142,7 +161,7 @@ export class MultiPortfolio {
             if (position.side === "long") {
                 total += position.size * price;
             } else {
-                total += (position.size * position.entryPrice) / this.leverage
+                total += (position.size * position.entryPrice) / (position.leverage || this.leverage)
                     + position.size * (position.entryPrice - price);
             }
         }

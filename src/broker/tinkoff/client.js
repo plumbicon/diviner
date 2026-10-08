@@ -12,6 +12,7 @@ import {
   orderExecutionReportStatusToJSON,
 } from "tinkoff-invest-api/dist/generated/orders.js";
 import { SubscriptionInterval } from "tinkoff-invest-api/dist/generated/marketdata.js";
+import { MarketStream } from "tinkoff-invest-api/dist/stream/market.js";
 import { PriceType } from "tinkoff-invest-api/dist/generated/common.js";
 import { InstrumentIdType } from "tinkoff-invest-api/dist/generated/instruments.js";
 
@@ -31,7 +32,22 @@ export class TinkoffClient {
     this.orderRetryDelayMs = options.orderRetryDelayMs || 1000;
     this.verbose = options.verbose || false;
 
-    this.api = new TinkoffInvestApi({ token: this.token });
+    // Транспортный keepalive. Соединение, молча умершее посередине сети, не
+    // даёт ни данных, ни ошибки: 08.10.2026 стрим так провисел 40 минут до
+    // ECONNRESET, а подписки в него висели ещё 7 часов. HTTP/2 PING без ответа
+    // рвёт соединение, и срабатывает обычное переподключение. Опции библиотеки
+    // сливаются поверхностно, поэтому её лимиты размера сообщений повторены.
+    this.api = new TinkoffInvestApi({
+      token: this.token,
+      channelOptions: {
+        "grpc.max_receive_message_length": 100 * 1024 * 1024,
+        "grpc.max_send_message_length": 100 * 1024 * 1024,
+        "grpc.keepalive_time_ms": options.keepaliveTimeMs || 60000,
+        "grpc.keepalive_timeout_ms": options.keepaliveTimeoutMs || 20000,
+      },
+    });
+    // Фабрика market-стрима: брошенный стрим заменяется новым экземпляром.
+    this.createMarketStream = options.createMarketStream || ((api) => new MarketStream(api));
     this.account = null;
     this.streamUnsubscribe = null;
     this.candleSubscription = null;
@@ -55,6 +71,14 @@ export class TinkoffClient {
     // нет» и запускает второе поверх первого.
     this.isReconnecting = false;
     this.unsubscribeTimeoutMs = options.unsubscribeTimeoutMs || 5000;
+    // Библиотека ждёт статуса подписки без таймаута: на молчащем соединении
+    // подписка не завершается никогда и держит isReconnecting навсегда.
+    this.subscribeTimeoutMs = options.subscribeTimeoutMs || 30000;
+    // Брокер шлёт в стрим ping раз в 120 с, если других сообщений нет. Ни свечи,
+    // ни пинга дольше этого порога — стрим мёртв, даже если сокет «жив».
+    this.streamSilenceMs = options.streamSilenceMs || 300000;
+    this.lastStreamMessageAt = 0;
+    this.streamDataHandler = null;
     // Heartbeat held while a live subscription exists. Node exits as soon as the
     // event loop has nothing left to do, so a stream that dies while every
     // pending promise is unsettled would end the process with status 0 — a
@@ -68,18 +92,33 @@ export class TinkoffClient {
     if (this.keepAliveTimer) {
       return;
     }
-    this.keepAliveTimer = setInterval(() => {
-      if (this.isClosing) {
-        return;
-      }
-      const alive = Boolean(this.api.stream?.market?.connected);
-      if (!alive && !this.streamReconnectTimer && !this.isReconnecting) {
-        console.error(
-          "[TinkoffClient] Market stream is down with no reconnect pending — forcing one.",
-        );
-        this._scheduleCandleReconnect(new Error("stream down, no reconnect pending"));
-      }
-    }, 30000);
+    this.keepAliveTimer = setInterval(() => this._checkStreamHealth(), 30000);
+  }
+
+  /**
+   * Один такт сторожа стрима: упавший стрим без переподключения и «живой»
+   * стрим, который молчит дольше streamSilenceMs (ни свечей, ни пингов брокера).
+   * @param {number} [now] - Текущее время, мс (для тестов).
+   * @private
+   */
+  _checkStreamHealth(now = Date.now()) {
+    if (this.isClosing || this.streamReconnectTimer || this.isReconnecting) {
+      return;
+    }
+    if (!this.api.stream?.market?.connected) {
+      console.error(
+        "[TinkoffClient] Market stream is down with no reconnect pending — forcing one.",
+      );
+      this._scheduleCandleReconnect(new Error("stream down, no reconnect pending"));
+      return;
+    }
+    const silentMs = now - this.lastStreamMessageAt;
+    if (silentMs > this.streamSilenceMs) {
+      const reason = `stream silent ${Math.round(silentMs / 1000)}s, no candles or broker pings`;
+      console.error(`[TinkoffClient] Market ${reason} — abandoning it.`);
+      this._abandonMarketStream(reason);
+      this._scheduleCandleReconnect(new Error(reason));
+    }
   }
 
   /** @private */
@@ -720,7 +759,7 @@ export class TinkoffClient {
         );
       }
 
-      this.streamUnsubscribe = await this.api.stream.market.candles(
+      this.streamUnsubscribe = await this._subscribeWithTimeout("candle", () => this.api.stream.market.candles(
         {
           instruments: instruments.map((item) => ({
             figi: item.figi,
@@ -740,7 +779,7 @@ export class TinkoffClient {
             });
           }
         },
-      );
+      ));
     } catch (error) {
       throw new Error(`Failed to subscribe to candles: ${error.message}`);
     }
@@ -790,8 +829,153 @@ export class TinkoffClient {
       this._scheduleCandleReconnect(new Error("Stream closed unexpectedly"));
     };
 
+    // Любое сообщение стрима — свеча, ping брокера, ответ на подписку — признак
+    // жизни для _checkStreamHealth.
+    this.streamDataHandler = () => {
+      this.lastStreamMessageAt = Date.now();
+    };
+    this.lastStreamMessageAt = Date.now();
+
     this.api.stream.market.on("error", this.streamErrorHandler);
     this.api.stream.market.on("close", this.streamCloseHandler);
+    this.api.stream.market.on("data", this.streamDataHandler);
+  }
+
+  /**
+   * Снять наши обработчики с market-стрима.
+   * @param {object} market - Экземпляр стрима библиотеки.
+   * @private
+   */
+  _detachMarketStreamHandlers(market) {
+    const handlers = [
+      ["error", this.streamErrorHandler],
+      ["close", this.streamCloseHandler],
+      ["data", this.streamDataHandler],
+    ];
+    for (const [event, handler] of handlers) {
+      if (!handler) continue;
+      if (typeof market.off === "function") {
+        market.off(event, handler);
+      } else if (typeof market.removeListener === "function") {
+        market.removeListener(event, handler);
+      }
+    }
+    this.streamErrorHandler = null;
+    this.streamCloseHandler = null;
+    this.streamDataHandler = null;
+  }
+
+  /**
+   * Бросить текущий market-стрим и поставить на его место новый экземпляр.
+   *
+   * Библиотека считает соединение живым, пока gRPC-вызов не завершился, и
+   * отправляет новую подписку в тот же вызов. Если он молчит без ошибки, повтор
+   * повиснет точно так же. Прервать вызов библиотека не умеет, поэтому старый
+   * стрим отцепляется: наши обработчики и обработчики подписок снимаются, запросы
+   * закрываются (cancel без ожидания — на мёртвом соединении он не завершится),
+   * а следующая подписка откроет новый вызов в новом экземпляре.
+   * @param {string} reason - Причина, для журнала.
+   * @private
+   */
+  _abandonMarketStream(reason) {
+    const streams = this.api.streamClients;
+    const old = streams?.market;
+    if (!old) {
+      return;
+    }
+    console.warn(`[TinkoffClient] Market stream abandoned (${reason}); next subscribe opens a new call.`);
+    this._detachMarketStreamHandlers(old);
+    // Без слушателя 'error' EventEmitter бросает исключение, если брошенный
+    // вызов всё-таки упадёт позже.
+    old.on?.("error", () => {});
+    old.emitter?.removeAllListeners?.("data");
+    Promise.resolve(old.cancel?.()).catch(() => {});
+    streams.market = this.createMarketStream(this.api);
+    this.streamUnsubscribe = null;
+    this.lastPriceUnsubscribe = null;
+    this._attachMarketStreamErrorHandler();
+  }
+
+  /**
+   * Подписка в market-стриме с ограничением по времени. По таймауту стрим
+   * бросается, чтобы повтор открыл новый вызов, а не ушёл в тот же молчащий.
+   * @param {string} label - Вид подписки, для журнала.
+   * @param {() => Promise<Function>} subscribe - Вызов подписки библиотеки.
+   * @returns {Promise<Function>} Функция отписки.
+   * @private
+   */
+  async _subscribeWithTimeout(label, subscribe) {
+    let timedOut = false;
+    try {
+      return await this._withTimeout(subscribe(), this.subscribeTimeoutMs, () => {
+        timedOut = true;
+        return `${label} subscribe timed out after ${this.subscribeTimeoutMs}ms`;
+      });
+    } catch (error) {
+      if (timedOut) {
+        this._abandonMarketStream(error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Дождаться промиса не дольше ms, иначе отклонить с сообщением.
+   * @param {Promise} promise - Ожидаемый промис.
+   * @param {number} ms - Предел ожидания.
+   * @param {() => string} message - Текст ошибки по таймауту.
+   * @returns {Promise<*>} Результат промиса.
+   * @private
+   */
+  async _withTimeout(promise, ms, message) {
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(message())), ms);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Пересоздать market-стрим с нуля: бросить текущий вызов и подписаться заново.
+   *
+   * Для внешнего сторожа тишины. Стрим, который «жив» для библиотеки, но не
+   * отдаёт данных, обычной переподпиской не лечится: она уйдёт в тот же вызов.
+   * При неудаче ставится обычное переподключение с паузой, ошибка пробрасывается.
+   * @param {string} reason - Причина, для журнала.
+   */
+  async restartMarketStream(reason) {
+    if (this.isClosing) {
+      return;
+    }
+    if (this.isReconnecting || this.streamReconnectTimer) {
+      throw new Error("reconnect already in progress");
+    }
+    this.isReconnecting = true;
+    let failure = null;
+    try {
+      this._abandonMarketStream(reason);
+      if (this.candleSubscription) {
+        await this._startCandleStream();
+      }
+      if (this.lastPriceSubscription) {
+        await this._startLastPriceStream();
+      }
+      this.streamReconnectAttempts = 0;
+    } catch (error) {
+      failure = error;
+    } finally {
+      this.isReconnecting = false;
+    }
+    if (failure) {
+      this._scheduleCandleReconnect(failure);
+      throw failure;
+    }
   }
 
   /**
@@ -897,21 +1081,10 @@ export class TinkoffClient {
     if (!this.api.stream?.market?.connected) {
       return; // stream already down — nothing to unsubscribe from
     }
-    let timer;
     try {
-      await Promise.race([
-        unsubscribe(),
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("unsubscribe timed out")),
-            this.unsubscribeTimeoutMs,
-          );
-        }),
-      ]);
+      await this._withTimeout(unsubscribe(), this.unsubscribeTimeoutMs, () => "unsubscribe timed out");
     } catch (error) {
       console.warn(`[TinkoffClient] ${label} unsubscribe skipped: ${error.message}`);
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -935,7 +1108,7 @@ export class TinkoffClient {
     }
     const { instrument, onLastPrice } = this.lastPriceSubscription;
     await this._unsubscribeCurrentLastPriceStream();
-    this.lastPriceUnsubscribe = await this.api.stream.market.lastPrice(
+    this.lastPriceUnsubscribe = await this._subscribeWithTimeout("last-price", () => this.api.stream.market.lastPrice(
       { instruments: [{ instrumentId: instrument.uid || instrument.figi, figi: instrument.figi }] },
       (lp) => {
         const price = this.api.helpers.toNumber(lp.price);
@@ -946,7 +1119,7 @@ export class TinkoffClient {
           console.error("[TinkoffClient] LastPrice handler error:", error.message);
         });
       },
-    );
+    ));
     if (this.verbose) {
       console.log(`[TinkoffClient] Subscribed to last-price ticks for ${instrument.ticker}.`);
     }
@@ -1524,22 +1697,8 @@ export class TinkoffClient {
     await this._unsubscribeCurrentCandleStream();
     await this._unsubscribeCurrentLastPriceStream();
 
-    if (this.streamErrorHandler) {
-      if (typeof this.api.stream.market.off === "function") {
-        this.api.stream.market.off("error", this.streamErrorHandler);
-      } else if (typeof this.api.stream.market.removeListener === "function") {
-        this.api.stream.market.removeListener("error", this.streamErrorHandler);
-      }
-      this.streamErrorHandler = null;
-    }
-
-    if (this.streamCloseHandler) {
-      if (typeof this.api.stream.market.off === "function") {
-        this.api.stream.market.off("close", this.streamCloseHandler);
-      } else if (typeof this.api.stream.market.removeListener === "function") {
-        this.api.stream.market.removeListener("close", this.streamCloseHandler);
-      }
-      this.streamCloseHandler = null;
+    if (this.streamErrorHandler || this.streamCloseHandler || this.streamDataHandler) {
+      this._detachMarketStreamHandlers(this.api.stream.market);
     }
 
     if (this.api?.streamClients?.market) {

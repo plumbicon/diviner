@@ -74,6 +74,10 @@ export class MultiSymbolTinkoffDataSource {
         this._stallTimeoutMs = Math.max(0, Number(stallTimeoutMin) || 0) * 60 * 1000;
         this._lastCandleWall = Date.now();
         this._stallTimer = null;
+        // Переподписка по тишине уже была, а живой свечи с тех пор нет.
+        this._stallReconnected = false;
+        // Ошибка, с которой поток завершится, чтобы процесс перезапустился.
+        this._fatal = null;
         // dateKey (МСК) → границы сессии. Расписание одно на всю биржу, поэтому
         // достаточно спросить его по одному инструменту.
         this._sessionCache = new Map();
@@ -128,6 +132,7 @@ export class MultiSymbolTinkoffDataSource {
         );
 
         while (!this._closed) {
+            if (this._fatal) throw this._fatal;
             if (this._queue.length === 0) {
                 await new Promise((resolve) => { this._notify = resolve; });
                 continue;
@@ -164,7 +169,12 @@ export class MultiSymbolTinkoffDataSource {
             return;
         }
         this._lastTimeByTicker.set(ticker, time);
-        this._lastCandleWall = Date.now();
+        // Сторожу важен только живой стрим: догрузка идёт по REST и приходит
+        // даже тогда, когда подписка мертва, — иначе она маскировала бы тишину.
+        if (!candle.isCatchUp) {
+            this._lastCandleWall = Date.now();
+            this._stallReconnected = false;
+        }
 
         let bucket = this._buckets.get(time);
         if (!bucket) {
@@ -272,19 +282,44 @@ export class MultiSymbolTinkoffDataSource {
         }
         const silent = now.getTime() - this._lastCandleWall;
         if (silent < this._stallTimeoutMs) return;
+        const minutes = Math.round(silent / 60000);
+        if (this._stallReconnected) {
+            // Переподписка была и не помогла. Внутри процесса это не лечится:
+            // 08.10.2026 стрим молчал 7,5 часа и ожил только от рестарта. Поток
+            // завершается ошибкой, процесс выходит с кодом 1, systemd поднимает
+            // новый, позиции восстанавливаются со счёта.
+            this._fail(new Error(
+                `Тишина ${minutes} мин после переподписки — стрим не восстановился, нужен перезапуск процесса.`,
+            ));
+            return;
+        }
         // Тишина по ВСЕЙ вселенной при открытой сессии — отказ стрима, а не
         // спокойный рынок: хотя бы одна ликвидная бумага торгуется каждую минуту.
         console.warn(
-            `[MultiTinkoff] Тишина ${Math.round(silent / 60000)} мин по всем `
+            `[MultiTinkoff] Тишина ${minutes} мин по всем `
             + `${this.instruments.length} инструментам при открытой сессии — переподписка.`,
         );
         this._lastCandleWall = now.getTime();
+        this._stallReconnected = true;
         await this._forceReconnect();
     }
 
     /**
-     * Переподписаться, не роняя процесс: сначала догрузить пропущенное, потом
-     * пересоздать подписку (_startCandleStream сам снимает мёртвую).
+     * Завершить поток ошибкой: движок её пробросит, процесс выйдет с кодом 1.
+     * @param {Error} error - Причина.
+     * @private
+     */
+    _fail(error) {
+        console.error(`[MultiTinkoff] ${error.message}`);
+        this._fatal = error;
+        if (this._stallTimer) { clearInterval(this._stallTimer); this._stallTimer = null; }
+        if (this._notify) { const notify = this._notify; this._notify = null; notify(); }
+    }
+
+    /**
+     * Переподписаться, не роняя процесс: пересоздать стрим с новым вызовом, потом
+     * догрузить пропущенное. Если подписка не прошла, повторяет клиент — с паузой
+     * и догрузкой.
      * @private
      */
     async _forceReconnect() {
@@ -294,7 +329,12 @@ export class MultiSymbolTinkoffDataSource {
         // А сама догрузка — после: это 86 последовательных REST-запросов, и держать
         // стрим отключённым всё это время незачем.
         const bounds = new Map(this._lastTimeByTicker);
-        await this.client._startCandleStream();
+        try {
+            await this.client.restartMarketStream("candle silence");
+        } catch (error) {
+            console.warn(`[MultiTinkoff] Переподписка не удалась: ${error.message}.`);
+            return;
+        }
         console.log("[MultiTinkoff] Подписка на свечи восстановлена (процесс жив).");
         try {
             await this._catchUpAll(bounds);

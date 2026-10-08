@@ -14,7 +14,8 @@ function fakeClient() {
             this.subscribed = { instruments, interval, onCandle };
         },
         async unsubscribeCandles() {},
-        async _startCandleStream() {},
+        restarts: 0,
+        async restartMarketStream() { this.restarts += 1; },
     };
 }
 
@@ -200,5 +201,57 @@ test("свеча старше уже отданной минуты отбрас�
     src._accept(candle("CCC", 2));
     assert.equal(src._buckets.size, 0, "пачка за прошедшую минуту не создаётся");
     assert.equal(src._droppedLate, 1);
+    await src.requestStop();
+});
+
+// ── повторная тишина: перезапуск процесса ─────────────────────────────────────
+const sessionDay = [{
+    dateKey: "2026-08-31", isTradingDay: true,
+    startTime: mskDay("2026-08-31T06:50:00Z").toISOString(),
+    endTime: mskDay("2026-08-31T23:50:00Z").toISOString(),
+}];
+
+test("переподписка сторожа идёт через пересоздание стрима", async () => {
+    const src = withWatchdog(sessionDay);
+    src._lastCandleWall = mskDay("2026-08-31T08:00:00Z").getTime();
+    await src._checkStall(mskDay("2026-08-31T08:45:00Z"));
+    assert.equal(src.client.restarts, 1, "старый вызов не переиспользуется");
+    await src.requestStop();
+});
+
+test("тишина после переподписки завершает поток ошибкой", async () => {
+    const src = withWatchdog(sessionDay);
+    let reconnects = 0;
+    src._forceReconnect = async () => { reconnects += 1; };
+    const next = src.stream().next();
+    await new Promise((r) => setTimeout(r, 0));
+
+    src._lastCandleWall = mskDay("2026-08-31T08:00:00Z").getTime();
+    await src._checkStall(mskDay("2026-08-31T08:45:00Z"));
+    assert.equal(reconnects, 1, "первая тишина — переподписка");
+    await src._checkStall(mskDay("2026-08-31T09:20:00Z"));
+    assert.equal(reconnects, 1, "вторая — уже не переподписка");
+    await assert.rejects(next, /после переподписки/, "поток завершён ошибкой → выход с кодом 1");
+});
+
+test("живая свеча после переподписки снимает признак, догрузка — нет", async () => {
+    const src = withWatchdog(sessionDay);
+    let reconnects = 0;
+    src._forceReconnect = async () => { reconnects += 1; };
+    src._lastCandleWall = mskDay("2026-08-31T08:00:00Z").getTime();
+    await src._checkStall(mskDay("2026-08-31T08:45:00Z"));
+    assert.equal(src._stallReconnected, true);
+
+    const wall = src._lastCandleWall;
+    src._accept({ ...candle("AAA", 1), isCatchUp: true });
+    assert.equal(src._lastCandleWall, wall, "догрузка по REST не считается живым стримом");
+    assert.equal(src._stallReconnected, true);
+
+    src._accept(candle("BBB", 2));
+    assert.equal(src._stallReconnected, false, "живая свеча — стрим ожил");
+    src._lastCandleWall = mskDay("2026-08-31T10:00:00Z").getTime();
+    await src._checkStall(mskDay("2026-08-31T10:45:00Z"));
+    assert.equal(reconnects, 2, "новая тишина снова начинается с переподписки");
+    assert.equal(src._fatal, null);
     await src.requestStop();
 });

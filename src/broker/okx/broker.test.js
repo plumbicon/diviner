@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { OkxExecutor, buildClientOrderId } from "./broker.js";
 import { normalizeOhlcv } from "./client.js";
 import { getOkxIntervalConfig } from "./intervals.js";
+import { Strategy } from "../../core/strategy.js";
 
 /**
  * Lightweight in-memory stub of OkxClient — no network. Records placed orders so
@@ -150,4 +151,42 @@ test("buildClientOrderId is alphanumeric and ≤ 32 chars", () => {
         at: new Date("2026-06-16T04:01:00Z"),
     });
     assert.equal(id, again);
+});
+
+test("сигнал стратегии доходит до исполнителя: размер по умолчанию, SL/TP и дедлайн сохранены", async () => {
+    // Strategy.sell передаёт один объект { size, sl, tp, exitDeadline }. Раньше OKX ждал
+    // позиционные аргументы, объект становился размером позиции, а стопы терялись.
+    const client = makeStubClient({ contractSize: 1, balance: 1000 });
+    const exec = makeExecutor(client, { leverage: 1, marginFraction: 0.5 });
+    await exec.refreshBalance();
+    const strategy = new (class extends Strategy { init() {} next() {} })([]);
+    strategy.execution = exec;
+
+    const deadline = Date.now() + 60 * 60 * 1000;
+    exec.setCurrentCandle({ datetime: new Date(), close: 100 });
+    strategy.sell({ sl: 105, tp: 95, exitDeadline: deadline });
+    await exec.drainOrders();
+
+    assert.equal(client.orders.length, 1);
+    assert.equal(client.orders[0].side, "sell");
+    assert.equal(client.orders[0].amount, 5, "размер по умолчанию, а не объект");
+    const position = exec.getPosition();
+    assert.equal(position.sl, 105);
+    assert.equal(position.tp, 95);
+    assert.equal(position.exitDeadline, deadline);
+});
+
+test("явный размер из сигнала стратегии соблюдается", async () => {
+    const client = makeStubClient({ contractSize: 1, balance: 1000 });
+    const exec = makeExecutor(client, { leverage: 1, marginFraction: 0.5 });
+    await exec.refreshBalance();
+    const strategy = new (class extends Strategy { init() {} next() {} })([]);
+    strategy.execution = exec;
+
+    exec.setCurrentCandle({ datetime: new Date(), close: 100 });
+    strategy.buy({ size: 2 });
+    await exec.drainOrders();
+
+    assert.equal(client.orders[0].side, "buy");
+    assert.equal(client.orders[0].amount, 2);
 });

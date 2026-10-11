@@ -364,19 +364,22 @@ export class OkxExecutor {
         this.stateManager.syncWithStrategy(strategy);
     }
 
-    buy(size, sl, tp) {
-        return this._open("long", size, sl, tp);
+    // Тот же вызов, что у остальных исполнителей: Strategy.buy/sell передают один
+    // объект. Позиционные аргументы здесь молча превращали объект в размер позиции,
+    // а SL/TP терялись.
+    buy({ size = null, sl = null, tp = null, exitDeadline = null } = {}) {
+        return this._open("long", size, sl, tp, exitDeadline);
     }
 
-    sell(size, sl, tp) {
-        return this._open("short", size, sl, tp);
+    sell({ size = null, sl = null, tp = null, exitDeadline = null } = {}) {
+        return this._open("short", size, sl, tp, exitDeadline);
     }
 
     /**
      * Open a position and enqueue the corresponding order.
      * @private
      */
-    _open(side, size, sl, tp) {
+    _open(side, size, sl, tp, exitDeadline = null) {
         if (this.stateManager.hasPosition()) {
             if (this.verbose) {
                 console.log(`[OkxExecutor] ${side.toUpperCase()} skipped: position already open`);
@@ -418,6 +421,7 @@ export class OkxExecutor {
             entryTime: this.currentCandle?.datetime,
             sl,
             tp,
+            exitDeadline,
         });
         this.store.save({
             symbol: this.symbol,
@@ -426,6 +430,7 @@ export class OkxExecutor {
             entryPrice: price ?? null,
             sl: sl ?? null,
             tp: tp ?? null,
+            exitDeadline: exitDeadline ?? null,
         });
         this._enqueue(() => this._executeOrder(side === "long" ? "buy" : "sell", actualSize, "open"));
         return this.stateManager.getPosition();
@@ -474,6 +479,7 @@ export class OkxExecutor {
             entryTime: new Date(),
             sl: matched ? (saved.sl ?? null) : null,
             tp: matched ? (saved.tp ?? null) : null,
+            exitDeadline: matched ? (saved.exitDeadline ?? null) : null,
             source: "account",
         });
         console.warn(

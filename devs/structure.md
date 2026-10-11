@@ -32,7 +32,7 @@ broker = {
     init?()                            // live: refreshBalance + syncWithAccountPosition
     setCurrentCandle(candle)
     getPosition()
-    buy(size?, sl?, tp?) / sell(...) / closePosition()
+    buy({ size?, sl?, tp?, exitDeadline? }) / sell({...}) / closePosition(reason?)
     syncStrategyState(strategy)        // зеркалит позицию стратегии ↔ брокер
     drainOrders?()                     // live: дождаться сериализованного исполнения
     checkStops?(candle)                // intrabar SL/TP (если intrabarStops)
@@ -59,7 +59,7 @@ import { Strategy } from "../../core/strategy.js";   // из src/strategies/<nam
 export class A0X extends Strategy {
   async init() { /* загрузка модели, прогрев истории */ }
   next() {
-    if (/* вход */) this.sell(undefined, slPrice, tpPrice);
+    if (/* вход */) this.sell({ sl: slPrice, tp: tpPrice });
     if (/* выход */) this.closePosition();
   }
 }
@@ -71,7 +71,7 @@ export class A0X extends Strategy {
 
 | Доступно стратегии | Что это |
 |---|---|
-| `this.buy/sell/closePosition(size?, sl?, tp?)` | сигналы исполнения (идут в `broker.exec`) |
+| `this.buy/sell({ size?, sl?, tp?, exitDeadline? })`, `this.closePosition()` | сигналы исполнения (идут в `broker.exec`); без `size` — размер по умолчанию исполнителя, `exitDeadline` — абсолютный дедлайн выхода (epoch ms) |
 | `this.context.getCandles({from, to, interval})` | история с защитой от look-ahead |
 | `this.context.getTradingSchedule({from, to})` | расписание торгов |
 | `this.data` | массив свечей (в live растёт по мере поступления) |

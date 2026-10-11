@@ -1,15 +1,15 @@
-import { evaluateStops } from "./stops.js";
-
 /**
  * Базовый класс для торговых стратегий
  */
 export class Strategy {
-  constructor(data, cash = 10000, commission = 0.0005) {
+  /**
+   * @param {Array|object} data - История свечей (в мультитикерном прогоне — пустой приёмник).
+   * @param {number} [cash] - Стартовый капитал; дальше его обновляет исполнитель.
+   */
+  constructor(data, cash = 10000) {
     this.data = data;
     this.cash = cash;
-    this.commission = commission;
     this._position = null;
-    this.indicators = new Map();
     this.dataIndex = 0;
     this.context = null;
   }
@@ -41,21 +41,6 @@ export class Strategy {
    */
   get position() {
     return this._position;
-  }
-
-  /**
-   * Создать индикатор
-   */
-  I(calculator, ...args) {
-    const key = JSON.stringify(args);
-    if (!this.indicators.has(key)) {
-      const result = [];
-      for (let i = 0; i < this.data.length; i++) {
-        result.push(calculator(i));
-      }
-      this.indicators.set(key, result);
-    }
-    return this.indicators.get(key);
   }
 
   /**
@@ -92,18 +77,6 @@ export class Strategy {
       throw new Error('Strategy.closePosition requires an attached execution adapter');
     }
     return this.execution.closePosition();
-  }
-
-  /**
-   * Проверка и исполнение SL/TP. Условия триггера централизованы в evaluateStops().
-   */
-  checkStopLossTakeProfit() {
-    const close = this.data[this.dataIndex].close;
-    if (evaluateStops(this._position, close)) {
-      this.closePosition();
-      return true;
-    }
-    return false;
   }
 
   /**

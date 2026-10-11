@@ -168,11 +168,7 @@ async function runBrokerMode(brokerRef, rest) {
     // всей вселенной объектами нельзя — стратегия ходит за историей в context.
     const initialData = broker.data.candles
         ?? (broker.data.getSymbols?.().length > 1 ? new StreamingCandleSink() : []);
-    const strategy = new StrategyClass(
-        initialData,
-        Number(config.balance) || 0,
-        Number(config.commission) || 0,
-    );
+    const strategy = new StrategyClass(initialData, Number(config.balance) || 0);
 
     registerSignals(broker);
     registerCrashGuard(broker);

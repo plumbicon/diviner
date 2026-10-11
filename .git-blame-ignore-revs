@@ -1,0 +1,5 @@
+# Чисто форматирующие коммиты: git blame их пропускает (GitHub — автоматически,
+# локально — git config blame.ignoreRevsFile .git-blame-ignore-revs).
+
+# style: отступ 4 пробела в файлах, написанных с 2
+c8c13872d84636663832a563f471d1bd13f08d1b

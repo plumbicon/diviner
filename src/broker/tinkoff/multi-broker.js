@@ -37,7 +37,7 @@ export const options = [
     { flags: "--interval <minutes>", description: "Интервал свечей, минут", default: "1" },
     { flags: "--close-on-exit", description: "Закрыть открытые позиции при остановке", default: false },
     { flags: "--order-retries <count>", description: "Повторы при транзиентных ошибках заявки", default: "2" },
-    { flags: "--order-tag <tag>", description: "Метка в ключе идемпотентности заявки", default: "a19" },
+    { flags: "--order-tag <tag>", description: "Метка в ключе идемпотентности заявки", default: "div" },
     { flags: "--stall-timeout <minutes>", description: "Порог тишины ВСЕГО стрима до переподписки (0 — выключить)", default: "30" },
     { flags: "--batch-grace-ms <ms>", description: "Окно сбора минуты: сколько ждать отставших бумаг перед решением", default: "8000" },
     { flags: "--state-dir <path>", description: "Каталог файлов состояния позиций (по умолчанию .diviner-state)" },
@@ -152,7 +152,7 @@ export async function createBroker(config = {}) {
         options: {
             verbose: Boolean(config.verbose),
             dryRun: Boolean(config.dryRun),
-            orderTag: config.orderTag || "a19",
+            orderTag: config.orderTag || "div",
             intrabarStops: Boolean(config.intrabarStops),
             leverage: parseFloat(config.leverage ?? "1"),
             stateDir: config.stateDir || join(process.cwd(), ".diviner-state"),

@@ -11,8 +11,18 @@ SL/TP и передаёт сигналы брокеру, ничего не зн�
 
 ## Быстрый старт
 
+Без токена и без данных — на синтетических свечах ([`examples/`](examples/README.md)):
+
 ```bash
 npm install
+node examples/make-data.mjs --out work/examples/demo.parquet --tickers DEMO
+node src/diviner.js src/broker/simulated/broker.js work/examples/demo.parquet \
+  --strategy examples/strategies/sma-cross/sma-cross.js --balance 10000
+```
+
+С данными MOEX и брокером:
+
+```bash
 export T_INVEST_TOKEN=<your-token>
 
 # бэктест всех тикеров (параллельно, worker_threads)
@@ -22,9 +32,13 @@ node scripts/backtest.mjs --strategy <ИМЯ> --year 2026 --leverage 4 --intraba
 diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
   --strategy <путь-к-стратегии> --balance 10000 --commission 0.0005
 
-# live (sandbox)
+# live (sandbox), одна бумага
 diviner src/broker/tinkoff/broker.js --strategy <путь-к-стратегии> \
-  --ticker SBER --sandbox --account <id> --leverage 4 --intrabar-stops
+  --ticker SBER --sandbox --account <id> --intrabar-stops
+
+# live, вселенная бумаг (кросс-секционная стратегия)
+diviner src/broker/tinkoff/multi-broker.js --strategy <путь-к-стратегии> \
+  --account <id> --universe-file data/universe.json --intrabar-stops
 
 # загрузка свечей MOEX → Parquet
 T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-date 2024-01-01 \
@@ -92,12 +106,16 @@ npm test
 ```
 diviner/
 ├── diviner              sh-обёртка → node src/diviner.js
-├── scripts/             backtest.mjs (батч-бэктест) · fetch.mjs · convert.mjs
+├── scripts/             backtest.mjs (батч-бэктест) · convert.mjs · merge-okx-orderbook.mjs
 ├── src/
 │   ├── diviner.js        точка входа: diviner <broker-path> [опции]
-│   ├── broker/           simulated (бэктест) · tinkoff (live MOEX) · okx (крипта)
-│   └── core/             режим-слепое ядро: engine, stops, portfolio, strategy
+│   ├── universe.js       отбор вселенной через API · bundle.js — бандл · append.js — дозапись листинга
+│   ├── broker/           simulated (бэктест) · tinkoff (live MOEX) · okx (крипта) · common
+│   ├── core/             режим-слепое ядро: engine, stops, portfolio, strategy, данные, метрики
+│   └── strategies/       стратегии — отдельный репозиторий, в git движка не входит
+├── examples/             стратегии-примеры и генератор синтетических свечей
 ├── data/                 Parquet-свечи (не в git): tinkoff/ (MOEX) · okx/ (крипта)
+├── work/                 артефакты замеров (не в git)
 └── devs/                 документация для разработчиков
 ```
 
@@ -105,3 +123,5 @@ diviner/
 
 - [`devs/structure.md`](devs/structure.md) — архитектура: как взаимодействуют брокер, движок и стратегия на программном уровне.
 - [`devs/usage.md`](devs/usage.md) — CLI-справка: backtest / live / fetch / convert / аккаунт-утилиты, цикл разработки.
+- [`examples/`](examples/README.md) — две стратегии-примера и синтетические данные: с чего начать свою стратегию.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — правила разработки: стиль, тесты, документация, данные.

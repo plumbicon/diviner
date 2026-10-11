@@ -31,7 +31,7 @@ export class PerformanceMetrics {
             this.initialCash,
         );
         const equityDrawdown = equityPeak - equityFinal;
-        const maxDrawdown = this.calculateMaxDrawdown();
+        const { amount: maxDrawdown, pct: maxDrawdownPct } = this.calculateMaxDrawdown();
         const totalReturn = equityFinal - this.initialCash;
         const totalReturnPct = (totalReturn / this.initialCash) * 100;
         const buyAndHoldReturn = (
@@ -64,7 +64,6 @@ export class PerformanceMetrics {
         const avgTradesPerDay = durationDays > 0 ? this.trades.length / durationDays : 0;
         const exposureTimePct = this.calculateExposureTimePct();
 
-        const maxDrawdownPct = equityPeak > 0 ? (maxDrawdown / equityPeak) * 100 : 0;
         const annualizedReturnPct = durationDays > 0
             ? totalReturnPct * (365 / durationDays)
             : 0;
@@ -110,18 +109,32 @@ export class PerformanceMetrics {
         };
     }
 
+    /**
+     * Максимальная просадка кривой капитала: в рублях и в процентах.
+     *
+     * Процент считается от пика, который был ПЕРЕД просадкой, а не от максимума
+     * всего прогона. Прежняя формула делила самую глубокую просадку в рублях на
+     * глобальный пик, и у растущей кривой ранние просадки почти исчезали: падение
+     * 100 → 90 в начале прогона при финальном пике 300 давало 3.3% вместо 10%.
+     * Отсчёт идёт от стартового капитала: просадка с первой свечи тоже считается.
+     * @returns {{amount: number, pct: number}} Просадка в деньгах и в процентах.
+     */
     calculateMaxDrawdown() {
-        let maxDrawdown = 0;
-        let peak = this.equity[0] || this.initialCash;
+        let amount = 0;
+        let pct = 0;
+        let peak = this.initialCash;
 
         for (const value of this.equity) {
             if (value > peak) {
                 peak = value;
             }
-            maxDrawdown = Math.max(maxDrawdown, peak - value);
+            amount = Math.max(amount, peak - value);
+            if (peak > 0) {
+                pct = Math.max(pct, ((peak - value) / peak) * 100);
+            }
         }
 
-        return maxDrawdown;
+        return { amount, pct };
     }
 
     calculateAverageTradeDuration() {
@@ -165,7 +178,7 @@ export class PerformanceMetrics {
     /**
      * Annualised Sharpe ratio (risk-free rate = 0) from daily equity returns.
      * Groups per-candle equity values by Moscow date and takes the last value
-     * per day as the day's closing equity, then computes daily log-returns.
+     * per day as the day's closing equity, then computes daily simple returns.
      * @returns {number} Sharpe ratio, or 0 if insufficient data.
      */
     calculateSharpe() {

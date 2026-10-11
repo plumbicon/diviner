@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MultiSymbolTinkoffExecutor } from "./multi-executor.js";
+import { MultiSymbolTinkoffExecutor, quotationToNumber } from "./multi-executor.js";
 
 const MIN = 60_000;
 const instruments = [
@@ -524,4 +524,11 @@ test("несколько шортов не раздувают капитал д�
     exec.setCurrentCandle(candle("AAA", 50));
     exec.setCurrentCandle(candle("BBB", 100));
     assert.equal(exec.getEquity(), 10_000, "две короткие позиции — капитал прежний");
+});
+
+test("quotationToNumber: {units, nano} → число, пустая и нулевая ставка — null", () => {
+    assert.equal(quotationToNumber({ units: 0, nano: 300000000 }), 0.3);
+    assert.equal(quotationToNumber({ units: 1, nano: 500000000 }), 1.5);
+    assert.equal(quotationToNumber(undefined), null);
+    assert.equal(quotationToNumber({ units: 0, nano: 0 }), null, "нулевая ставка — как не заданная");
 });

@@ -1,12 +1,8 @@
 #!/usr/bin/env node
 /**
- * Живой брокер T-Invest на несколько инструментов — точка входа для
- * кросс-секционных стратегий.
- *
- * Отдельный модуль рядом с однобумажным `broker.js`, а не замена ему: тот держит
- * однобумажных боевых ботов, и его поведение меняться не должно. Здесь только сборка —
- * вся логика в {@link MultiSymbolTinkoffDataSource} и
- * {@link MultiSymbolTinkoffExecutor}.
+ * Живой брокер T-Invest — единственный live-путь на MOEX. Вселенная из одного тикера
+ * работает так же, как из сотни. Здесь только сборка и утилиты счёта — вся логика в
+ * {@link MultiSymbolTinkoffDataSource} и {@link MultiSymbolTinkoffExecutor}.
  *
  * Вселенная задаётся списком (`--tickers`) либо файлом (`--universe-file`),
  * который делает `src/universe.js`. Резолв инструментов кэшируется на диск:
@@ -46,6 +42,12 @@ export const options = [
     { flags: "--print-balance", description: "Показать баланс и позиции и выйти", default: false },
     { flags: "--print-history", description: "Показать историю операций и выйти", default: false },
     { flags: "--history-from <date>", description: "Начало периода для --print-history" },
+    // Управление счетами песочницы (без стратегии, только с --sandbox):
+    { flags: "--list-sandboxes", description: "Список счетов песочницы и выход", default: false },
+    { flags: "--create-account", description: "Создать счёт в песочнице", default: false },
+    { flags: "--remove-account", description: "Удалить счёт песочницы из --account", default: false },
+    { flags: "--reset-positions", description: "Обнулить позиции в бумагах на счёте песочницы (рубли остаются)", default: false },
+    { flags: "--increase-balance <amount>", description: "Пополнить рублёвый баланс счёта песочницы" },
     { flags: "--log <path>", description: "Дублировать вывод в файл" },
 ];
 

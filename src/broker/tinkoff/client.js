@@ -51,12 +51,6 @@ export class TinkoffClient {
         this.account = null;
         this.streamUnsubscribe = null;
         this.candleSubscription = null;
-        // Optional tick-price stream (SUBSCRIBE_LAST_PRICE): rides the same market
-        // stream as candles, used live to check SL/TP on every trade tick instead of
-        // waiting ~90s for the next completed 1m candle to arrive. Re-subscribed by
-        // the shared reconnect path.
-        this.lastPriceSubscription = null;
-        this.lastPriceUnsubscribe = null;
         this.streamErrorHandler = null;
         this.streamCloseHandler = null;
         this.streamReconnectTimer = null;
@@ -892,7 +886,6 @@ export class TinkoffClient {
         Promise.resolve(old.cancel?.()).catch(() => {});
         streams.market = this.createMarketStream(this.api);
         this.streamUnsubscribe = null;
-        this.lastPriceUnsubscribe = null;
         this._attachMarketStreamErrorHandler();
     }
 
@@ -963,9 +956,6 @@ export class TinkoffClient {
             if (this.candleSubscription) {
                 await this._startCandleStream();
             }
-            if (this.lastPriceSubscription) {
-                await this._startLastPriceStream();
-            }
             this.streamReconnectAttempts = 0;
         } catch (error) {
             failure = error;
@@ -982,7 +972,7 @@ export class TinkoffClient {
      * @private
      */
     _scheduleCandleReconnect(error) {
-        if (this.isClosing || (!this.candleSubscription && !this.lastPriceSubscription)
+        if (this.isClosing || !this.candleSubscription
                 || this.streamReconnectTimer || this.isReconnecting) {
             return;
         }
@@ -1006,9 +996,6 @@ export class TinkoffClient {
                 await this._runReconnectCatchUp(error);
                 if (this.candleSubscription) {
                     await this._startCandleStream();
-                }
-                if (this.lastPriceSubscription) {
-                    await this._startLastPriceStream();
                 }
                 this.streamReconnectAttempts = 0;
                 console.log("[TinkoffClient] Market stream reconnected.");
@@ -1086,53 +1073,6 @@ export class TinkoffClient {
         } catch (error) {
             console.warn(`[TinkoffClient] ${label} unsubscribe skipped: ${error.message}`);
         }
-    }
-
-    /**
-     * Subscribe to the instrument's last-trade price (tick) stream. Rides the same
-     * market stream as candles; the reconnect path re-subscribes it. Best-effort:
-     * if it drops, the completed-candle SL/TP check remains as the fallback.
-     * @param {object} instrument - { figi, uid }.
-     * @param {(price: number) => unknown} onLastPrice - Called per tick with the price.
-     */
-    async subscribeLastPrice(instrument, onLastPrice) {
-        this.lastPriceSubscription = { instrument, onLastPrice };
-        this._attachMarketStreamErrorHandler(); // idempotent; exec.init() may run before candles subscribe
-        await this._startLastPriceStream();
-    }
-
-    /** @private */
-    async _startLastPriceStream() {
-        if (!this.lastPriceSubscription) {
-            return;
-        }
-        const { instrument, onLastPrice } = this.lastPriceSubscription;
-        await this._unsubscribeCurrentLastPriceStream();
-        this.lastPriceUnsubscribe = await this._subscribeWithTimeout("last-price", () => this.api.stream.market.lastPrice(
-            { instruments: [{ instrumentId: instrument.uid || instrument.figi, figi: instrument.figi }] },
-            (lp) => {
-                const price = this.api.helpers.toNumber(lp.price);
-                if (!Number.isFinite(price) || !onLastPrice) {
-                    return;
-                }
-                Promise.resolve(onLastPrice(price)).catch((error) => {
-                    console.error("[TinkoffClient] LastPrice handler error:", error.message);
-                });
-            },
-        ));
-        if (this.verbose) {
-            console.log(`[TinkoffClient] Subscribed to last-price ticks for ${instrument.ticker}.`);
-        }
-    }
-
-    /** @private */
-    async _unsubscribeCurrentLastPriceStream() {
-        if (!this.lastPriceUnsubscribe) {
-            return;
-        }
-        const unsubscribe = this.lastPriceUnsubscribe;
-        this.lastPriceUnsubscribe = null;
-        await this._unsubscribeSafely(unsubscribe, "last-price");
     }
 
     /**
@@ -1681,12 +1621,11 @@ export class TinkoffClient {
 
     /**
      * Остановить подписку на свечи и реконнект, не затрагивая остальной клиент.
-     * Идемпотентно. Вызывается владельцем подписки (TinkoffDataSource) при close().
+     * Идемпотентно. Вызывается владельцем подписки (источником данных) при остановке.
      */
     async unsubscribeCandles() {
         this.isClosing = true;
         this.candleSubscription = null;
-        this.lastPriceSubscription = null;
         this._stopKeepAlive();
 
         if (this.streamReconnectTimer) {
@@ -1695,7 +1634,6 @@ export class TinkoffClient {
         }
 
         await this._unsubscribeCurrentCandleStream();
-        await this._unsubscribeCurrentLastPriceStream();
 
         if (this.streamErrorHandler || this.streamCloseHandler || this.streamDataHandler) {
             this._detachMarketStreamHandlers(this.api.stream.market);

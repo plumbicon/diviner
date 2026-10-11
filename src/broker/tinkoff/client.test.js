@@ -11,7 +11,6 @@ function makeClient({ startCandleStream }) {
     const client = new TinkoffClient("t.test", { streamReconnectDelayMs: 1 });
     client.api = { stream: { market: { connected: false, options: {}, on() {} } } };
     client.candleSubscription = { onReconnectCatchUp: null };
-    client.lastPriceSubscription = null;
     client._startCandleStream = startCandleStream;
     return client;
 }

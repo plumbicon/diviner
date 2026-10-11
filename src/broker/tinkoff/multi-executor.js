@@ -1,9 +1,8 @@
 /**
  * Живой исполнитель на несколько одновременных позиций.
  *
- * Отдельный класс, а не правка {@link TinkoffExecutor}: однопозиционный держит
- * однобумажных боевых ботов с реальными деньгами. Здесь повторены все его защиты, но
- * заведены по бумагам: своё состояние, свой файл состояния, свой таймер дедлайна.
+ * Все защиты живого исполнения заведены по бумагам: своё состояние, свой файл
+ * состояния, свой таймер дедлайна.
  *
  * Распределение депозита исполнитель НЕ решает — стратегия передаёт в ордере
  * сумму (`budget`), а он лишь переводит её в лоты по цене исполнения. Сколько
@@ -13,10 +12,9 @@
  * частичное исполнение одной перемешается с откатом другой.
  */
 import { join } from "node:path";
-import { OrderManager } from "./order-manager.js";
 import { PositionStore } from "../common/position-store.js";
 import { evaluateIntrabarStop, classifyStopExit } from "../../core/stops.js";
-import { buildOrderId, quotationToNumber } from "./broker.js";
+import { OrderManager, buildOrderId } from "./order-manager.js";
 import { SIZING_SLIPPAGE_PAD } from "../../core/portfolio.js";
 
 // Через сколько повторить закрытие по дедлайну, если бумага занята заявкой.
@@ -44,6 +42,18 @@ const SOFT_REJECTIONS = [
 // пришёл на конкретную сумму залога — пробовать снова имеет смысл, когда денег
 // стало ощутимо больше, а не после копеечного движения баланса.
 const BLOCK_RELEASE_RATIO = 1.25;
+
+/**
+ * Quotation T-Invest `{units, nano}` → число.
+ * @param {{units: number|string, nano: number}|undefined} q - Значение API.
+ * @returns {number|null} Число; null, если значения нет или оно не положительное
+ *   (ставка риска, когда задана, всегда больше нуля).
+ */
+export function quotationToNumber(q) {
+    if (!q) return null;
+    const n = Number(q.units) + Number(q.nano) / 1e9;
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 export class MultiSymbolTinkoffExecutor {
     /**

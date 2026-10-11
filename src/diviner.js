@@ -17,16 +17,15 @@ const HELP = `Usage:
 
 Brokers:
   src/broker/simulated/broker.js     backtest on a Parquet listing or a multi-ticker bundle
-  src/broker/tinkoff/broker.js       live MOEX, one instrument (--ticker)
   src/broker/tinkoff/multi-broker.js live MOEX, a universe of instruments (--universe-file / --tickers)
   src/broker/okx/broker.js           live OKX perpetual swaps, one instrument
 
 Examples:
   diviner src/broker/simulated/broker.js data/SBER_2024_1m.parquet --strategy path/to/strategy.js --balance 10000
   diviner src/broker/simulated/broker.js data/UNIVERSE_2026_1m.parquet --strategy path/to/strategy.js --fill-next-open --intrabar-stops
-  T_INVEST_TOKEN=<t> diviner src/broker/tinkoff/broker.js --strategy path/to/strategy.js --ticker SBER --sandbox --account <id>
   T_INVEST_TOKEN=<t> diviner src/broker/tinkoff/multi-broker.js --strategy path/to/strategy.js --account <id> --universe-file data/universe.json
-  T_INVEST_TOKEN=<t> diviner src/broker/tinkoff/broker.js --sandbox --account <id> --print-balance
+  T_INVEST_TOKEN=<t> diviner src/broker/tinkoff/multi-broker.js --strategy path/to/strategy.js --sandbox --account <id> --tickers SBER
+  T_INVEST_TOKEN=<t> diviner src/broker/tinkoff/multi-broker.js --account <id> --print-balance
 
 Broker options: diviner <broker-path> --help. No token or data yet? See examples/README.md.`;
 

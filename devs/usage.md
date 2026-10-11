@@ -86,44 +86,10 @@ node scripts/backtest.mjs --strategy <ИМЯ> --year 2026 --leverage 4 --intraba
 `BACKTEST_DATA_DIR`), печатает рейтинг по доходности
 (+ MaxDD/Sharpe/Calmar/WinRate) и агрегаты. Резолвит стратегию как `src/strategies/<name>/<name>.js`.
 
-## Live: одна бумага (`tinkoff/broker.js`)
+## Live (`tinkoff/multi-broker.js`)
 
-```bash
-T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/broker.js \
-  --strategy <путь-к-стратегии> --ticker SBER --sandbox --account <id> \
-  --leverage 4 --intrabar-stops --interval 1
-```
-
-| Опция | Описание | По умолчанию |
-|-------|----------|-------------|
-| `--ticker` | Тикер инструмента | — |
-| `--account` | ID счёта | — |
-| `--sandbox` | Песочница (виртуальные деньги) | выкл |
-| `--dry-run` | Стратегия работает, ордера не шлются | выкл |
-| `--leverage` | Плечо (>1 шлёт confirmMarginTrade) | `1` |
-| `--intrabar-stops` | Проверять SL/TP по high/low live-свечи, закрывать по рынку | выкл |
-| `--interval` | Интервал свечей в минутах | `1` |
-| `--close-on-exit` | Закрыть позицию при остановке | выкл |
-| `--order-retries` | Повторы заявки при временных ошибках | `2` |
-| `--order-tag` | Метка в ключе идемпотентности ордера | `div` |
-| `--verbose` | Логировать свечи и подробности | выкл |
-| `--log <path>` | Дублировать вывод в файл | — |
-
-Режимы: `--sandbox`, `--dry-run`, реальный счёт (без флагов). По SIGINT/SIGTERM движок выходит
-из цикла, брокер закрывает сессию (отписка, сводка, по `--close-on-exit` — закрытие позиции).
-После рестарта открытая позиция подхватывается со счёта, уровни SL/TP — из файла состояния в
-`.diviner-state/`.
-
-> ⚠️ Без `--verbose` стартовый вывод (подключение, баланс, подписка) печатается безусловно, а
-> поминутный heartbeat свечей — только с `--verbose`.
-
-> ⚠️ Макс. плечо шорта ограничено брокером (≈ `1/dShort`, своё у каждой бумаги): у ликвидных
-> MOEX-имён ~4.5–5×, у волатильных меньше. Заявку выше лимита брокер отклоняет («Not enough
-> balance»); однобумажный брокер заранее урезает размер до разрешённого.
-
-## Live: вселенная (`tinkoff/multi-broker.js`)
-
-Одна подписка на свечи всей вселенной, одна стратегия, один счёт:
+Единственный live-путь на MOEX: одна подписка на свечи всей вселенной, одна стратегия, один счёт.
+Одна бумага — это вселенная из одного тикера (`--tickers SBER`).
 
 ```bash
 T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/multi-broker.js \
@@ -145,7 +111,7 @@ T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/multi-broker.js \
 | `--close-on-exit` | Закрыть все позиции при остановке | выкл |
 | `--order-retries`, `--order-tag` | Повторы заявки, метка ключа идемпотентности | `2`, `div` |
 | `--state-dir <path>` | Каталог файлов состояния позиций | `.diviner-state` |
-| `--print-balance`, `--print-history` | Утилиты счёта, как у однобумажного | — |
+| `--print-balance`, `--print-history`, `--history-from` | Утилиты счёта, см. ниже | — |
 | `--log <path>` | Дублировать вывод в файл | — |
 
 Файл вселенной — `{"tickers": [...], "instruments": {...}}`; резолв инструментов кэшируется в нём
@@ -155,17 +121,29 @@ T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/multi-broker.js \
 недоступную (нужен тест инструмента, нет шорта), блокируется до перезапуска; при нехватке залога —
 до роста кассы.
 
+Режимы: `--sandbox`, `--dry-run`, реальный счёт (без флагов). По SIGINT/SIGTERM движок выходит
+из цикла, брокер закрывает сессию (отписка, сводка, по `--close-on-exit` — закрытие позиций).
+После рестарта открытые позиции подхватываются со счёта, уровни SL/TP — из файлов состояния в
+`--state-dir`, история удержания и минутки текущей сессии догружаются стратегией.
+
+> ⚠️ Без `--verbose` стартовый вывод (подключение, баланс, подписка) печатается безусловно, а
+> поминутный heartbeat свечей — только с `--verbose`.
+
+> ⚠️ Макс. плечо шорта ограничено брокером (≈ `1/dShort`, своё у каждой бумаги): у ликвидных
+> MOEX-имён ~4.5–5×, у волатильных меньше. Заявку выше лимита брокер отклоняет («Not enough
+> balance»), поэтому исполнитель заранее урезает размер до разрешённого.
+
 ### Обрыв стрима свечей
 
-Соединение может умереть молча: без данных и без ошибки. Защита в `TinkoffClient` (общая для
-обоих брокеров) и в стороже тишины:
+Соединение может умереть молча: без данных и без ошибки. Защита — в `TinkoffClient` и в стороже
+тишины источника данных:
 
 | Уровень | Что ловит | Реакция |
 |---------|-----------|---------|
 | gRPC keepalive (PING раз в 60 с, ответ ≤ 20 с) | полуоткрытое TCP-соединение | соединение рвётся, обычное переподключение |
 | Пинги брокера в стриме (по документации раз в 120 с, на деле ~60 с, если нет других сообщений) | стрим жив по сокету, но не отдаёт ничего дольше 5 мин | вызов бросается, переподключение в новом |
 | Таймаут подписки (30 с) | подписка ждёт ответа, которого не будет | вызов бросается, повтор с нарастающей паузой |
-| Сторож тишины, `--stall-timeout` (30 мин без живых свечей в сессии) | всё остальное | переподписка в новом вызове; если и после неё ещё порог тишины — поток завершается ошибкой, процесс выходит с кодом 1, systemd поднимает новый (мультитикерный брокер) |
+| Сторож тишины, `--stall-timeout` (30 мин без живых свечей в сессии) | всё остальное | переподписка в новом вызове; если и после неё ещё порог тишины — поток завершается ошибкой, процесс выходит с кодом 1, systemd поднимает новый |
 
 Свечи догрузки по REST сторож тишины не считает: они приходят и при мёртвой подписке. Опции
 клиента: `keepaliveTimeMs`, `keepaliveTimeoutMs`, `streamSilenceMs`, `subscribeTimeoutMs`.
@@ -181,12 +159,12 @@ T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/multi-broker.js \
 
 ```bash
 # Инспекция — работает и на боевом (по умолчанию), и в sandbox (с --sandbox):
-diviner src/broker/tinkoff/broker.js --account <id> --print-balance
-diviner src/broker/tinkoff/broker.js --account <id> --print-history --history-from 2026-06-01
+diviner src/broker/tinkoff/multi-broker.js --account <id> --print-balance
+diviner src/broker/tinkoff/multi-broker.js --account <id> --print-history --history-from 2026-06-01
 
 # Управление тестовыми счетами — только sandbox (требуют --sandbox):
-diviner src/broker/tinkoff/broker.js --sandbox --create-account [--increase-balance 10000]
-diviner src/broker/tinkoff/broker.js --sandbox --list-sandboxes
+diviner src/broker/tinkoff/multi-broker.js --sandbox --create-account [--increase-balance 10000]
+diviner src/broker/tinkoff/multi-broker.js --sandbox --list-sandboxes
 ```
 
 Инспекция (`--print-balance`, `--print-history`) идёт по **боевому** счёту по умолчанию;

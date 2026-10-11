@@ -1,7 +1,7 @@
 // Sizing headroom for a market fill: the entry order fills at a future price
 // up to this fraction above the sizing price, so margin+commission must still
 // fit in cash at that adverse fill. Replaces the old flat 5% haircut with a
-// cost-derived reserve. Keep in sync with tinkoff/broker.js SIZING_SLIPPAGE_PAD.
+// cost-derived reserve. Live sizing (tinkoff/multi-executor.js) imports this constant.
 export const SIZING_SLIPPAGE_PAD = 0.01;
 
 /**

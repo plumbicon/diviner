@@ -29,7 +29,7 @@ Broker {data, exec, finalize}   ← вся разница live/backtest живё
 | | Одна бумага | Вселенная |
 |---|---|---|
 | Бэктест | `simulated/broker.js` + однобумажный листинг | `simulated/broker.js` + мультитикерный бандл (`src/bundle.js`) |
-| Live (MOEX) | `tinkoff/broker.js --ticker X` | `tinkoff/multi-broker.js --universe-file …` |
+| Live | `okx/broker.js` (крипта) | `tinkoff/multi-broker.js` (MOEX; одна бумага — вселенная из одного тикера) |
 | Поток свечей | одна бумага, по времени | все бумаги вперемешку, по времени; минута — пачкой, последняя свеча пачки помечена `isBatchEnd` |
 | `this.data` | история бумаги (в бэктесте — весь листинг сразу) | пустой приёмник: история вселенной объектами в память не влезает |
 | Текущая свеча | `this.data.at(this.getDataIndex())` или аргумент `next(candle)` | только аргумент `next(candle)`, у свечи есть `ticker` |
@@ -79,7 +79,7 @@ broker = {
   бандла по времени. `finalize()` собирает `PerformanceMetrics` (доходность, просадка, Sharpe,
   Calmar, WR). Заливка по close текущей свечи или, с `--fill-next-open`, по open следующей свечи
   той же бумаги. `needsCache = false`.
-- `tinkoff/broker.js`, `tinkoff/multi-broker.js` — `stream()` превращает push-подписку T-Invest
+- `tinkoff/multi-broker.js` — `stream()` превращает push-подписку T-Invest
   на закрытые свечи в pull-итератор; `init/drainOrders/checkStops` реальны; `finalize()`
   закрывает сессию. `needsCache = true`.
 - `okx/broker.js` — однобумажный live для perpetual-свопов OKX через ccxt.

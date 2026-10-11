@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Order Manager - управление ордерами с валидацией
  * Отвечает за валидацию параметров ордеров перед отправкой в API
@@ -47,7 +49,7 @@ export class OrderManager {
             price: price !== undefined && price !== null ? price : null,
             direction,
             // Idempotency key (API order_id). Optional; client.postOrder falls back to
-            // a random UUID when absent. See buildOrderId in tinkoff/broker.js.
+            // a random UUID when absent. See buildOrderId below.
             orderId: orderId || undefined,
         };
     }
@@ -156,4 +158,52 @@ export class OrderManager {
             orderId,
         });
     }
+}
+
+/**
+ * Build a human-meaningful idempotency key for an order, so it can later be
+ * correlated with strategy logs.
+ *
+ * Layout (sanitised to [A-Za-z0-9_-], hard-capped at the API's 36-char limit):
+ *   <tag>-<ticker>-<O|C><B|S>-<yyMMddHHmmss>   (timestamp in UTC)
+ * e.g. `div-ALRS-OS-260613040100` = open short on ALRS for the 2026-06-13
+ * 04:01:00 candle.
+ *
+ * IMPORTANT — what this id is and isn't:
+ *  - It is the API's `order_id` / `order_request_id` (idempotency key). It is
+ *    echoed back by PostOrder and visible via getOrderState / getOrders / the
+ *    order-state stream, so you can match an order to the candle that triggered
+ *    it.
+ *  - It is NOT a free-text comment and does NOT appear in the operations
+ *    history (getOperations) or broker report — those carry only the exchange
+ *    order id. The T-Invest API has no per-operation comment field.
+ *  - The broker dedups idempotency keys for ~1 month, so the trailing timestamp
+ *    keeps each order unique; same-second retries intentionally reuse the key.
+ *
+ * The API (and the sandbox especially) validates order_id as a UUID, so the
+ * human-readable key above is used only as the *seed* for a deterministic
+ * UUIDv5. Same seed → same UUID, which preserves the idempotency property
+ * (same-second retries reuse the id, broker dedups for ~1 month) while
+ * satisfying the strict UUID format requirement.
+ *
+ * @param {object} params - { tag, ticker, action: 'open'|'close', direction:
+ *                            'buy'|'sell', at?: Date }
+ * @returns {string} Deterministic UUIDv5 idempotency key.
+ */
+export function buildOrderId({ tag, ticker, action, direction, at = new Date() }) {
+    const iso = (at instanceof Date && !Number.isNaN(at.getTime()) ? at : new Date()).toISOString();
+    const ts = iso.slice(2, 4) + iso.slice(5, 7) + iso.slice(8, 10)
+        + iso.slice(11, 13) + iso.slice(14, 16) + iso.slice(17, 19);
+    const a = action === "close" ? "C" : "O";
+    const d = direction === "sell" ? "S" : "B";
+    const raw = `${tag || "div"}-${ticker || "x"}-${a}${d}-${ts}`;
+    const h = createHash("sha1").update(raw).digest("hex");
+    const variant = ((parseInt(h.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, "0");
+    return [
+        h.slice(0, 8),
+        h.slice(8, 12),
+        `5${h.slice(13, 16)}`,
+        `${variant}${h.slice(18, 20)}`,
+        h.slice(20, 32),
+    ].join("-");
 }

@@ -32,13 +32,9 @@ node scripts/backtest.mjs --strategy <ИМЯ> --year 2026 --leverage 4 --intraba
 diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
   --strategy <путь-к-стратегии> --balance 10000 --commission 0.0005
 
-# live (sandbox), одна бумага
-diviner src/broker/tinkoff/broker.js --strategy <путь-к-стратегии> \
-  --ticker SBER --sandbox --account <id> --intrabar-stops
-
-# live, вселенная бумаг (кросс-секционная стратегия)
+# live (sandbox) на вселенной бумаг; одна бумага — --tickers SBER
 diviner src/broker/tinkoff/multi-broker.js --strategy <путь-к-стратегии> \
-  --account <id> --universe-file data/universe.json --intrabar-stops
+  --sandbox --account <id> --universe-file data/universe.json --intrabar-stops
 
 # загрузка свечей MOEX → Parquet
 T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-date 2024-01-01 \

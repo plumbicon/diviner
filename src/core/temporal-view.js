@@ -48,9 +48,8 @@ export class TemporalView {
      * @returns {object} Метаданные инструмента.
      */
     getInstrumentMetadata(ticker = null) {
-        if (ticker && typeof this.dataSource?.getInstrument === "function") {
-            return this.dataSource.getInstrument(ticker);
-        }
+        const own = ticker ? this.dataSource?.getInstrument?.(ticker) : null;
+        if (own) return own;
         return this.metadata.instrument || this.metadata;
     }
 

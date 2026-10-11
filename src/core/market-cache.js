@@ -28,6 +28,17 @@ export class MarketDataCache {
         return this.dataSource.getTradingSchedule(params);
     }
 
+    // Вселенная и описание инструментов — без кэша, как есть у источника. Без этих
+    // двух методов в бою context.getSymbols() возвращал пустой список, а
+    // getInstrumentMetadata(ticker) — общие метаданные вместо лота бумаги.
+    getSymbols() {
+        return this.dataSource.getSymbols?.() ?? [];
+    }
+
+    getInstrument(ticker) {
+        return this.dataSource.getInstrument?.(ticker) ?? null;
+    }
+
     /**
      * History with caching of settled-past ranges.
      * @param {object} params - { from, to, interval, until }.

@@ -346,8 +346,9 @@ export class SimulatedExecutor {
      * @param {Portfolio} params.portfolio
      * @param {boolean} [params.fillOnNextOpen=false]
      */
-    constructor({ portfolio, fillOnNextOpen = false, intrabarStops = false,
-                  modelLiquidation = false }) {
+    constructor({
+        portfolio, fillOnNextOpen = false, intrabarStops = false, modelLiquidation = false,
+    }) {
         this.portfolio = portfolio;
         this.fillOnNextOpen = fillOnNextOpen;
         // When true, the engine routes SL/TP through checkStops() (intrabar

@@ -26,14 +26,14 @@ export class Strategy {
      * Инициализация стратегии (вызывается один раз перед началом бэктеста)
      */
     init() {
-        throw new Error('Method init() must be implemented');
+        throw new Error("Method init() must be implemented");
     }
 
     /**
      * Логика на каждом баре (вызывается для каждого бара данных)
      */
     next() {
-        throw new Error('Method next() must be implemented');
+        throw new Error("Method next() must be implemented");
     }
 
     /**
@@ -54,7 +54,7 @@ export class Strategy {
      */
     buy(opts = {}) {
         if (!this.execution) {
-            throw new Error('Strategy.buy requires an attached execution adapter');
+            throw new Error("Strategy.buy requires an attached execution adapter");
         }
         return this.execution.buy(opts);
     }
@@ -64,7 +64,7 @@ export class Strategy {
      */
     sell(opts = {}) {
         if (!this.execution) {
-            throw new Error('Strategy.sell requires an attached execution adapter');
+            throw new Error("Strategy.sell requires an attached execution adapter");
         }
         return this.execution.sell(opts);
     }
@@ -74,7 +74,7 @@ export class Strategy {
      */
     closePosition() {
         if (!this.execution) {
-            throw new Error('Strategy.closePosition requires an attached execution adapter');
+            throw new Error("Strategy.closePosition requires an attached execution adapter");
         }
         return this.execution.closePosition();
     }
@@ -83,7 +83,7 @@ export class Strategy {
      * Логировать важное событие вне зависимости от verbose.
      */
     logInfo(message) {
-        if (this.context && typeof this.context.log === 'function') {
+        if (this.context && typeof this.context.log === "function") {
             this.context.log(message);
             return;
         }

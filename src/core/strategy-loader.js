@@ -1,6 +1,6 @@
-import { Strategy } from './strategy.js';
-import { pathToFileURL } from 'url';
-import { resolve } from 'path';
+import { Strategy } from "./strategy.js";
+import { pathToFileURL } from "url";
+import { resolve } from "path";
 
 /**
  * Загрузить класс стратегии из файла
@@ -13,8 +13,8 @@ export async function loadStrategy(strategyPath) {
         const module = await import(moduleUrl);
 
         for (const [name, exported] of Object.entries(module)) {
-            if (typeof exported === 'function' && exported.prototype) {
-                if (exported.prototype instanceof Strategy || exported.name === 'Strategy') {
+            if (typeof exported === "function" && exported.prototype) {
+                if (exported.prototype instanceof Strategy || exported.name === "Strategy") {
                     if (exported !== Strategy && exported.prototype.init && exported.prototype.next) {
                         return exported;
                     }

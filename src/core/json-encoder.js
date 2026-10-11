@@ -6,7 +6,7 @@ export function encodeBacktestResult(result) {
         if (value instanceof Date) {
             return value.toISOString();
         }
-        if (typeof value === 'number' && (isNaN(value) || !isFinite(value))) {
+        if (typeof value === "number" && (isNaN(value) || !isFinite(value))) {
             return null;
         }
         return value;

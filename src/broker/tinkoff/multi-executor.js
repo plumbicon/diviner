@@ -263,7 +263,7 @@ export class MultiSymbolTinkoffExecutor {
             permanent
                 ? `[MultiExec] ${ticker}: бумага исключена до перезапуска — биржа отказывает постоянно.`
                 : `[MultiExec] ${ticker}: не хватает залога, бумага отложена до роста кассы `
-                  + `(сейчас ${this.accountRubBalance.toFixed(0)} ₽).`,
+                    + `(сейчас ${this.accountRubBalance.toFixed(0)} ₽).`,
         );
     }
 
@@ -319,8 +319,10 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /** @private */
-    _open(side, { ticker = this.currentTicker, size = null, budget = null,
-                  sl = null, tp = null, exitDeadline = null } = {}) {
+    _open(side, {
+        ticker = this.currentTicker, size = null, budget = null,
+        sl = null, tp = null, exitDeadline = null,
+    } = {}) {
         const slot = this.slots.get(ticker);
         const instrument = this.byTicker.get(ticker);
         if (!slot || !instrument) return null;

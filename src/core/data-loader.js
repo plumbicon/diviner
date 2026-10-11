@@ -1,6 +1,6 @@
-import * as parquet from '@dsnp/parquetjs';
-import { PARQUET_METADATA_KEY } from './candle-parquet.js';
-import { CandleSeriesBuilder } from './candle-series.js';
+import * as parquet from "@dsnp/parquetjs";
+import { PARQUET_METADATA_KEY } from "./candle-parquet.js";
+import { CandleSeriesBuilder } from "./candle-series.js";
 
 /**
  * Загрузить данные из Parquet файла
@@ -34,7 +34,7 @@ export async function loadData(pathOrBuffer) {
 export async function loadDataset(pathOrBuffer) {
     let reader;
 
-    if (typeof pathOrBuffer === 'string') {
+    if (typeof pathOrBuffer === "string") {
         reader = await parquet.ParquetReader.openFile(pathOrBuffer);
     } else {
         reader = await parquet.ParquetReader.openBuffer(pathOrBuffer);
@@ -62,9 +62,9 @@ export async function loadDataset(pathOrBuffer) {
             let datetime;
             const ts = row.datetime;
 
-            if (typeof ts === 'bigint') {
+            if (typeof ts === "bigint") {
                 datetime = new Date(Number(ts / 1_000_000n));
-            } else if (typeof ts === 'number') {
+            } else if (typeof ts === "number") {
                 datetime = ts > 1e12 ? new Date(ts) : new Date(ts * 1000);
             } else if (ts instanceof Date) {
                 datetime = ts;
@@ -245,8 +245,8 @@ async function readColumnar(reader, metadata, baseMinutesMeta) {
 
 /** Значение колонки datetime → Date. @private */
 function toDatetime(ts) {
-    if (typeof ts === 'bigint') return new Date(Number(ts / 1_000_000n));
-    if (typeof ts === 'number') return new Date(ts > 1e12 ? ts : ts * 1000);
+    if (typeof ts === "bigint") return new Date(Number(ts / 1_000_000n));
+    if (typeof ts === "number") return new Date(ts > 1e12 ? ts : ts * 1000);
     if (ts instanceof Date) return ts;
     return new Date(ts);
 }

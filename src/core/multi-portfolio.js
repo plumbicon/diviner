@@ -91,8 +91,10 @@ export class MultiPortfolio {
      * @param {object} order - Параметры ордера.
      * @returns {object|null} Позиция либо null, если размер/кэш не позволяют.
      */
-    open(ticker, { side = "short", price, datetime, lot = 1, size = null,
-                   budget = null, sl = null, tp = null, exitDeadline = null }) {
+    open(ticker, {
+        side = "short", price, datetime, lot = 1, size = null,
+        budget = null, sl = null, tp = null, exitDeadline = null,
+    }) {
         if (this.positions.has(ticker)) return null;
         const leverage = side === "short" ? this.leverageOf(ticker) : 1;
         const actualSize = size || this.sizeFor(price, lot, budget ?? this.cash, leverage);

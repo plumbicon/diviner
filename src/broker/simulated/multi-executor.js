@@ -224,8 +224,10 @@ export class MultiSymbolExecutor {
     // ── внутреннее ──────────────────────────────────────────────────────────
 
     /** @private */
-    _queueOpen(side, { ticker = this.currentTicker, size = null, budget = null,
-                      sl = null, tp = null, exitDeadline = null } = {}) {
+    _queueOpen(side, {
+        ticker = this.currentTicker, size = null, budget = null,
+        sl = null, tp = null, exitDeadline = null,
+    } = {}) {
         if (!ticker || this.isBusy(ticker)) return false;
 
         const order = { type: `open-${side}`, ticker, size, budget, sl, tp, exitDeadline };

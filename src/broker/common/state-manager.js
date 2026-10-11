@@ -73,7 +73,7 @@ export class StateManager {
         this.position = position ? { ...position } : null;
 
         if (this.verbose) {
-            console.log(`[StateManager] Position set: ${this.position ? `${this.position.side} ${this.position.size} lots` : 'none'}`);
+            console.log(`[StateManager] Position set: ${this.position ? `${this.position.side} ${this.position.size} lots` : "none"}`);
         }
     }
 
@@ -118,7 +118,7 @@ export class StateManager {
         if (strategy._position !== this.position) {
             strategy._position = this.position;
             if (this.verbose) {
-                console.log(`[StateManager] Synced strategy position: ${this.position ? this.position.side : 'none'}`);
+                console.log(`[StateManager] Synced strategy position: ${this.position ? this.position.side : "none"}`);
             }
         }
     }

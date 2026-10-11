@@ -5,6 +5,8 @@ data/
 logs/
 reports/
 !package.json
+# Без lock-файла установка не воспроизводится: на сервере и локально встают разные версии.
+!package-lock.json
 AGENTS.md
 **/.DS_Store
 src/strategies/

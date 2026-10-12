@@ -1,35 +1,35 @@
 import { evaluateIntrabarStop, classifyStopExit } from "../../core/stops.js";
 
 /**
- * Исполнитель для мультитикерного бэктеста: одна касса, несколько одновременных
- * позиций по разным бумагам.
+ * Executor for multi-ticker backtests: one cash pool, several simultaneous positions in
+ * different instruments.
  *
- * Движок остаётся однопозиционным по своему контракту — и это намеренно. Он
- * обрабатывает по одной свече за такт, а у свечи есть тикер, поэтому
- * `getPosition()`/`closePosition()`/`checkStops()` отвечают про позицию **той
- * бумаги, чья свеча сейчас в работе**. Так проверки SL/TP и таймаута движка
- * работают над мультипозиционным портфелем без единой правки в `core/engine.js`.
+ * The engine keeps its single-position contract — on purpose. It processes one candle
+ * per tick, and a candle has a ticker, so `getPosition()`/`closePosition()`/`checkStops()`
+ * answer about the position of **the instrument whose candle is being processed**. That
+ * way the engine's SL/TP and timeout checks work over a multi-position portfolio without
+ * a single change in `core/engine.js`.
  *
- * Сколько бумаг держать и в какой пропорции делить депозит — **не его дело**.
- * Это решение стратегии: она смотрит на капитал (`getEquity`), свои открытые
- * позиции и неисполненные ордера и передаёт в ордере сумму (`budget`) либо
- * готовый размер (`size`). Исполнитель отвечает за механику: перевести сумму в
- * лоты по цене исполнения, проверить кассу, вести позиции и стопы.
+ * How many instruments to hold and how to split the deposit is **not its business**.
+ * That is the strategy's decision: it looks at the equity (`getEquity`), its open
+ * positions and pending orders, and passes an amount (`budget`) or a ready size (`size`)
+ * with the order. The executor handles the mechanics: convert the amount into lots at
+ * the fill price, check the cash, keep positions and stops.
  *
- * Позиции ведутся по бумагам: на счёте по инструменту бывает одна нетто-позиция
- * — это ограничение биржи, поэтому повторный ордер по занятой бумаге отклоняется.
+ * Positions are kept per instrument: an account holds one net position per instrument —
+ * an exchange constraint — so a second order for a busy instrument is rejected.
  *
- * Заливка — по open следующей свечи ТОЙ ЖЕ бумаги (`fillOnNextOpen`), как в
- * однобумажном исполнителе. Стопы исполняются внутри свечи по уровню, в обход
- * буфера: биржевой стоп срабатывает при касании, а не на открытии следующего бара.
+ * Fills happen at the open of the next candle of THE SAME instrument (`fillOnNextOpen`).
+ * Stops execute intrabar at the level, bypassing the buffer: an exchange stop triggers on
+ * touch, not at the open of the next bar.
  */
 export class MultiSymbolExecutor {
     /**
-     * @param {object} params - Параметры.
-     * @param {import("../../core/multi-portfolio.js").MultiPortfolio} params.portfolio - Портфель.
-     * @param {boolean} [params.fillOnNextOpen] - Заливать по open следующей свечи.
-     * @param {boolean} [params.intrabarStops] - Внутрисвечные SL/TP.
-     * @param {Map<string, object>} [params.instruments] - Тикер → инструмент (лот).
+     * @param {object} params - Parameters.
+     * @param {import("../../core/multi-portfolio.js").MultiPortfolio} params.portfolio - Portfolio.
+     * @param {boolean} [params.fillOnNextOpen] - Fill at the next candle's open.
+     * @param {boolean} [params.intrabarStops] - Intrabar SL/TP.
+     * @param {Map<string, object>} [params.instruments] - Ticker → instrument (lot).
      */
     constructor({ portfolio, fillOnNextOpen = false, intrabarStops = false, instruments = null }) {
         this.portfolio = portfolio;
@@ -39,21 +39,21 @@ export class MultiSymbolExecutor {
 
         this.currentCandle = null;
         this.currentTicker = null;
-        /** Последняя виденная цена бумаги — для переоценки и финального закрытия. */
+        /** Last seen candle of each instrument — for marking to market and the final close. */
         this.lastCandle = new Map();
-        /** Тикер → отложенный ордер { type, budget, size, sl, tp, exitDeadline, reason }. */
+        /** Ticker → pending order { type, budget, size, sl, tp, exitDeadline, reason }. */
         this._pending = new Map();
 
-        /** Точки капитала и их время — по одной на минуту (конец батча). */
+        /** Equity points and their times — one per minute (end of batch). */
         this.equity = [];
         this.timeline = [];
     }
 
-    // ── контракт движка ─────────────────────────────────────────────────────
+    // ── engine contract ─────────────────────────────────────────────────────
 
     /**
-     * Свеча такта. Заливает отложенный ордер этой бумаги по её open.
-     * @param {object} candle - Свеча с полем ticker.
+     * Candle of the tick. Fills the instrument's pending order at its open.
+     * @param {object} candle - Candle with a ticker.
      */
     setCurrentCandle(candle) {
         this.currentCandle = candle;
@@ -65,21 +65,21 @@ export class MultiSymbolExecutor {
         if (pending) this._settle(pending, candle.open, candle.datetime);
     }
 
-    /** Позиция бумаги, чья свеча в работе. @returns {object|null} Позиция. */
+    /** Position of the instrument whose candle is being processed. @returns {object|null} Position. */
     getPosition() {
         return this.currentTicker ? this.portfolio.positionOf(this.currentTicker) : null;
     }
 
-    /** Свободный кэш. @returns {number} Кэш. */
+    /** Free cash. @returns {number} Cash. */
     getBalance() {
         return this.portfolio.cash;
     }
 
     /**
-     * Внутрисвечный SL/TP по текущей бумаге: закрывает ровно по уровню, в обход
-     * буфера отложенных ордеров.
-     * @param {object} candle - Текущая свеча.
-     * @returns {object|null} Сделка.
+     * Intrabar SL/TP for the current instrument: closes exactly at the level, bypassing
+     * the pending order buffer.
+     * @param {object} candle - Current candle.
+     * @returns {object|null} Trade.
      */
     checkStops(candle) {
         const position = this.portfolio.positionOf(candle?.ticker);
@@ -91,23 +91,23 @@ export class MultiSymbolExecutor {
         return this.portfolio.close(candle.ticker, {
             price: reason === "sl" ? position.sl : position.tp,
             datetime: candle.datetime,
-            // Ярлык тот же, что в live: защитный стоп и трейлинг — разные события.
+            // Same label as live: the protective stop and the trailing stop are distinct events.
             reason: reason === "sl" ? classifyStopExit(position) : reason,
         });
     }
 
     /**
-     * Закрыть позицию текущей бумаги (или указанной явно).
-     * @param {string} [reason] - Причина выхода.
-     * @param {string} [ticker] - Бумага; по умолчанию — текущая.
-     * @returns {object|null} Сделка при немедленном закрытии.
+     * Close the position of the current instrument (or an explicitly given one).
+     * @param {string} [reason] - Exit reason.
+     * @param {string} [ticker] - Instrument; the current one by default.
+     * @returns {object|null} Trade when closed immediately.
      */
     closePosition(reason = "manual", ticker = this.currentTicker) {
         if (!this.portfolio.positionOf(ticker)) return null;
 
         if (this.fillOnNextOpen) {
-            // Один буфер на бумагу: повторный сигнал выхода в том же такте
-            // (например, стоп и расписание сразу) не должен ставить второй ордер.
+            // One buffer per instrument: a repeated exit signal in the same tick (say, a
+            // stop and the schedule at once) must not queue a second order.
             if (!this._pending.has(ticker)) {
                 this._pending.set(ticker, { type: "close", ticker, reason });
             }
@@ -119,14 +119,14 @@ export class MultiSymbolExecutor {
     }
 
     /**
-     * Закрыть позицию немедленно по цене последней сделки бумаги (close её последней свечи),
-     * сняв висящий ордер на закрытие. Нужен для выхода «в тот же день», когда следующей свечи
-     * бумаги сегодня уже не будет: без него ордер ждал бы open следующей свечи — хоть через ночь,
-     * хоть через два месяца простоя торгов.
-     * @param {string} [reason] - Причина выхода.
-     * @param {string} [ticker] - Бумага; по умолчанию — текущая.
-     * @param {Date|null} [datetime] - Время выхода; по умолчанию — время последней свечи бумаги.
-     * @returns {object|null} Сделка.
+     * Close the position immediately at the instrument's last trade price (the close of its
+     * last candle), dropping a pending close order. Needed for a same-day exit when there
+     * will be no more candles of the instrument today: otherwise the order would wait for the
+     * next candle's open — overnight, or after two months without trading.
+     * @param {string} [reason] - Exit reason.
+     * @param {string} [ticker] - Instrument; the current one by default.
+     * @param {Date|null} [datetime] - Exit time; the time of the instrument's last candle by default.
+     * @returns {object|null} Trade.
      */
     closeAtLast(reason = "manual", ticker = this.currentTicker, datetime = null) {
         const position = this.portfolio.positionOf(ticker);
@@ -141,10 +141,10 @@ export class MultiSymbolExecutor {
     }
 
     /**
-     * Состояние в стратегию. Здесь же — отметка капитала на конце минуты:
-     * при нескольких открытых позициях она считается по ценам всех удерживаемых
-     * бумаг сразу, поэтому одна точка на минуту, а не на свечу.
-     * @param {object} strategy - Стратегия.
+     * State to the strategy. The equity mark at the end of a minute is taken here too: with
+     * several open positions it uses the prices of all held instruments at once, so there is
+     * one point per minute, not per candle.
+     * @param {object} strategy - Strategy.
      */
     syncStrategyState(strategy) {
         strategy._position = this.getPosition();
@@ -155,73 +155,73 @@ export class MultiSymbolExecutor {
         }
     }
 
-    // ── контракт стратегии ──────────────────────────────────────────────────
+    // ── strategy contract ───────────────────────────────────────────────────
 
     /**
-     * Открыть шорт по бумаге. Сумму (`budget`) или размер (`size`) задаёт
-     * стратегия — распределение депозита между бумагами это её решение.
+     * Open a short in an instrument. The strategy sets the amount (`budget`) or the size
+     * (`size`) — splitting the deposit between instruments is its decision.
      * @param {object} order - { ticker, budget, size, sl, tp, exitDeadline }.
-     * @returns {boolean} Принят ли ордер.
+     * @returns {boolean} Whether the order was accepted.
      */
     sell(order = {}) {
         return this._queueOpen("short", order);
     }
 
     /**
-     * Открыть лонг по бумаге.
+     * Open a long in an instrument.
      * @param {object} order - { ticker, budget, size, sl, tp, exitDeadline }.
-     * @returns {boolean} Принят ли ордер.
+     * @returns {boolean} Whether the order was accepted.
      */
     buy(order = {}) {
         return this._queueOpen("long", order);
     }
 
-    /** Открытые позиции. @returns {Array<object>} Позиции. */
+    /** Open positions. @returns {Array<object>} Positions. */
     getPositions() {
         return [...this.portfolio.positions.values()];
     }
 
     /**
-     * Позиция по бумаге.
-     * @param {string} ticker - Тикер.
-     * @returns {object|null} Позиция.
+     * Position of an instrument.
+     * @param {string} ticker - Ticker.
+     * @returns {object|null} Position.
      */
     getPositionOf(ticker) {
         return this.portfolio.positionOf(ticker);
     }
 
     /**
-     * Бумаги с неисполненными ордерами. Стратегии это нужно, чтобы считать свою
-     * занятость: ордер поставлен, но позиции ещё нет.
-     * @returns {Array<string>} Тикеры.
+     * Instruments with pending orders. The strategy needs this to count its occupied slots:
+     * the order is placed, but there is no position yet.
+     * @returns {Array<string>} Tickers.
      */
     getPendingTickers() {
         return [...this._pending.keys()];
     }
 
-    /** Есть ли по бумаге позиция или неисполненный ордер. @returns {boolean} Занята ли. */
+    /** Whether the instrument has a position or a pending order. @returns {boolean} Busy. */
     isBusy(ticker) {
         return Boolean(this.portfolio.positionOf(ticker)) || this._pending.has(ticker);
     }
 
     /**
-     * Заблокирована ли бумага отказом биржи. В симуляции отказов нет, но метод
-     * обязан существовать: стратегия спрашивает его безусловно, и молчаливый
-     * `undefined` из-за необязательного вызова снял бы защиту в бою.
-     * @returns {boolean} Всегда false.
+     * Whether the instrument is blocked by an exchange rejection. The simulation has no
+     * rejections, but the method must exist: the strategy calls it unconditionally, and a
+     * silent `undefined` from an optional call would disable the safeguard live.
+     * @returns {boolean} Always false.
      */
     isBlocked() {
         return false;
     }
 
-    /** Капитал по последним известным ценам удерживаемых бумаг. @returns {number} Капитал. */
+    /** Equity at the last known prices of held instruments. @returns {number} Equity. */
     getEquity() {
         return this.portfolio.equity(
             (ticker) => this.lastCandle.get(ticker)?.close ?? null,
         );
     }
 
-    // ── внутреннее ──────────────────────────────────────────────────────────
+    // ── internals ───────────────────────────────────────────────────────────
 
     /** @private */
     _queueOpen(side, {
@@ -260,8 +260,8 @@ export class MultiSymbolExecutor {
     }
 
     /**
-     * Конец данных: залить всё, что висит, и закрыть остатки по последним ценам.
-     * Дальше некуда — следующей свечи не будет.
+     * End of data: fill whatever is pending and close the rest at the last prices. There is
+     * nowhere further to go — no next candle will come.
      */
     flush() {
         for (const order of [...this._pending.values()]) {

@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 
 /**
- * Order Manager - управление ордерами с валидацией
- * Отвечает за валидацию параметров ордеров перед отправкой в API
+ * Order Manager — validates order parameters before they go to the API.
  */
 export class OrderManager {
     constructor(client, options = {}) {
@@ -12,7 +11,7 @@ export class OrderManager {
     }
 
     /**
-     * Валидация параметров ордера
+     * Validate order parameters.
      * @private
      */
     _validateOrderParams(params) {
@@ -23,21 +22,21 @@ export class OrderManager {
             throw new Error(`Invalid instrumentId: ${resolvedInstrumentId}`);
         }
 
-        // Валидация quantity
+        // Validate quantity
         if (!quantity || isNaN(quantity) || quantity <= 0) {
             throw new Error(`Invalid order quantity: ${quantity}`);
         }
 
         const validatedQuantity = Math.round(quantity);
 
-        // Валидация price (для лимитных ордеров)
+        // Validate price (limit orders)
         if (price !== undefined && price !== null) {
             if (isNaN(price) || price <= 0) {
                 throw new Error(`Invalid order price: ${price}`);
             }
         }
 
-        // Валидация direction
+        // Validate direction
         if (direction !== "buy" && direction !== "sell") {
             throw new Error(`Invalid order direction: ${direction}`);
         }
@@ -55,7 +54,7 @@ export class OrderManager {
     }
 
     /**
-     * Отправка рыночного ордера
+     * Send a market order.
      * @param {object} params - { figi, quantity, direction }
      */
     async postMarketOrder(params) {
@@ -95,7 +94,7 @@ export class OrderManager {
     }
 
     /**
-     * Отправка лимитного ордера
+     * Send a limit order.
      * @param {object} params - { figi, quantity, direction, price }
      */
     async postLimitOrder(params) {
@@ -137,7 +136,7 @@ export class OrderManager {
     }
 
     /**
-     * Закрытие позиции (противоположный рыночный ордер)
+     * Close a position (an opposite market order).
      * @param {object} params - { figi, quantity, currentSide }
      */
     async closePosition(params) {

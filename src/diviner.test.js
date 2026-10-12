@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { writeFully } from "./diviner.js";
 
 /**
- * Поток, который подтверждает запись не сразу: колбэк вызывается только после
- * ручного flush(). Так проверяется, что writeFully именно ЖДЁТ подтверждения, а
- * не полагается на возврат write().
+ * A stream that acknowledges a write later: the callback fires only after a manual
+ * flush(). This checks that writeFully actually WAITS for the acknowledgement instead of
+ * relying on write()'s return value.
  */
 function slowStream() {
     const pending = [];
@@ -14,7 +14,7 @@ function slowStream() {
         write(text, cb) {
             this.chunks.push(text);
             pending.push(cb);
-            return false;              // сигнал переполнения, как у забитого канала
+            return false;              // backpressure signal, like a full pipe
         },
         flush(error) {
             while (pending.length) pending.shift()(error);

@@ -43,7 +43,7 @@ function resolveBrokerModule(ref) {
 
 /**
  * Build a commander parser from the broker's declared options plus shared ones,
- * and return the parsed config (п.3: validation lives in this shared layer).
+ * and return the parsed config (validation lives in this shared layer).
  */
 function parseBrokerConfig(brokerOptions, rest) {
     const program = new Command();
@@ -172,8 +172,8 @@ async function runBrokerMode(brokerRef, rest) {
         logger: (message) => console.error(message),
     });
 
-    // Мультитикерный датасет: своей единой истории у него нет, а копить поток по
-    // всей вселенной объектами нельзя — стратегия ходит за историей в context.
+    // A multi-ticker dataset has no single history of its own, and accumulating the whole
+    // universe stream as objects is not an option — the strategy reads history via context.
     const initialData = broker.data.candles
         ?? (broker.data.getSymbols?.().length > 1 ? new StreamingCandleSink() : []);
     const strategy = new StrategyClass(initialData, Number(config.balance) || 0);
@@ -201,17 +201,17 @@ async function runBrokerMode(brokerRef, rest) {
 }
 
 /**
- * Записать строку в поток и дождаться, пока она уйдёт в приёмник.
+ * Write a string to a stream and wait until it reaches the receiver.
  *
- * process.exit() не ждёт незавершённых записей. Для файла это безобидно — туда
- * Node пишет синхронно, — а в канал запись асинхронна, и выход обрывал вывод на
- * границе буфера: ровно 65 536 байт на macOS. Потребители, читающие отчёт через
- * pipe (spawnSync в gen_logs.mjs, fetch-candles.mjs), получали обрезанный JSON и
- * молча теряли самые активные тикеры — у них отчёт как раз длиннее 64 КБ.
+ * process.exit() does not wait for pending writes. For a file that is harmless — Node
+ * writes to it synchronously — but writes to a pipe are asynchronous, and exiting cut the
+ * output at the buffer boundary: exactly 65,536 bytes on macOS. Consumers reading the
+ * report through a pipe (spawnSync in batch scripts) got truncated JSON and silently lost
+ * the most active tickers — whose reports are exactly the ones longer than 64 KB.
  *
- * @param {import("node:stream").Writable} stream - Поток вывода.
- * @param {string} text - Содержимое отчёта.
- * @returns {Promise<void>} Разрешается после того, как запись подтверждена.
+ * @param {import("node:stream").Writable} stream - Output stream.
+ * @param {string} text - Report content.
+ * @returns {Promise<void>} Resolves once the write is acknowledged.
  */
 export function writeFully(stream, text) {
     return new Promise((resolve, reject) => {

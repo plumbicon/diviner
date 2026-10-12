@@ -1,16 +1,16 @@
 /**
- * Приёмник потока для мультитикерного прогона.
+ * Stream sink for a multi-ticker run.
  *
- * Движок дописывает каждую пришедшую свечу в `strategy.data` — для однобумажной
- * стратегии это её история. По вселенной свечей десятки миллионов, и удерживать
- * их объектами значит вернуть ровно ту проблему, ради которой сделано колоночное
- * хранение. Кросс-секционная стратегия историю берёт через
- * `context.getCandles({ ticker })`, а текущую свечу получает аргументом `next()`,
- * поэтому копить поток незачем.
+ * The engine appends every incoming candle to `strategy.data` — for a single-ticker
+ * strategy that is its history. A universe has tens of millions of candles, and keeping
+ * them as objects brings back exactly the problem columnar storage was made for. A
+ * cross-sectional strategy reads history through `context.getCandles({ ticker })` and gets
+ * the current candle as the `next()` argument, so there is no reason to accumulate the
+ * stream.
  *
- * Приёмник помнит только последнюю свечу и считает длину (движок сравнивает её с
- * индексом такта). Обращение к более ранней свече не возвращает `undefined`
- * молча, а падает с подсказкой: тихо неверная история хуже явной ошибки.
+ * The sink remembers only the last candle and counts the length (the engine compares it
+ * with the tick index). Accessing an earlier candle does not silently return `undefined`
+ * but throws with a hint: silently wrong history is worse than an explicit error.
  */
 export class StreamingCandleSink {
     constructor() {
@@ -19,9 +19,9 @@ export class StreamingCandleSink {
     }
 
     /**
-     * Принять свечу такта.
-     * @param {object} candle - Свеча.
-     * @returns {number} Новая длина.
+     * Accept the tick's candle.
+     * @param {object} candle - Candle.
+     * @returns {number} New length.
      */
     push(candle) {
         this.last = candle;
@@ -30,9 +30,9 @@ export class StreamingCandleSink {
     }
 
     /**
-     * Свеча по индексу — доступна только текущая.
-     * @param {number} index - Индекс; отрицательный отсчитывается с конца.
-     * @returns {object|null} Текущая свеча.
+     * Candle by index — only the current one is available.
+     * @param {number} index - Index; a negative one counts from the end.
+     * @returns {object|null} Current candle.
      */
     at(index) {
         const i = index < 0 ? this.length + index : index;

@@ -8,8 +8,8 @@ const bar = (price, ts = 0) => ({
 });
 
 test("одна позиция с бюджетом во весь кэш совпадает с Portfolio цифра в цифру", () => {
-    // Один и тот же сценарий: серия шортов с разными ценами входа/выхода,
-    // включая лот 10 (округление вниз) и нецелые цены.
+    // The same scenario: a series of shorts with different entry/exit prices, including
+    // lot 10 (floor rounding) and fractional prices.
     const script = [
         [57.57, 56.10], [612.95, 592.11], [18.66, 18.90], [310.55, 305.02], [1.23, 1.19],
     ];
@@ -52,7 +52,7 @@ test("без бюджета и размера берётся весь кэш —
 });
 
 test("сумму на бумагу задаёт вызывающий; касса не уходит в минус", () => {
-    // Портфель не знает про «k слотов» — делит депозит тот, кто ставит ордера.
+    // The portfolio knows nothing about "k slots" — whoever places orders splits the deposit.
     const pf = new MultiPortfolio({ cash: 10000, commission: 0.0005 });
     for (let i = 0; i < 4; i += 1) {
         const budget = pf.equity(() => null) / 4;
@@ -83,7 +83,7 @@ test("positionOf находит позицию по бумаге, equity счи�
     pf.open("BBB", { price: 50, datetime: new Date(0), lot: 1, budget: 5000 });
     assert.equal(pf.positionOf("BBB").entryPrice, 50);
     assert.equal(pf.positionOf("ZZZ"), null);
-    // Обе бумаги упали на 10% — шорт в плюсе на обе.
+    // Both instruments fell 10% — the short profits on both.
     const withMove = pf.equity((ticker) => (ticker === "AAA" ? 90 : 45));
     const flat = pf.equity((_t, position) => position.entryPrice);
     assert.ok(withMove > flat);
@@ -101,7 +101,7 @@ test("закрытие снимает позицию и пишет сделку 
 });
 
 test("плечо по бумаге: потолок из ставки риска, общий --leverage остаётся верхней границей", () => {
-    // SBER разрешает ×4 (dshort 0.25), у MTLR потолка нет — работает общее плечо ×3.
+    // SBER allows ×4 (dshort 0.25), MTLR has no cap — the global ×3 leverage applies.
     const caps = { SBER: 4, MTLR: Infinity };
     const p = new MultiPortfolio({ cash: 10000, commission: 0, leverage: 3, leverageFor: (t) => caps[t] });
     assert.equal(p.leverageOf("SBER"), 3, "потолок бумаги выше общего — берётся общий");
@@ -119,13 +119,13 @@ test("плечо по бумаге: размер, залог и возврат �
     const b = p.open("B", { side: "short", price: 100, lot: 1, budget: 1000, datetime: new Date() });
     assert.equal(a.leverage, 4);
     assert.equal(b.leverage, 1);
-    // Бюджет 1000 при плече 4 даёт объём ≈4000 (минус запас на проскальзывание), при плече 1 — ≈1000.
+    // A budget of 1000 at leverage 4 gives ≈4000 notional (minus the slippage reserve), at leverage 1 ≈1000.
     assert.ok(a.size > 3.5 * b.size, `объём с плечом 4 должен быть вчетверо больше: ${a.size} против ${b.size}`);
-    // Залог: notional/плечо, то есть примерно бюджет в обоих случаях.
+    // Margin: notional/leverage, i.e. roughly the budget in both cases.
     const lockedA = (a.size * 100) / 4, lockedB = (b.size * 100) / 1;
     assert.equal(p.cash, 10000 - lockedA - lockedB);
 
-    // Закрытие в ноль возвращает ровно залог этой позиции.
+    // A flat close returns exactly this position's margin.
     p.close("A", { price: 100, datetime: new Date() });
     assert.ok(Math.abs(p.cash - (10000 - lockedB)) < 1e-9, "залог возвращён по плечу позиции, а не по общему");
 });
@@ -135,9 +135,9 @@ test("плечо по бумаге: капитал учитывает залог
     const a = p.open("A", { side: "short", price: 100, lot: 1, size: 40, datetime: new Date() });
     const b = p.open("B", { side: "short", price: 100, lot: 1, size: 20, datetime: new Date() });
     assert.equal(p.cash, 10000 - (40 * 100) / 4 - (20 * 100) / 2);
-    // Цены не двигались — капитал равен стартовому.
+    // Prices did not move — the equity equals the starting capital.
     assert.ok(Math.abs(p.equity(() => 100) - 10000) < 1e-9);
-    // Обе бумаги упали на 1%: прибыль шорта 0.01 × notional.
+    // Both instruments fell 1%: the short's profit is 0.01 × notional.
     assert.ok(Math.abs(p.equity(() => 99) - (10000 + 40 + 20)) < 1e-9);
     assert.ok(a && b);
 });

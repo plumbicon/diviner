@@ -1,10 +1,10 @@
 /**
- * Базовый класс для торговых стратегий
+ * Base class of trading strategies.
  */
 export class Strategy {
     /**
-     * @param {Array|object} data - История свечей (в мультитикерном прогоне — пустой приёмник).
-     * @param {number} [cash] - Стартовый капитал; дальше его обновляет исполнитель.
+     * @param {Array|object} data - Candle history (an empty sink in a multi-ticker run).
+     * @param {number} [cash] - Starting capital; the executor keeps it updated afterwards.
      */
     constructor(data, cash = 10000) {
         this.data = data;
@@ -15,42 +15,41 @@ export class Strategy {
     }
 
     /**
-     * Установить контекст исполнения стратегии.
-     * @param {object} context - StrategyContext, предоставленный движком.
+     * Set the strategy's execution context.
+     * @param {object} context - TemporalView provided by the engine.
      */
     setContext(context) {
         this.context = context;
     }
 
     /**
-     * Инициализация стратегии (вызывается один раз перед началом бэктеста)
+     * Initialize the strategy (called once before the run starts).
      */
     init() {
         throw new Error("Method init() must be implemented");
     }
 
     /**
-     * Логика на каждом баре (вызывается для каждого бара данных)
+     * Logic for every bar (called for each candle of the stream).
      */
     next() {
         throw new Error("Method next() must be implemented");
     }
 
     /**
-     * Получить позицию
+     * Current position.
      */
     get position() {
         return this._position;
     }
 
     /**
-     * Открыть длинную позицию (buy).
-     * Денежную механику ведёт исполнитель (execution adapter / Portfolio),
-     * стратегия лишь объявляет сигнал и его условия выхода.
+     * Open a long position (buy). The executor (execution adapter / Portfolio) handles the
+     * money; the strategy only declares the signal and its exit conditions.
      *
      * @param {{size?: number, sl?: number, tp?: number, exitDeadline?: number}} [opts]
-     *   size — размер (по умолчанию дефолтный сайзинг исполнителя);
-     *   sl/tp — уровни стопов; exitDeadline — абсолютный дедлайн закрытия (epoch ms).
+     *   size — position size (the executor's default sizing when omitted);
+     *   sl/tp — stop levels; exitDeadline — absolute close deadline (epoch ms).
      */
     buy(opts = {}) {
         if (!this.execution) {
@@ -60,7 +59,7 @@ export class Strategy {
     }
 
     /**
-     * Открыть короткую позицию (sell/short). См. {@link Strategy#buy} про opts.
+     * Open a short position (sell). See {@link Strategy#buy} for opts.
      */
     sell(opts = {}) {
         if (!this.execution) {
@@ -70,7 +69,7 @@ export class Strategy {
     }
 
     /**
-     * Закрыть текущую позицию.
+     * Close the current position.
      */
     closePosition() {
         if (!this.execution) {
@@ -80,7 +79,7 @@ export class Strategy {
     }
 
     /**
-     * Логировать важное событие вне зависимости от verbose.
+     * Log an important event regardless of verbose.
      */
     logInfo(message) {
         if (this.context && typeof this.context.log === "function") {
@@ -91,14 +90,14 @@ export class Strategy {
     }
 
     /**
-     * Установить индекс данных
+     * Set the index of the current candle.
      */
     setDataIndex(index) {
         this.dataIndex = index;
     }
 
     /**
-     * Получить индекс данных
+     * Index of the current candle.
      */
     getDataIndex() {
         return this.dataIndex;

@@ -1,32 +1,31 @@
 #!/usr/bin/env node
 /**
- * Отбор торгуемой вселенной из T-Invest API.
+ * Select the tradeable universe from the T-Invest API.
  *
- * Кросс-секционной стратегии нужен не «список, который кто-то составил
- * полтора года назад», а актуальный набор бумаг, которые СЕЙЧАС можно шортить
- * через API. Бумага, у которой отключили шорт, должна выпадать из вселенной
- * сама, а не жить в захардкоженной константе до тех пор, пока кто-то не заметит.
+ * A cross-sectional strategy needs not "a list someone made a year and a half ago" but
+ * the current set of instruments that can be shorted through the API RIGHT NOW. An
+ * instrument whose short was disabled must drop out of the universe by itself, not live
+ * in a hard-coded constant until someone notices.
  *
- * Отбор идёт по флагам инструмента (все проверены в SDK):
- *   shortEnabledFlag       шорт разрешён — без него стратегия неприменима;
- *   liquidityFlag          признак ликвидности от биржи;
- *   apiTradeAvailableFlag  торгуется через API, а не только в приложении;
- *   sellAvailableFlag      продажа доступна;
- *   otcFlag / blockedTcaFlag       внебиржа и блокировки — исключаются;
- *   forQualInvestorFlag    нужен статус квала — исключается (--allow-qual вернёт);
- *   first1minCandleDate    есть ли минутная история достаточной глубины.
+ * Selection is by instrument flags (all checked against the SDK):
+ *   shortEnabledFlag       shorting allowed — without it the strategy does not apply;
+ *   liquidityFlag          liquidity mark from the exchange;
+ *   apiTradeAvailableFlag  tradeable through the API, not only in the app;
+ *   sellAvailableFlag      selling available;
+ *   otcFlag / blockedTcaFlag       OTC and blocked — excluded;
+ *   forQualInvestorFlag    qualified-investor status required — excluded (--allow-qual brings it back);
+ *   first1minCandleDate    whether minute history is deep enough.
  *
- * Отдельно проверяются тесты. Требование «пройдите тест в разделе Профиль» —
- * не свойство инструмента, а отношение «инструмент × счёт», и во флагах Share
- * его нет вовсе: список нужных тестов лежит на активе (`getAssetBy` →
- * `requiredTests`), а список сданных — у пользователя (`users.getInfo` →
- * `qualifiedForWorkWith`). Без этой сверки непройденный тест выясняется только
- * отказом настоящей заявки в бою.
+ * Tests are checked separately. "Pass a test in the Profile section" is not a property
+ * of the instrument but of the "instrument × account" pair, and Share flags do not carry
+ * it at all: the required tests are on the asset (`getAssetBy` → `requiredTests`), the
+ * passed ones on the user (`users.getInfo` → `qualifiedForWorkWith`). Without this check a
+ * missing test is only discovered when a real order is rejected live.
  *
- * Отдельно считается стоимость лота (последняя цена × lot): на счёте в 10 000 ₽
- * с четырьмя слотами бумага с лотом дороже 2 500 ₽ не покупается физически,
- * сколько бы хорошо она ни скорилась. Это не свойство инструмента, а свойство
- * депозита, поэтому фильтр отдельный и по умолчанию выключен.
+ * Lot cost (last price × lot) is computed separately: on a 10,000 ₽ account with four
+ * slots an instrument whose lot costs more than 2,500 ₽ cannot physically be bought, no
+ * matter how well it scores. That is a property of the deposit, not of the instrument,
+ * so the filter is separate and off by default.
  *
  * Usage:
  *   T_INVEST_TOKEN=<token> node src/universe.js
@@ -39,24 +38,24 @@ import { InstrumentStatus, InstrumentType } from "tinkoff-invest-api/dist/genera
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// Сколько карточек активов тянуть параллельно. getAssetBy — вызов на актив,
-// на нашей вселенной это меньше сотни запросов; четыре в полёте укладываются
-// в лимиты и не растягивают сборку.
+// How many asset cards to fetch in parallel. getAssetBy is one call per asset — fewer
+// than a hundred requests for our universe; four in flight stay within the limits and
+// do not drag the run out.
 const ASSET_CONCURRENCY = 4;
 
-/** Quotation → число. @private */
+/** Quotation → number. @private */
 function quotationToNumber(q) {
     if (!q) return null;
     return Number(q.units || 0) + Number(q.nano || 0) / 1e9;
 }
 
 /**
- * Причины, по которым бумага не проходит отбор. Пустой список = проходит.
- * Возвращаем именно список, а не булев флаг: когда бумага неожиданно выпала,
- * нужно видеть почему, иначе отладка превращается в гадание.
- * @param {object} share - Инструмент из instruments.shares().
- * @param {object} options - Параметры отбора.
- * @returns {Array<string>} Причины отказа.
+ * Reasons an instrument fails the selection. An empty list means it passes. A list rather
+ * than a boolean: when an instrument drops out unexpectedly you need to see why, otherwise
+ * debugging turns into guesswork.
+ * @param {object} share - Instrument from instruments.shares().
+ * @param {object} options - Selection parameters.
+ * @returns {Array<string>} Rejection reasons.
  */
 export function rejectionReasons(share, options = {}) {
     const {
@@ -87,14 +86,14 @@ export function rejectionReasons(share, options = {}) {
 }
 
 /**
- * Какие тесты нужны бумаге и сданы ли они счётом.
+ * Which tests an instrument needs and whether the account has passed them.
  *
- * Вынесено отдельной чистой функцией: сверка списков — единственное место, где
- * можно ошибиться, а живой API для её проверки не нужен.
+ * A separate pure function: comparing the lists is the one place where it is easy to get
+ * wrong, and checking it needs no live API.
  *
- * @param {Array<string>} requiredTests - Тесты, которых требует актив.
- * @param {Array<string>} passedTests - Тесты, сданные владельцем счёта.
- * @returns {Array<string>} Несданные тесты; пустой список = бумага доступна.
+ * @param {Array<string>} requiredTests - Tests the asset requires.
+ * @param {Array<string>} passedTests - Tests the account owner has passed.
+ * @returns {Array<string>} Missing tests; an empty list means the instrument is available.
  */
 export function missingTests(requiredTests = [], passedTests = []) {
     if (!requiredTests?.length) return [];
@@ -103,11 +102,11 @@ export function missingTests(requiredTests = [], passedTests = []) {
 }
 
 /**
- * Повтор транзиентных отказов gRPC с нарастающей паузой.
- * @param {Function} call - Вызов, возвращающий промис.
- * @param {string} label - Имя метода для лога.
- * @param {number} [attempts] - Сколько раз пробовать.
- * @returns {Promise<*>} Результат вызова.
+ * Retry transient gRPC failures with growing pauses.
+ * @param {Function} call - Call returning a promise.
+ * @param {string} label - Method name for the log.
+ * @param {number} [attempts] - How many times to try.
+ * @returns {Promise<*>} Call result.
  * @private
  */
 async function withRetry(call, label, attempts = 4) {
@@ -126,17 +125,17 @@ async function withRetry(call, label, attempts = 4) {
 }
 
 /**
- * Отсеять бумаги, для которых счёт не сдал требуемые тесты.
+ * Drop instruments for which the account has not passed the required tests.
  *
- * Работает по уже отобранному списку: карточка актива тянется на каждую бумагу
- * отдельно, и делать это для всей биржи незачем. Любая ошибка API здесь — повод
- * предупредить, а не отбросить вселенную: лучше вернуть состав без этой
- * проверки, чем не вернуть ничего.
+ * Works on the already selected list: the asset card is fetched per instrument, and there
+ * is no point doing it for the whole exchange. Any API error here is a reason to warn, not
+ * to discard the universe: better to return the composition without this check than to
+ * return nothing.
  *
  * @param {object} api - TinkoffInvestApi.
- * @param {Array<object>} selected - Прошедшие флаговый отбор (правится на месте).
- * @param {Array<object>} rejected - Отсеянные (пополняется).
- * @returns {Promise<{passedTests: Array<string>|null, checked: number}>} Итог сверки.
+ * @param {Array<object>} selected - Instruments that passed the flag selection (edited in place).
+ * @param {Array<object>} rejected - Rejected instruments (appended to).
+ * @returns {Promise<{passedTests: Array<string>|null, checked: number}>} Check summary.
  * @private
  */
 async function filterByRequiredTests(api, selected, rejected) {
@@ -170,8 +169,8 @@ async function filterByRequiredTests(api, selected, rejected) {
         return { passedTests, checked: 0 };
     }
 
-    // Карточки активов — пачками: последовательно это минуты, без ограничения
-    // одновременных вызовов упираемся в лимит запросов.
+    // Asset cards go in batches: sequentially it takes minutes, and without a cap on
+    // concurrent calls we hit the request limit.
     const queue = [...selected];
     let checked = 0;
     const worker = async () => {
@@ -185,8 +184,8 @@ async function filterByRequiredTests(api, selected, rejected) {
                 item.requiredTests = asset?.requiredTests ?? [];
                 checked += 1;
             } catch {
-                // Карточка не пришла — бумагу не трогаем. Отбрасывать рабочее
-                // имя из-за сетевого сбоя хуже, чем оставить его непроверенным.
+                // The card did not arrive — leave the instrument alone. Dropping a working
+                // name over a network glitch is worse than leaving it unchecked.
                 item.requiredTests = null;
             }
         }
@@ -205,18 +204,18 @@ async function filterByRequiredTests(api, selected, rejected) {
 }
 
 /**
- * Запросить и отобрать вселенную.
- * @param {object} options - Параметры отбора (см. rejectionReasons) + maxLotCost.
- * @returns {Promise<{selected: Array<object>, rejected: Array<object>}>} Результат.
+ * Fetch and select the universe.
+ * @param {object} options - Selection parameters (see rejectionReasons) + maxLotCost.
+ * @returns {Promise<{selected: Array<object>, rejected: Array<object>}>} Result.
  */
 export async function selectUniverse(options = {}) {
     const token = process.env.T_INVEST_TOKEN;
     if (!token) throw new Error("T_INVEST_TOKEN is required");
     const api = new TinkoffInvestApi({ token });
 
-    // Shares регулярно отвечает RST_STREAM без gRPC-статуса, когда по токену
-    // параллельно идёт другая нагрузка (например, докачка листингов). Ошибка
-    // транзиентная, поэтому повторяем с нарастающей паузой, а не падаем.
+    // Shares regularly answers RST_STREAM without a gRPC status when the token carries
+    // other load in parallel (a listings download, for example). The error is transient,
+    // so it is retried with growing pauses instead of failing.
     const { instruments } = await withRetry(
         () => api.instruments.shares({ instrumentStatus: InstrumentStatus.INSTRUMENT_STATUS_BASE }),
         "instruments.shares",
@@ -242,8 +241,7 @@ export async function selectUniverse(options = {}) {
         (reasons.length === 0 ? selected : rejected).push(record);
     }
 
-    // Тесты — до цен: незачем спрашивать котировки по бумагам, которые всё
-    // равно выпадут.
+    // Tests before prices: no point asking quotes for instruments that will drop out anyway.
     if (selected.length > 0 && options.checkTests !== false) {
         const { passedTests, checked } = await filterByRequiredTests(api, selected, rejected);
         if (passedTests) {
@@ -254,11 +252,11 @@ export async function selectUniverse(options = {}) {
         }
     }
 
-    // Стоимость лота — одним запросом на весь отобранный набор.
+    // Lot cost — one request for the whole selected set.
     if (selected.length > 0) {
         try {
-            // figi[] в запросе помечен deprecated, но обязателен: сериализатор
-            // SDK обходит все поля и падает на отсутствующем массиве.
+            // figi[] in the request is marked deprecated but required: the SDK serializer
+            // walks every field and fails on a missing array.
             const { lastPrices } = await api.marketdata.getLastPrices({
                 figi: [],
                 instrumentId: selected.map((s) => s.uid),
@@ -317,8 +315,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     });
 
     if (opts.out) {
-        // Формат, который читает src/broker/tinkoff/multi-broker.js. Кэш
-        // инструментов он заполнит сам при первом резолве — здесь только состав.
+        // The format src/broker/tinkoff/multi-broker.js reads. It fills the instrument
+        // cache itself on the first resolve — only the composition is written here.
         const { writeFile, mkdir } = await import("node:fs/promises");
         const { dirname } = await import("node:path");
         await mkdir(dirname(opts.out), { recursive: true });

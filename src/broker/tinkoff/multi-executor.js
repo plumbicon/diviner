@@ -1,15 +1,16 @@
 /**
- * Живой исполнитель на несколько одновременных позиций.
+ * Live executor for several simultaneous positions.
  *
- * Все защиты живого исполнения заведены по бумагам: своё состояние, свой файл
- * состояния, свой таймер дедлайна.
+ * Every safeguard of live execution is kept per instrument: its own state, its own
+ * state file, its own deadline timer.
  *
- * Распределение депозита исполнитель НЕ решает — стратегия передаёт в ордере
- * сумму (`budget`), а он лишь переводит её в лоты по цене исполнения. Сколько
- * бумаг держать и в какой пропорции делить кассу — вопрос стратегии.
+ * The executor does NOT decide how the deposit is split — the strategy passes an
+ * amount (`budget`) with the order, and the executor only converts it into lots at
+ * the fill price. How many instruments to hold and in what proportion is the
+ * strategy's call.
  *
- * Очередь ордеров одна на всех: биржевые заявки должны уходить по очереди, иначе
- * частичное исполнение одной перемешается с откатом другой.
+ * There is one order queue for all instruments: exchange orders must go out one at a
+ * time, otherwise a partial fill of one would interleave with a rollback of another.
  */
 import { join } from "node:path";
 import { PositionStore } from "../common/position-store.js";
@@ -17,37 +18,37 @@ import { evaluateIntrabarStop, classifyStopExit } from "../../core/stops.js";
 import { OrderManager, buildOrderId } from "./order-manager.js";
 import { SIZING_SLIPPAGE_PAD } from "../../core/portfolio.js";
 
-// Через сколько повторить закрытие по дедлайну, если бумага занята заявкой.
+// How soon to retry a deadline close when the instrument has an order in flight.
 const DEADLINE_RETRY_MS = 15_000;
 
-// Отказы, которые повтором не лечатся: инструмент недоступен этому счёту, пока
-// пользователь не пройдёт тест в приложении или пока биржа не снимет запрет.
-// Сообщения приходят транслитом, поэтому ищем по латинскому написанию тоже.
+// Rejections a retry does not cure: the instrument is unavailable to this account
+// until the user passes a test in the app or the exchange lifts a ban. Messages come
+// transliterated, so the Latin spelling is matched too.
 const PERMANENT_REJECTIONS = [
-    /neobxodimo projti/i,           // «необходимо пройти соответствующий тест»
+    /neobxodimo projti/i,           // "you need to pass the corresponding test"
     /необходимо пройти/i,
     /not available for short/i,
     /instrument is not available/i,
     /trading is not available/i,
 ];
 
-// Отказы из-за нехватки денег: зависят от кассы, снимаются при её росте.
+// Rejections for lack of money: they depend on the cash and are lifted when it grows.
 const SOFT_REJECTIONS = [
     /not enough assets/i,
     /insufficient/i,
     /недостаточно/i,
 ];
 
-// Во сколько раз должна вырасти касса, чтобы снять мягкую блокировку. Отказ
-// пришёл на конкретную сумму залога — пробовать снова имеет смысл, когда денег
-// стало ощутимо больше, а не после копеечного движения баланса.
+// How much the cash must grow to lift a soft block. The rejection was for a specific
+// margin amount — retrying makes sense once there is noticeably more money, not after
+// a penny move of the balance.
 const BLOCK_RELEASE_RATIO = 1.25;
 
 /**
- * Quotation T-Invest `{units, nano}` → число.
- * @param {{units: number|string, nano: number}|undefined} q - Значение API.
- * @returns {number|null} Число; null, если значения нет или оно не положительное
- *   (ставка риска, когда задана, всегда больше нуля).
+ * T-Invest Quotation `{units, nano}` → number.
+ * @param {{units: number|string, nano: number}|undefined} q - API value.
+ * @returns {number|null} Number; null when absent or not positive (a risk rate, when
+ *   set, is always above zero).
  */
 export function quotationToNumber(q) {
     if (!q) return null;
@@ -57,11 +58,11 @@ export function quotationToNumber(q) {
 
 export class MultiSymbolTinkoffExecutor {
     /**
-     * @param {object} params - Параметры.
+     * @param {object} params - Parameters.
      * @param {object} params.client - TinkoffClient.
-     * @param {Array<object>} params.instruments - Инструменты вселенной.
-     * @param {number} [params.interval] - Интервал свечей, минут.
-     * @param {object} [params.options] - Опции брокера.
+     * @param {Array<object>} params.instruments - Universe instruments.
+     * @param {number} [params.interval] - Candle interval, minutes.
+     * @param {object} [params.options] - Broker options.
      */
     constructor({ client, instruments, interval = 1, options = {} }) {
         this.client = client;
@@ -72,8 +73,8 @@ export class MultiSymbolTinkoffExecutor {
         this.intrabarStops = Boolean(options.intrabarStops);
 
         this.byTicker = new Map(instruments.map((i) => [i.ticker, i]));
-        // Заменяемый снаружи — иначе поведение при отказе биржи не проверить
-        // иначе как настоящей заявкой.
+        // Replaceable from outside — otherwise the behaviour on an exchange rejection
+        // could only be tested with a real order.
         this.orderManager = options.orderManager
             || new OrderManager(client, { verbose: this.verbose, dryRun: this.dryRun });
 
@@ -90,7 +91,7 @@ export class MultiSymbolTinkoffExecutor {
 
         const accountId = client?.accountId || "acc";
         const stateDir = options.stateDir || join(process.cwd(), ".diviner-state");
-        /** Тикер → { position, store, exitTimer }. */
+        /** Ticker → { position, store, exitTimer }. */
         this.slots = new Map();
         for (const instrument of instruments) {
             this.slots.set(instrument.ticker, {
@@ -105,31 +106,30 @@ export class MultiSymbolTinkoffExecutor {
 
         this.accountRubBalance = 0;
         this._balanceAt = 0;
-        // Как часто перечитывать остаток вне зависимости от сделок: со счёта
-        // деньги уходят и помимо наших заявок — комиссия за операцию, абонентская
-        // плата, вывод. Кэш при этом становится завышенным, и заявка уходит на
-        // сумму, которой уже нет.
+        // How often to re-read the balance regardless of trades: money leaves the
+        // account besides our orders too — fees, service charges, withdrawals. The cached
+        // value then overstates the cash, and an order goes out for money that is gone.
         this.balanceMaxAgeMs = Number.isFinite(options.balanceMaxAgeMs)
             ? options.balanceMaxAgeMs : 60_000;
         this.currentCandle = null;
         this.currentTicker = null;
         this.lastCandle = new Map();
-        /** Тикер → true, пока ордер по бумаге в очереди. */
+        /** Ticker → true while an order for the instrument is in the queue. */
         this._inFlight = new Set();
         /**
-         * Тикер → причина отказа биржи, из-за которой бумагу нельзя торговать.
-         * Без этого стратегия каждый раз отдаёт свободный слот одному и тому же
-         * лучшему кандидату, заявка по нему отклоняется, слот откатывается — и
-         * бумага, которую взять можно, шанса не получает вовсе.
+         * Ticker → exchange rejection that makes the instrument untradeable. Without
+         * it the strategy gives the free slot to the same top candidate every time,
+         * its order is rejected, the slot is rolled back — and an instrument that
+         * could be traded never gets a chance.
          */
         this._blocked = new Map();
         this.orderQueue = Promise.resolve();
         this.sessionTrades = [];
     }
 
-    // ── контракт движка ─────────────────────────────────────────────────────
+    // ── engine contract ─────────────────────────────────────────────────────
 
-    /** Стартовая сверка: баланс и реальные позиции по всей вселенной. */
+    /** Start-up reconciliation: balance and actual positions across the universe. */
     async init() {
         await this.refreshBalance();
         await this.syncWithAccountPositions();
@@ -140,16 +140,16 @@ export class MultiSymbolTinkoffExecutor {
         this.currentTicker = candle?.ticker ?? null;
         if (candle?.ticker) this.lastCandle.set(candle.ticker, candle);
 
-        // Конец минуты — момент, когда стратегия считает бюджет. Ставим обновление
-        // остатка в очередь заявок: движок ждёт её через drainOrders(), поэтому к
-        // следующему решению цифра будет свежей. Синхронно спросить нельзя —
-        // стратегия вызывает getEquity() без await.
+        // The end of a minute is when the strategy computes budgets. The balance
+        // refresh is queued with the orders: the engine awaits the queue through
+        // drainOrders(), so the figure is fresh by the next decision. It cannot be
+        // fetched synchronously — the strategy calls getEquity() without await.
         if (candle?.isBatchEnd && Date.now() - this._balanceAt > this.balanceMaxAgeMs) {
             this._enqueue("balance", () => this.refreshBalance());
         }
     }
 
-    /** Позиция бумаги текущей свечи (движок спрашивает про неё). */
+    /** Position of the current candle's instrument (the one the engine asks about). */
     getPosition() {
         return this.currentTicker ? (this.slots.get(this.currentTicker)?.position ?? null) : null;
     }
@@ -159,18 +159,18 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /**
-     * Внутрисвечный SL/TP по бумаге свечи. В live «внутрисвечно» означает по
-     * high/low пришедшей закрытой свечи: тика мы не видим, и это единственный
-     * доступный признак касания уровня.
-     * @param {object} candle - Свеча.
-     * @returns {object|null} Закрытая позиция.
+     * Intrabar SL/TP for the candle's instrument. Live, "intrabar" means by the high/low
+     * of the closed candle that arrived: ticks are not seen, and this is the only
+     * available sign that a level was touched.
+     * @param {object} candle - Candle.
+     * @returns {object|null} Closed position.
      */
     checkStops(candle) {
         const slot = this.slots.get(candle?.ticker);
         if (!slot?.position) return null;
         const reason = evaluateIntrabarStop(slot.position, candle);
         if (!reason) return null;
-        // sl покрывает и защитный стоп, и трейлинг — в отчёте это разные события.
+        // sl covers both the protective stop and the trailing stop — distinct events in reports.
         return this.closePosition(reason === "sl" ? classifyStopExit(slot.position) : reason, candle.ticker);
     }
 
@@ -179,14 +179,14 @@ export class MultiSymbolTinkoffExecutor {
         strategy.cash = this.accountRubBalance;
     }
 
-    /** Дождаться, пока все поставленные заявки отработают. */
+    /** Wait until every queued order has been processed. */
     async drainOrders() {
         await this.orderQueue;
     }
 
-    // ── контракт стратегии ──────────────────────────────────────────────────
+    // ── strategy contract ───────────────────────────────────────────────────
 
-    /** Открытые позиции. @returns {Array<object>} Позиции. */
+    /** Open positions. @returns {Array<object>} Positions. */
     getPositions() {
         const out = [];
         for (const slot of this.slots.values()) if (slot.position) out.push(slot.position);
@@ -194,38 +194,38 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /**
-     * Позиция по бумаге.
-     * @param {string} ticker - Тикер.
-     * @returns {object|null} Позиция.
+     * Position of an instrument.
+     * @param {string} ticker - Ticker.
+     * @returns {object|null} Position.
      */
     getPositionOf(ticker) {
         return this.slots.get(ticker)?.position ?? null;
     }
 
-    /** Бумаги с заявкой в полёте. @returns {Array<string>} Тикеры. */
+    /** Instruments with an order in flight. @returns {Array<string>} Tickers. */
     getPendingTickers() {
         return [...this._inFlight];
     }
 
     /**
-     * Занята ли бумага: есть позиция или заявка в полёте.
-     * @param {string} ticker - Тикер.
-     * @returns {boolean} Занята.
+     * Whether the instrument is busy: it has a position or an order in flight.
+     * @param {string} ticker - Ticker.
+     * @returns {boolean} Busy.
      */
     isBusy(ticker) {
         return this._inFlight.has(ticker) || Boolean(this.slots.get(ticker)?.position);
     }
 
     /**
-     * Заблокирована ли бумага отказом биржи.
+     * Whether the instrument is blocked by an exchange rejection.
      *
-     * Отказы бывают двух родов. «Нужен тест в Профиле» и запрет инструмента —
-     * до конца процесса: повтор через минуту ничего не меняет. Нехватка залога
-     * зависит от кассы, поэтому снимается, когда свободных денег стало заметно
-     * больше, чем в момент отказа, — обычно после закрытия позиции.
+     * Rejections are of two kinds. "A test in the Profile is required" and an
+     * instrument ban last until the process ends: a retry a minute later changes
+     * nothing. Insufficient margin depends on the cash, so it is lifted once free money
+     * is noticeably larger than at the rejection — usually after a position closes.
      *
-     * @param {string} ticker - Тикер.
-     * @returns {boolean} Торговать нельзя.
+     * @param {string} ticker - Ticker.
+     * @returns {boolean} Not tradeable.
      */
     isBlocked(ticker) {
         const block = this._blocked.get(ticker);
@@ -242,23 +242,23 @@ export class MultiSymbolTinkoffExecutor {
         return true;
     }
 
-    /** Заблокированные бумаги и причины — для отчёта на выходе. */
+    /** Blocked instruments and the reasons — for the exit report. */
     getBlocked() {
         return [...this._blocked].map(([ticker, b]) => ({ ticker, ...b }));
     }
 
     /**
-     * Запомнить отказ биржи по бумаге.
-     * @param {string} ticker - Тикер.
-     * @param {string} message - Текст ошибки от API.
+     * Remember an exchange rejection for an instrument.
+     * @param {string} ticker - Ticker.
+     * @param {string} message - Error text from the API.
      * @private
      */
     _blockTicker(ticker, message) {
         if (this._blocked.has(ticker)) return;
         const permanent = PERMANENT_REJECTIONS.some((rx) => rx.test(message));
         const soft = SOFT_REJECTIONS.some((rx) => rx.test(message));
-        // Незнакомую ошибку блокируем мягко: она может быть разовой (таймаут,
-        // сеть), но крутить её каждую минуту всё равно незачем.
+        // An unknown error is blocked softly: it may be a one-off (timeout, network),
+        // but there is no point repeating it every minute either.
         if (!permanent && !soft) {
             this._blocked.set(ticker, {
                 permanent: false, balanceAt: this.accountRubBalance, message,
@@ -278,25 +278,23 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /**
-     * Капитал счёта: денежный остаток плюс стоимость длинных позиций минус
-     * стоимость коротких.
+     * Account equity: cash plus the value of long positions minus the value of short ones.
      *
-     * Считается НЕ так, как в симуляции, и это принципиально. `MultiPortfolio`
-     * при открытии шорта списывает залог из своей кассы, поэтому там капитал
-     * восстанавливают, прибавляя номинал обратно. Брокерская касса живёт по
-     * противоположному правилу: выручка от продажи в шорт в неё уже зачислена.
-     * Прибавить номинал ещё раз — посчитать деньги дважды, и капитал раздувается
-     * на всю короткую позицию. Дальше это множится само: каждый новый шорт
-     * увеличивает мнимый капитал, а стратегия берёт от него долю на следующий
-     * слот, так что позиции растут в течение сессии.
+     * Computed NOT the way the simulation does it, deliberately. `MultiPortfolio` debits
+     * the margin from its cash when a short opens, so there the equity is restored by
+     * adding the notional back. The broker's cash follows the opposite rule: the proceeds
+     * of the short sale are already credited. Adding the notional again counts the money
+     * twice and inflates the equity by the whole short position. It then compounds: each
+     * new short raises the imaginary equity, the strategy takes a share of it for the next
+     * slot, and positions grow through the session.
      *
-     * Проверка на живом счёте: касса 27 989 ₽, шортов на 19 198 ₽ — капитал
-     * 8 791 ₽, ровно то, что показывает `getPortfolio().totalAmountPortfolio`.
+     * Checked on a live account: cash 27,989 ₽, shorts worth 19,198 ₽ — equity 8,791 ₽,
+     * exactly what `getPortfolio().totalAmountPortfolio` shows.
      *
-     * Плечо в формуле не участвует: оно определяет требуемый залог, а не
-     * тождество «капитал = деньги + активы − обязательства».
+     * Leverage is not part of the formula: it sets the required margin, not the identity
+     * "equity = cash + assets − liabilities".
      *
-     * @returns {number} Капитал.
+     * @returns {number} Equity.
      */
     getEquity() {
         let total = this.accountRubBalance;
@@ -311,18 +309,18 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /**
-     * Открыть шорт по бумаге.
+     * Open a short in an instrument.
      * @param {object} order - { ticker, budget, size, sl, tp, exitDeadline }.
-     * @returns {object|null} Оптимистично открытая позиция либо null.
+     * @returns {object|null} Optimistically opened position, or null.
      */
     sell(order = {}) {
         return this._open("short", order);
     }
 
     /**
-     * Открыть лонг по бумаге.
-     * @param {object} order - См. {@link sell}.
-     * @returns {object|null} Позиция.
+     * Open a long in an instrument.
+     * @param {object} order - See {@link sell}.
+     * @returns {object|null} Position.
      */
     buy(order = {}) {
         return this._open("long", order);
@@ -341,19 +339,19 @@ export class MultiSymbolTinkoffExecutor {
             if (this.verbose) console.log(`[MultiExec] ${ticker}: пропуск — бумага уже занята`);
             return null;
         }
-        // Страховка на случай, если стратегия блокировку не спросила: иначе
-        // отказ повторится и слот снова уйдёт впустую.
+        // A safety net in case the strategy did not check the block: otherwise the
+        // rejection repeats and the slot is wasted again.
         if (this.isBlocked(ticker)) {
             if (this.verbose) console.log(`[MultiExec] ${ticker}: пропуск — бумага заблокирована отказом`);
             return null;
         }
-        // Разогревочная свеча из догрузки: состояние обновляет, торговать не должна —
-        // её close уже неактуален.
+        // A warm-up candle from the catch-up updates state but must not trade — its
+        // close is already stale.
         if (this.currentCandle?.noTrade) return null;
 
-        // Страховка на случай, если разогревочная метка не проставилась: ордер по
-        // устаревшей свече исполнится по цене переподключения, а не по той, на
-        // которой принято решение.
+        // A safety net in case the warm-up mark was not set: an order on a stale candle
+        // would fill at the price of the reconnect moment, not the one the decision was
+        // made on.
         const candleTime = this.currentCandle?.datetime instanceof Date
             ? this.currentCandle.datetime.getTime() : null;
         if (candleTime !== null) {
@@ -394,10 +392,10 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /**
-     * Закрыть позицию по бумаге.
-     * @param {string} [reason] - Причина.
-     * @param {string} [ticker] - Тикер; по умолчанию — бумага текущей свечи.
-     * @returns {object|null} Закрытая позиция.
+     * Close the position of an instrument.
+     * @param {string} [reason] - Reason.
+     * @param {string} [ticker] - Ticker; the current candle's instrument by default.
+     * @returns {object|null} Closed position.
      */
     closePosition(reason = "manual", ticker = this.currentTicker) {
         const slot = this.slots.get(ticker);
@@ -415,13 +413,13 @@ export class MultiSymbolTinkoffExecutor {
         return closed;
     }
 
-    // ── внутренности ────────────────────────────────────────────────────────
+    // ── internals ───────────────────────────────────────────────────────────
 
     /**
-     * Размер в ЛОТАХ из выделенной суммы. Резервируем известные издержки: при
-     * неблагоприятном исполнении (+SIZING_SLIPPAGE_PAD) маржа и комиссия обязаны
-     * уложиться в бюджет. Для шорта размер дополнительно ограничен реальной
-     * ставкой риска брокера (dshortClient), иначе заявку отклонят.
+     * Size in LOTS from the allotted amount. Known costs are reserved: at an adverse fill
+     * (+SIZING_SLIPPAGE_PAD) the margin and the commission must still fit the budget. A
+     * short is additionally capped by the broker's actual risk rate (dshortClient),
+     * otherwise the order is rejected.
      * @private
      */
     _lotsFor(ticker, price, budget) {
@@ -451,16 +449,16 @@ export class MultiSymbolTinkoffExecutor {
         if (exitDeadline == null || !Number.isFinite(exitDeadline)) return;
         const slot = this.slots.get(ticker);
         const delay = Math.max(0, exitDeadline - Date.now());
-        // Дедлайн — событие часов, а не цены: он обязан сработать даже если под
-        // конец сессии по бумаге не пришло ни одной свечи.
+        // The deadline is a clock event, not a price event: it must fire even if no
+        // candle of the instrument arrives near the end of the session.
         slot.exitTimer = setTimeout(() => {
             slot.exitTimer = null;
             if (!slot.position) return;
             console.log(`[MultiExec] ${ticker}: дедлайн ${new Date(exitDeadline).toISOString()} — закрываем по рынку.`);
             if (this.closePosition("time", ticker)) return;
-            // Закрыть не дали (по бумаге висит заявка). Таймер уже израсходован, и
-            // без повтора позиция уехала бы за сессию: свечей под её конец может
-            // не прийти вовсе, а значит и повтора по свече не будет.
+            // The close was refused (an order is in flight). The timer is spent, and
+            // without a retry the position would outlive the session: there may be no
+            // candles near its end, so no candle-driven retry either.
             console.warn(`[MultiExec] ${ticker}: дедлайн отложен — повтор через ${Math.round(DEADLINE_RETRY_MS / 1000)} с.`);
             slot.exitTimer = setTimeout(() => {
                 slot.exitTimer = null;
@@ -497,8 +495,8 @@ export class MultiSymbolTinkoffExecutor {
         const instrument = this.byTicker.get(ticker);
         const slot = this.slots.get(ticker);
         try {
-            // Во время аукциона открытия и дискретных аукционов биржа замораживает
-            // цену и отклоняет рыночные заявки, хотя сессия формально открыта.
+            // During the opening auction and discrete auctions the exchange freezes the
+            // price and rejects market orders, although the session is formally open.
             const status = await this.client.getTradingStatus?.(instrument.figi);
             if (status && status.marketOrderAvailableFlag === false) {
                 console.warn(`[MultiExec] ${ticker}: рыночные заявки недоступны (аукцион) — вход отменён.`);
@@ -529,30 +527,29 @@ export class MultiSymbolTinkoffExecutor {
                 slot.position.size = executed;
                 if (executed <= 0) this._abortEntry(ticker);
             }
-            // Цена входа — та, по которой залилось, а не та, по которой решали.
-            // Позицию открываем оптимистично по close сигнальной свечи, но
-            // держать эту цену дальше нельзя: от entryPrice считается MFE, а
-            // значит момент взвода трейлинга и вся отчётность по сделке.
-            // В бэктесте entryPrice — цена заливки, и живой контур должен
-            // совпадать с ним, иначе трейлинг взводится раньше на величину
-            // проскальзывания. Уровни SL/TP не трогаем: их стратегия считает от
-            // цены решения — так же, как в бэктесте.
+            // The entry price is the fill price, not the decision price. The position
+            // is opened optimistically at the signal candle's close, but that price
+            // cannot be kept: MFE is measured from entryPrice, and with it the moment
+            // the trailing stop arms and all trade reporting. In the backtest entryPrice
+            // is the fill price, and live must match it, otherwise the trailing stop
+            // arms earlier by the slippage. SL/TP levels are left alone: the strategy
+            // computes them from the decision price — same as in the backtest.
             this._applyFillPrice(ticker, summary.avgPrice);
         } catch (error) {
             console.error(`[MultiExec] ${ticker}: заявка не прошла — ${error.message}`);
             this._abortEntry(ticker);
             this._blockTicker(ticker, error.message || "");
         }
-        // Вход занял маржу: без перечитывания остаток остался бы доходовым, а
-        // getEquity() посчитал бы маржу дважды — и следующий слот запросил бы
-        // больше, чем есть на счёте.
+        // The entry took margin: without a re-read the balance would stay at its
+        // pre-trade value, getEquity() would count the margin twice — and the next slot
+        // would ask for more than the account holds.
         await this.refreshBalance();
     }
 
     /**
-     * Заменить оптимистичную цену входа фактической ценой исполнения.
-     * @param {string} ticker - Тикер.
-     * @param {number|null} avgPrice - Средняя цена исполнения от брокера.
+     * Replace the optimistic entry price with the actual fill price.
+     * @param {string} ticker - Ticker.
+     * @param {number|null} avgPrice - Average fill price from the broker.
      * @private
      */
     _applyFillPrice(ticker, avgPrice) {
@@ -578,7 +575,7 @@ export class MultiSymbolTinkoffExecutor {
         }
     }
 
-    /** Откат оптимистично открытой позиции, если вход не состоялся. @private */
+    /** Roll back an optimistically opened position when the entry did not happen. @private */
     _abortEntry(ticker) {
         this._clearExitDeadline(ticker);
         const slot = this.slots.get(ticker);
@@ -602,10 +599,10 @@ export class MultiSymbolTinkoffExecutor {
             const executed = summary.lotsExecuted ?? position.size;
             if (executed <= 0) throw new Error(`ордер не исполнен (${summary.statusName})`);
             if (executed < position.size) {
-                // Закрылись не полностью — остаток возвращаем в состояние, иначе
-                // он останется на счёте без нашего ведома и без защиты. Файл
-                // состояния был очищен при постановке заявки, поэтому пишем заново:
-                // иначе после рестарта остаток подняли бы со счёта без уровней.
+                // Partially closed — the remainder goes back into the state, otherwise it
+                // would stay on the account unknown to us and unprotected. The state file
+                // was cleared when the order was queued, so it is written again: otherwise
+                // a restart would pick the remainder up from the account without levels.
                 const rest = { ...position, size: position.size - executed };
                 slot.position = rest;
                 slot.store.save({
@@ -627,10 +624,11 @@ export class MultiSymbolTinkoffExecutor {
                 + `${fill} [reason=${reason}] (${summary.statusName})`,
             );
         } catch (error) {
-            // Позиция снята с учёта ДО отправки заявки (оптимистично). Если заявка
-            // не прошла, на счёте она осталась — и оставить состояние пустым нельзя:
-            // бумага считалась бы свободной, стратегия вошла бы в неё повторно и
-            // удвоила экспозицию, а прежняя позиция осталась бы без стопа и дедлайна.
+            // The position was dropped from the state BEFORE the order was sent
+            // (optimistically). If the order failed, the position is still on the account —
+            // and the state must not stay empty: the instrument would look free, the
+            // strategy would enter it again and double the exposure, and the old position
+            // would be left without a stop and a deadline.
             slot.position = position;
             slot.store.save({
                 figi: instrument.figi, ticker, side: position.side, size: position.size,
@@ -648,25 +646,25 @@ export class MultiSymbolTinkoffExecutor {
         await this.refreshBalance();
     }
 
-    /** Обновить рублёвый остаток счёта. */
+    /** Refresh the account's RUB balance. */
     async refreshBalance() {
         if (!this.client?.getRubBalance) return this.accountRubBalance;
         try {
             this.accountRubBalance = await this.client.getRubBalance(this.client.accountId);
             this._balanceAt = Date.now();
         } catch (error) {
-            // Не роняем такт: работаем на прошлом значении, но не помечаем его
-            // свежим, чтобы попытка повторилась на следующей минуте.
+            // Do not fail the tick: keep working with the previous value, but do not mark
+            // it fresh, so the read is retried on the next minute.
             console.error(`[MultiExec] Остаток счёта не получен — ${error.message}`);
         }
         return this.accountRubBalance;
     }
 
     /**
-     * Сверка с реальными позициями счёта по всей вселенной. SL/TP и дедлайн
-     * восстанавливаются из файла состояния бумаги; если файл не совпал с
-     * позицией — она остаётся без защиты до тех пор, пока стратегия не выставит
-     * уровни заново, и об этом надо сказать вслух.
+     * Reconcile with the account's actual positions across the universe. SL/TP and the
+     * deadline are restored from the instrument's state file; when the file does not match
+     * the position, the position stays unprotected until the strategy sets levels again,
+     * and that has to be said out loud.
      */
     async syncWithAccountPositions() {
         if (this.dryRun) return;

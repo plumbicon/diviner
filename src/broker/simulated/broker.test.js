@@ -4,9 +4,9 @@ import { SimulatedDataSource } from "./broker.js";
 import { CandleSeries } from "../../core/candle-series.js";
 
 const MIN = 60_000;
-const base = Date.UTC(2026, 0, 5, 4, 0);   // 07:00 МСК, понедельник
+const base = Date.UTC(2026, 0, 5, 4, 0);   // 07:00 Moscow, Monday
 
-/** Минутные свечи одной бумаги: n штук подряд от `startMin`. */
+/** Minute candles of one instrument: n in a row from `startMin`. */
 const minutes = (ticker, startMin, n, price) => Array.from({ length: n }, (_, i) => ({
     datetime: new Date(base + (startMin + i) * MIN),
     open: price + i, high: price + i + 1, low: price + i - 1, close: price + i + 0.5,
@@ -14,7 +14,7 @@ const minutes = (ticker, startMin, n, price) => Array.from({ length: n }, (_, i)
 }));
 
 function multiSource() {
-    // AAA открывается на 10 минут раньше BBB — расписание у бумаг обязано отличаться.
+    // AAA opens 10 minutes before BBB — the instruments' schedules must differ.
     const bySymbol = new Map([
         ["AAA", new Map([[1, CandleSeries.from(minutes("AAA", 0, 30, 100))]])],
         ["BBB", new Map([[1, CandleSeries.from(minutes("BBB", 10, 20, 200))]])],
@@ -75,7 +75,7 @@ test("расписание выводится из свечей конкретн
     const bbb = await src.getTradingSchedule({ ticker: "BBB" });
     assert.equal(aaa.length, 1);
     assert.equal(new Date(aaa[0].startTime).getTime(), base);
-    // BBB открывается на 10 минут позже — общее расписание вселенной здесь соврало бы.
+    // BBB opens 10 minutes later — a shared universe schedule would misstate it here.
     assert.equal(new Date(bbb[0].startTime).getTime(), base + 10 * MIN);
 });
 

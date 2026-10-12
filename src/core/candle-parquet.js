@@ -23,11 +23,11 @@ export const candleSchema = new parquet.ParquetSchema({
     // backtest serve the exact stored candles for each interval instead of
     // re-aggregating 1m — so daily/hourly closes match what the live API returns.
     interval: { type: "INT64", optional: true },
-    // Инструмент строки. Необязательная — однобумажный файл её опускает
-    // (совместимость со всеми уже скачанными листингами: читатель берёт тикер
-    // из metadata). Мультитикерный файл помечает каждую строку, и тогда один
-    // паркет несёт всю вселенную: кросс-секционной стратегии нужен доступ к
-    // любой бумаге, а не только к той, на которой её запустили.
+    // Instrument of the row. Optional — a single-ticker file omits it (compatibility with
+    // every listing already downloaded: the reader takes the ticker from metadata). A
+    // multi-ticker file tags every row, and then one parquet carries the whole universe:
+    // a cross-sectional strategy needs access to any instrument, not only the one it was
+    // started on.
     ticker: { type: "UTF8", optional: true },
 });
 
@@ -181,18 +181,18 @@ export async function writeCandleSeriesAsParquet(series, outputPath = null, meta
 }
 
 /**
- * Записать в один Parquet несколько инструментов: каждая строка помечается и
- * интервалом, и тикером. Нужно кросс-секционным стратегиям — они смотрят на всю
- * вселенную сразу, и держать её россыпью однобумажных файлов бессмысленно.
+ * Write several instruments into one Parquet: each row is tagged with both interval and
+ * ticker. Cross-sectional strategies need it — they look at the whole universe at once,
+ * and keeping it as a scatter of single-ticker files makes no sense.
  *
- * Метаданные получают `tickers` (список) и `instruments` (тикер → описание
- * инструмента: лот, биржа, figi). Однобумажные поля верхнего уровня остаются
- * заполненными, когда инструмент один, — старые читатели такой файл поймут.
+ * The metadata gets `tickers` (a list) and `instruments` (ticker → instrument description:
+ * lot, exchange, figi). Top-level single-ticker fields stay filled when there is one
+ * instrument — older readers will understand such a file.
  *
- * @param {Map<string, Map<number, Array<object>>>} bySymbol - тикер → (минуты → свечи).
- * @param {string|null} outputPath - Путь; при null возвращается буфер.
- * @param {object} metadata - Метаданные датасета.
- * @returns {Promise<Buffer|null>} Буфер для stdout-режима.
+ * @param {Map<string, Map<number, Array<object>>>} bySymbol - ticker → (minutes → candles).
+ * @param {string|null} outputPath - Path; a buffer is returned when null.
+ * @param {object} metadata - Dataset metadata.
+ * @returns {Promise<Buffer|null>} Buffer for stdout mode.
  */
 export async function writeMultiSymbolParquet(bySymbol, outputPath = null, metadata = {}) {
     const all = [];

@@ -1,20 +1,20 @@
 /**
- * Живой источник данных T-Invest по вселенной инструментов (одна бумага — частный
- * случай вселенной из одного тикера).
+ * Live T-Invest data source for a universe of instruments (a single instrument is the
+ * special case of a one-ticker universe).
  *
- * Две вещи, ради которых он устроен именно так:
+ * Two things shape its design:
  *
- * 1. **Граница минуты.** В бэктесте «последняя свеча минуты» определяется
- *    порядком в файле. В live свечи одной минуты прилетают вразнобой в течение
- *    нескольких секунд, а кросс-секционная стратегия обязана сравнивать скоры,
- *    увидев вселенную целиком. Поэтому свечи копятся по минутам и выдаются
- *    пачкой: либо когда пришли все подписанные бумаги, либо по истечении
- *    льготного окна. Ждать «всех» как единственное условие нельзя — на
- *    неликвидной бумаге минута без сделок штатна, и пачка не собралась бы никогда.
+ * 1. **The minute boundary.** In a backtest "the last candle of a minute" is defined by
+ *    the order in the file. Live, the candles of one minute arrive scattered over several
+ *    seconds, while a cross-sectional strategy must compare scores having seen the whole
+ *    universe. So candles are collected per minute and released as a batch: either when
+ *    every subscribed instrument has arrived or when the grace window expires. Waiting
+ *    for "all" as the only condition is impossible — a minute without trades is normal
+ *    for an illiquid instrument, and the batch would never complete.
  *
- * 2. **Сторож молчания — общий, а не по бумагам.** Отказ, от которого он
- *    защищает, это смерть всего стрима; персональный сторож на каждую бумагу
- *    давал бы ложные срабатывания на неликвиде постоянно.
+ * 2. **One silence watchdog for the whole stream, not per instrument.** The failure it
+ *    guards against is the death of the whole stream; a watchdog per instrument would
+ *    fire falsely on illiquid names all the time.
  */
 import {
     TinkoffMarketDataProvider,
@@ -24,18 +24,18 @@ import {
 
 const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const SCHEDULE_LOOKBACK_DAYS = 21;   // столько истории нужно фичам
+const SCHEDULE_LOOKBACK_DAYS = 21;   // history depth strategy features need
 const SCHEDULE_AHEAD_DAYS = 14;
 
 export class MultiSymbolTinkoffDataSource {
     /**
-     * @param {object} params - Параметры.
+     * @param {object} params - Parameters.
      * @param {object} params.client - TinkoffClient.
-     * @param {Array<object>} params.instruments - Инструменты вселенной.
-     * @param {number} [params.interval] - Интервал свечей, минут.
-     * @param {boolean} [params.verbose] - Подробный лог.
-     * @param {number} [params.stallTimeoutMin] - Порог молчания стрима, минут.
-     * @param {number} [params.batchGraceMs] - Льготное окно сбора минуты, мс.
+     * @param {Array<object>} params.instruments - Universe instruments.
+     * @param {number} [params.interval] - Candle interval, minutes.
+     * @param {boolean} [params.verbose] - Verbose log.
+     * @param {number} [params.stallTimeoutMin] - Stream silence threshold, minutes.
+     * @param {number} [params.batchGraceMs] - Grace window for collecting a minute, ms.
      */
     constructor({
         client, instruments, interval = 1, verbose = false,
@@ -53,16 +53,16 @@ export class MultiSymbolTinkoffDataSource {
         this.providers = new Map();
         this._lastTimeByTicker = new Map();
 
-        // Копилка минут: ts минуты → (тикер → свеча). Плюс таймер на каждую.
+        // Minute buckets: minute ts → (ticker → candle), plus a timer per bucket.
         this._buckets = new Map();
         this._timers = new Map();
 
         this._queue = [];
         this._notify = null;
-        // Время последней отданной минуты. Дедупликация ведётся по бумагам, а
-        // порядок выдачи — общий: без этой границы догрузка после переподключения
-        // (она подаёт старые свечи молчавших бумаг) создала бы пачку за минуту,
-        // которая уже ушла в движок, и время в потоке пошло бы назад.
+        // Time of the last released minute. Deduplication is per instrument, while the
+        // release order is shared: without this boundary the catch-up after a reconnect
+        // (which feeds old candles of instruments that were silent) would create a batch
+        // for a minute already sent to the engine, and time in the stream would go back.
         this._lastFlushedTs = 0;
         this._droppedLate = 0;
         this._closed = false;
@@ -71,30 +71,30 @@ export class MultiSymbolTinkoffDataSource {
         this._stallTimeoutMs = Math.max(0, Number(stallTimeoutMin) || 0) * 60 * 1000;
         this._lastCandleWall = Date.now();
         this._stallTimer = null;
-        // Переподписка по тишине уже была, а живой свечи с тех пор нет.
+        // A resubscription for silence has already happened, and no live candle since.
         this._stallReconnected = false;
-        // Ошибка, с которой поток завершится, чтобы процесс перезапустился.
+        // Error the stream ends with, so that the process restarts.
         this._fatal = null;
-        // dateKey (МСК) → границы сессии. Расписание одно на всю биржу, поэтому
-        // достаточно спросить его по одному инструменту.
+        // dateKey (Moscow) → session bounds. The schedule is the same for the whole
+        // exchange, so asking for one instrument is enough.
         this._sessionCache = new Map();
     }
 
-    /** Тикеры вселенной. @returns {Array<string>} Тикеры. */
+    /** Universe tickers. @returns {Array<string>} Tickers. */
     getSymbols() {
         return [...this.byTicker.keys()].sort();
     }
 
     /**
-     * Инструмент по тикеру.
-     * @param {string} ticker - Тикер.
-     * @returns {object|null} Инструмент.
+     * Instrument by ticker.
+     * @param {string} ticker - Ticker.
+     * @returns {object|null} Instrument.
      */
     getInstrument(ticker) {
         return this.byTicker.get(ticker) ?? null;
     }
 
-    /** Провайдер истории по бумаге (создаётся лениво). @private */
+    /** History provider for an instrument (created lazily). @private */
     _provider(ticker) {
         let provider = this.providers.get(ticker);
         if (!provider) {
@@ -111,8 +111,8 @@ export class MultiSymbolTinkoffDataSource {
     }
 
     /**
-     * Поток свечей вселенной: по возрастанию времени, пачками по минутам.
-     * @returns {AsyncGenerator<object>} Свечи с полями ticker и isBatchEnd.
+     * Candle stream of the universe: ascending time, in per-minute batches.
+     * @returns {AsyncGenerator<object>} Candles with `ticker` and `isBatchEnd`.
      */
     async *stream() {
         this._catchUpFrom = new Date();
@@ -139,8 +139,8 @@ export class MultiSymbolTinkoffDataSource {
     }
 
     /**
-     * Принять свечу из стрима: отбросить дубль, положить в копилку минуты.
-     * @param {object} candle - Свеча с тикером.
+     * Accept a candle from the stream: drop duplicates, put it into its minute bucket.
+     * @param {object} candle - Candle with a ticker.
      * @private
      */
     _accept(candle) {
@@ -166,8 +166,8 @@ export class MultiSymbolTinkoffDataSource {
             return;
         }
         this._lastTimeByTicker.set(ticker, time);
-        // Сторожу важен только живой стрим: догрузка идёт по REST и приходит
-        // даже тогда, когда подписка мертва, — иначе она маскировала бы тишину.
+        // Only the live stream matters to the watchdog: the catch-up goes over REST and
+        // arrives even when the subscription is dead — otherwise it would mask silence.
         if (!candle.isCatchUp) {
             this._lastCandleWall = Date.now();
             this._stallReconnected = false;
@@ -181,16 +181,16 @@ export class MultiSymbolTinkoffDataSource {
         }
         bucket.set(ticker, candle);
 
-        // Вся вселенная отчиталась — ждать нечего.
+        // The whole universe has reported — nothing to wait for.
         if (bucket.size >= this.byTicker.size) this._flushUpTo(time);
     }
 
     /**
-     * Выдать все копилки с временем ≤ ts, в порядке возрастания.
+     * Release every bucket with time ≤ ts, in ascending order.
      *
-     * Именно «все до», а не только эту: опоздавшая минута иначе ушла бы в поток
-     * после более свежей, и движок увидел бы время, идущее назад.
-     * @param {number} ts - Граница минуты.
+     * "Everything up to", not just this one: otherwise a late minute would enter the
+     * stream after a fresher one, and the engine would see time going backwards.
+     * @param {number} ts - Minute boundary.
      * @private
      */
     _flushUpTo(ts) {
@@ -221,11 +221,11 @@ export class MultiSymbolTinkoffDataSource {
     }
 
     /**
-     * Идёт ли сейчас биржевая сессия. Расписание берётся у брокера и кэшируется
-     * по дням; при недоступности — широкое московское окно, чтобы отказ
-     * расписания не выключал сторожа совсем.
-     * @param {Date} now - Момент проверки.
-     * @returns {Promise<boolean>} Внутри сессии.
+     * Whether an exchange session is running now. The schedule comes from the broker and
+     * is cached per day; when it is unavailable, a broad Moscow window is used so that a
+     * schedule failure does not switch the watchdog off entirely.
+     * @param {Date} now - Moment to check.
+     * @returns {Promise<boolean>} Inside a session.
      * @private
      */
     async _isWithinTradingSession(now) {
@@ -258,7 +258,7 @@ export class MultiSymbolTinkoffDataSource {
         return minutes >= 6 * 60 + 50 && minutes <= 23 * 60 + 50;
     }
 
-    /** Сторож молчания всего стрима. @private */
+    /** Silence watchdog of the whole stream. @private */
     _startStallWatchdog() {
         if (this._stallTimeoutMs <= 0 || this._stallTimer) return;
         this._stallTimer = setInterval(() => {
@@ -271,8 +271,8 @@ export class MultiSymbolTinkoffDataSource {
 
     /** @private */
     async _checkStall(now) {
-        // Вне сессии тишина — норма, а не отказ. Без этой проверки сторож всю
-        // ночь переподписывался каждые полчаса, дёргая соединение на ровном месте.
+        // Outside a session silence is normal, not a failure. Without this check the
+        // watchdog resubscribed every half hour all night, jerking a healthy connection.
         if (!await this._isWithinTradingSession(now)) {
             this._lastCandleWall = now.getTime();
             return;
@@ -281,17 +281,17 @@ export class MultiSymbolTinkoffDataSource {
         if (silent < this._stallTimeoutMs) return;
         const minutes = Math.round(silent / 60000);
         if (this._stallReconnected) {
-            // Переподписка была и не помогла. Внутри процесса это не лечится:
-            // 08.10.2026 стрим молчал 7,5 часа и ожил только от рестарта. Поток
-            // завершается ошибкой, процесс выходит с кодом 1, systemd поднимает
-            // новый, позиции восстанавливаются со счёта.
+            // A resubscription happened and did not help. This cannot be fixed inside the
+            // process: on 2026-10-08 the stream was silent for 7.5 hours and came back
+            // only after a restart. The stream ends with an error, the process exits with
+            // code 1, systemd starts a new one, and positions are restored from the account.
             this._fail(new Error(
                 `Тишина ${minutes} мин после переподписки — стрим не восстановился, нужен перезапуск процесса.`,
             ));
             return;
         }
-        // Тишина по ВСЕЙ вселенной при открытой сессии — отказ стрима, а не
-        // спокойный рынок: хотя бы одна ликвидная бумага торгуется каждую минуту.
+        // Silence across the WHOLE universe during an open session is a stream failure,
+        // not a quiet market: at least one liquid instrument trades every minute.
         console.warn(
             `[MultiTinkoff] Тишина ${minutes} мин по всем `
             + `${this.instruments.length} инструментам при открытой сессии — переподписка.`,
@@ -302,8 +302,8 @@ export class MultiSymbolTinkoffDataSource {
     }
 
     /**
-     * Завершить поток ошибкой: движок её пробросит, процесс выйдет с кодом 1.
-     * @param {Error} error - Причина.
+     * End the stream with an error: the engine rethrows it and the process exits with code 1.
+     * @param {Error} error - Reason.
      * @private
      */
     _fail(error) {
@@ -314,17 +314,17 @@ export class MultiSymbolTinkoffDataSource {
     }
 
     /**
-     * Переподписаться, не роняя процесс: пересоздать стрим с новым вызовом, потом
-     * догрузить пропущенное. Если подписка не прошла, повторяет клиент — с паузой
-     * и догрузкой.
+     * Resubscribe without bringing the process down: recreate the stream in a new call,
+     * then catch up what was missed. If the subscription fails, the client retries — with
+     * back-off and catch-up.
      * @private
      */
     async _forceReconnect() {
         if (this._closed) return;
-        // Границы снимаем ДО переподписки: иначе первая же живая свеча сдвинет
-        // «последнее известное» вперёд, и пропущенный интервал не догрузится.
-        // А сама догрузка — после: это 86 последовательных REST-запросов, и держать
-        // стрим отключённым всё это время незачем.
+        // The bounds are taken BEFORE resubscribing: otherwise the first live candle
+        // would move "the last known" forward and the missed interval would not be
+        // fetched. The catch-up itself runs after: it is dozens of sequential REST
+        // requests, and there is no reason to keep the stream down all that time.
         const bounds = new Map(this._lastTimeByTicker);
         try {
             await this.client.restartMarketStream("candle silence");
@@ -341,9 +341,9 @@ export class MultiSymbolTinkoffDataSource {
     }
 
     /**
-     * Догрузить пропущенное по каждой бумаге после переподключения.
-     * Свечи старше последней помечаются noTrade: их close уже неактуален, и
-     * ордер по нему исполнился бы далеко от смоделированной цены.
+     * Catch up what each instrument missed after a reconnect. Candles older than the last
+     * one are marked noTrade: their close is stale, and an order on it would fill far
+     * from the modelled price.
      * @private
      */
     async _catchUpAll(bounds = null) {
@@ -377,15 +377,15 @@ export class MultiSymbolTinkoffDataSource {
                 this._accept(candle);
             });
         }
-        // Догруженное отдаём немедленно: льготное окно тут ни при чём.
+        // Caught-up candles are released immediately: the grace window does not apply.
         const latest = Math.max(...[...this._lastTimeByTicker.values()], 0);
         if (latest > 0) this._flushUpTo(latest);
     }
 
     /**
-     * История по конкретной бумаге.
+     * History of a specific instrument.
      * @param {object} params - { ticker, from, to, interval }.
-     * @returns {Promise<Array<object>>} Свечи.
+     * @returns {Promise<Array<object>>} Candles.
      */
     async getHistory({ ticker, until, ...params } = {}) {
         if (!ticker) throw new Error("getHistory requires a ticker on a multi-symbol source");
@@ -393,15 +393,15 @@ export class MultiSymbolTinkoffDataSource {
     }
 
     /**
-     * Расписание торгов по бумаге.
+     * Trading schedule for an instrument.
      * @param {object} params - { ticker, from, to }.
-     * @returns {Promise<Array<object>>} Торговые дни.
+     * @returns {Promise<Array<object>>} Trading days.
      */
     async getTradingSchedule({ ticker, from, to, ...params } = {}) {
         const instrument = ticker ? this.byTicker.get(ticker) : this.instruments[0];
-        // Биржевое расписание живое, а не выводимое из данных: без диапазона дат
-        // API отдаёт пустой список. Молча вернуть пустоту здесь — значит оставить
-        // стратегию без единого торгового дня и без единой ошибки в логе.
+        // The exchange schedule is live, not derived from data: without a date range the
+        // API returns an empty list. Silently returning nothing here would leave the
+        // strategy without a single trading day and without a single error in the log.
         const now = Date.now();
         const range = {
             from: from ?? new Date(now - SCHEDULE_LOOKBACK_DAYS * DAY_MS),
@@ -415,7 +415,7 @@ export class MultiSymbolTinkoffDataSource {
         return days;
     }
 
-    /** Остановить поток и снять подписку. */
+    /** Stop the stream and drop the subscription. */
     async requestStop() {
         this._closed = true;
         if (this._stallTimer) { clearInterval(this._stallTimer); this._stallTimer = null; }

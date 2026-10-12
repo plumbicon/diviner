@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { MarketDataCache } from "./market-cache.js";
 import { TemporalView } from "./temporal-view.js";
 
-/** Мультитикерный источник-заглушка, как у живого брокера. */
+/** Multi-ticker source stub, shaped like the live broker's. */
 const source = {
     getSymbols: () => ["AAA", "BBB"],
     getInstrument: (ticker) => ({ ticker, lot: ticker === "AAA" ? 10 : 100 }),

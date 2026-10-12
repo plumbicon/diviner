@@ -21,7 +21,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const readsSourceFromStdin = true;
 
 /**
- * Plugin option descriptors for the CLI (validated by the shared layer, п.3).
+ * Plugin option descriptors for the CLI (validated by the shared CLI layer).
  */
 export const options = [
     { flags: "--balance <amount>", description: "Initial balance", default: "10000" },
@@ -34,15 +34,16 @@ export const options = [
 ];
 
 /**
- * Потолки плеча шорта из файла ставок риска.
+ * Short leverage caps from a risk rates file.
  *
- * Формат — либо {TICKER: 0.25}, либо {TICKER: {dshort: 0.25}}: ставка риска брокера,
- * плечо бумаги равно 1/dshort. Бумага без ставки ограничений не получает: остаётся
- * общий --leverage. Файл читается один раз, ошибка чтения — исключение, а не тихий
- * откат к плечу без лимитов: молча посчитать более выгодный прогон хуже, чем упасть.
+ * Format: either {TICKER: 0.25} or {TICKER: {dshort: 0.25}} — the broker's risk rate; an
+ * instrument's leverage is 1/dshort. An instrument without a rate gets no cap: the global
+ * --leverage stays. The file is read once, and a read error is an exception, not a silent
+ * fallback to uncapped leverage: silently computing a more profitable run is worse than
+ * failing.
  *
- * @param {string|null} file - Путь к JSON.
- * @returns {((ticker: string) => number)|null} Плечо бумаги или null, если файла нет.
+ * @param {string|null} file - Path to the JSON.
+ * @returns {((ticker: string) => number)|null} Instrument leverage, or null without a file.
  */
 export function loadShortLeverageCaps(file) {
     if (!file) return null;
@@ -128,8 +129,8 @@ export class SimulatedDataSource {
         this.metadata = metadata || {};
         this.portfolio = portfolio;
         this.equity = equity;
-        // Мультитикерный датасет: физически данные лежат по бумагам, общий
-        // хронологический поток даёт mergeStream (слиянием, без копирования).
+        // Multi-ticker dataset: data is stored per instrument physically; the shared
+        // chronological stream comes from mergeStream (a merge, without copying).
         this.bySymbol = bySymbol instanceof Map ? bySymbol : null;
         this.symbols = symbols || (this.bySymbol ? [...this.bySymbol.keys()].sort() : []);
         this.instruments = instruments instanceof Map ? instruments : new Map();
@@ -150,15 +151,15 @@ export class SimulatedDataSource {
         return Number(this.metadata.intervalMinutes) || 1;
     }
 
-    /** Тикеры, доступные датасету. @returns {Array<string>} Тикеры. */
+    /** Tickers available in the dataset. @returns {Array<string>} Tickers. */
     getSymbols() {
         return this.symbols;
     }
 
     /**
-     * Описание инструмента (лот, биржа, figi).
-     * @param {string} [ticker] - Тикер; по умолчанию — инструмент датасета.
-     * @returns {object} Метаданные инструмента.
+     * Instrument description (lot, exchange, figi).
+     * @param {string} [ticker] - Ticker; the dataset's instrument by default.
+     * @returns {object} Instrument metadata.
      */
     getInstrument(ticker = null) {
         if (ticker && this.instruments.has(ticker)) return this.instruments.get(ticker);
@@ -166,10 +167,10 @@ export class SimulatedDataSource {
     }
 
     /**
-     * Серия нужного интервала для нужной бумаги.
-     * @param {number} minutes - Интервал в минутах.
-     * @param {string|null} ticker - Тикер; null — серия датасета по умолчанию.
-     * @returns {Array<object>|object|null} Массив свечей либо CandleSeries.
+     * Series of the given interval for the given instrument.
+     * @param {number} minutes - Interval in minutes.
+     * @param {string|null} ticker - Ticker; null means the dataset's default series.
+     * @returns {Array<object>|object|null} Candle array or CandleSeries.
      * @private
      */
     _seriesFor(minutes, ticker) {
@@ -177,7 +178,7 @@ export class SimulatedDataSource {
             return this.bySymbol.get(ticker)?.get(minutes) ?? null;
         }
         if (this.series) return this.series.get(minutes) ?? null;
-        // Однобумажный датасет: тикер, совпадающий с его собственным, — не ошибка.
+        // Single-ticker dataset: a ticker matching its own is not an error.
         return null;
     }
 
@@ -189,10 +190,10 @@ export class SimulatedDataSource {
      * @returns {AsyncGenerator<object>} Candle stream.
      */
     async *stream() {
-        // Мультитикерный датасет: единый поток по всей вселенной, свечи несут
-        // поле `ticker`. Отметку equity здесь не делаем — при нескольких открытых
-        // позициях она считается по ценам всех удерживаемых бумаг сразу, и это
-        // забота мультипозиционного исполнителя, а не источника данных.
+        // Multi-ticker dataset: one stream over the whole universe, candles carry
+        // `ticker`. Equity is not marked here — with several open positions it uses the
+        // prices of all held instruments at once, which is the multi-position executor's
+        // job, not the data source's.
         if (!this.candles && this._mergeStream) {
             for (const candle of this._mergeStream(this.baseMinutes)) {
                 yield candle;
@@ -305,9 +306,9 @@ export class SimulatedDataSource {
      * @returns {Array<object>} Trading days.
      */
     async getTradingSchedule({ ticker = null, ...params } = {}) {
-        // Расписание выводится из самих свечей, поэтому у каждой бумаги оно своё:
-        // на неликвидной сессия начинается позже, и общее расписание вселенной
-        // соврало бы про её открытие.
+        // The schedule is derived from the candles themselves, so each instrument has its
+        // own: on an illiquid one the session starts later, and a shared universe schedule
+        // would misstate its open.
         const source = ticker && this.bySymbol
             ? this._seriesFor(this.baseMinutes, ticker)
             : this.candles;
@@ -432,8 +433,8 @@ export class SimulatedExecutor {
     }
 
     closePosition(_reason = "manual") {
-        // _reason принимается для совместимости с движком (аудит причины выхода
-        // в live); в бэктесте причина не логируется — поведение не меняется.
+        // _reason is accepted for compatibility with the engine (exit reason audit live);
+        // the backtest does not log it — behaviour is unchanged.
         if (this.fillOnNextOpen) {
             // Guard: only buffer once; ignore duplicate close signals on the same tick
             // (e.g. SL/TP fires then strategy also tries to exit by schedule).
@@ -446,13 +447,13 @@ export class SimulatedExecutor {
     }
 
     /**
-     * Внутрисвечная проверка SL/TP (backtest-хук для движка). Триггерит по
-     * диапазону свечи (high/low) и закрывает позицию ровно по цене уровня
-     * sl/tp в той же свече — в обход next-open-буфера, т.к. стоп-ордер на бирже
-     * исполняется при касании уровня, а не на открытии следующего бара.
-     * SL имеет приоритет при двойном касании (см. evaluateIntrabarStop).
-     * @param {object} candle - Текущая свеча.
-     * @returns {object|null} Закрытая сделка или null.
+     * Intrabar SL/TP check (the engine's backtest hook). Triggers on the candle range
+     * (high/low) and closes the position exactly at the sl/tp level within the same
+     * candle — bypassing the next-open buffer, because an exchange stop order executes on
+     * touching the level, not at the open of the next bar. SL wins when both are touched
+     * (see evaluateIntrabarStop).
+     * @param {object} candle - Current candle.
+     * @returns {object|null} Closed trade or null.
      */
     checkStops(candle) {
         const position = this.portfolio.position;
@@ -488,14 +489,14 @@ export class SimulatedExecutor {
             }
         }
 
-        // Синтетическая свеча: все цены = цена исполнения, чтобы Portfolio
-        // (использует candle.close) зафиксировал выход именно по ней.
+        // Synthetic candle: every price equals the fill price, so that Portfolio (which
+        // uses candle.close) books the exit at exactly that price.
         const fc = {
             datetime: candle.datetime,
             open: fillPrice, high: fillPrice, low: fillPrice, close: fillPrice,
             volume: 0,
         };
-        // Стоп исполняется немедленно — отменяем любой буферизованный ордер.
+        // The stop executes immediately — cancel any buffered order.
         this._pending = null;
         const trade = this.portfolio.closePosition({ candle: fc });
         if (trade && liquidated) {
@@ -547,8 +548,8 @@ export function createSimulatedBroker({
 } = {}) {
     // Lot size from the dataset's instrument metadata, so default order sizing
     // floors to whole lots like the live broker (e.g. ALRS lot=10).
-    // Мультитикерный датасет: лот у каждой бумаги свой, единый лот портфеля здесь
-    // бессмыслен — размер считает мультипозиционный исполнитель по инструменту сделки.
+    // Multi-ticker dataset: each instrument has its own lot, so a single portfolio lot
+    // is meaningless — the multi-position executor sizes by the traded instrument.
     const multiSymbol = !candles && Boolean(bySymbol);
     const lot = Number(metadata?.instrument?.lot) || 1;
     // Falling back to 1 silently makes a backtest quietly unrealistic: on a
@@ -562,12 +563,12 @@ export function createSimulatedBroker({
             + "Sizing will not floor to exchange lots; results may be optimistic.",
         );
     }
-    // Мультитикерный прогон: касса одна, позиций несколько, лот берётся у
-    // инструмента сделки. Сколько бумаг держать и как делить между ними депозит
-    // портфель не знает — это решение стратегии, она передаёт сумму в ордере.
-    // Однобумажный путь остаётся ровно прежним.
-    // Ставки риска шорта по бумагам: у каждой свой потолок плеча (1/dshort), и он ниже
-    // общего --leverage. Без файла поведение прежнее — одно плечо на всю вселенную.
+    // Multi-ticker run: one cash pool, several positions, the lot comes from the traded
+    // instrument. The portfolio does not know how many instruments to hold or how to
+    // split the deposit — that is the strategy's decision, passed as an amount with the
+    // order. The single-ticker path stays exactly as before.
+    // Per-instrument short risk rates: each has its own leverage cap (1/dshort), below the
+    // global --leverage. Without the file behaviour is as before — one leverage for all.
     const leverageFor = multiSymbol ? loadShortLeverageCaps(riskRates) : null;
     const portfolio = multiSymbol
         ? new MultiPortfolio({ cash: initialCash, commission, leverage, leverageFor })
@@ -597,10 +598,10 @@ export function createSimulatedBroker({
          */
         finalize() {
             if (multiSymbol) {
-                // «Последней свечи» у вселенной нет — у каждой бумаги своя, поэтому
-                // хвост доводит исполнитель по последним известным ценам. Шкала
-                // отчёта — концы минут (по одной отметке капитала на минуту), а не
-                // свечи: их на минуту приходит столько, сколько бумаг во вселенной.
+                // A universe has no "last candle" — each instrument has its own, so the
+                // executor settles the tail at the last known prices. The report's time
+                // axis is minute ends (one equity mark per minute), not candles: a minute
+                // brings as many candles as there are instruments in the universe.
                 exec.flush();
                 const timeline = exec.timeline.map((datetime) => ({ datetime, close: 1 }));
                 return {
@@ -685,9 +686,9 @@ function sliceAscending(candles, fromTs, toTs) {
     const n = candles.length;
     if (n === 0) return [];
 
-    // Колоночная серия (CandleSeries) знает свои границы двоичным поиском без
-    // сборки объектов; массив объектов ищем как раньше. Наружу в обоих случаях
-    // отдаём обычный массив свечей — так его ждут все стратегии.
+    // A columnar series (CandleSeries) finds its bounds by binary search without building
+    // objects; an object array is searched as before. Either way a plain candle array is
+    // returned — that is what every strategy expects.
     if (typeof candles.lowerBound === "function") {
         const lo = candles.lowerBound(fromTs);
         const hi = candles.lowerBound(toTs);

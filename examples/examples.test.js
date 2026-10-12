@@ -10,8 +10,8 @@ import { generate } from "./make-data.mjs";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /**
- * Прогнать бэктест через CLI, как его запускает пользователь, и вернуть отчёт.
- * Примеры — документация, и тест не даёт им тихо разойтись с движком.
+ * Run a backtest through the CLI the way a user does and return the report. The examples
+ * are documentation, and this test keeps them from silently drifting away from the engine.
  */
 function backtest(dataPath, strategy, extra = []) {
     const run = spawnSync(process.execPath, [

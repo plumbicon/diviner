@@ -1,22 +1,23 @@
 /**
- * Пример кросс-секционной стратегии: раз в день шорт бумаг, сильнее всех выросших с открытия.
+ * Example cross-sectional strategy: once a day, short the instruments that rose the most
+ * since the open.
  *
- * Показывает всё, что нужно стратегии на вселенную бумаг:
- *   - свеча приходит аргументом `next(candle)` с полем `ticker` — истории в `this.data`
- *     у мультитикерного прогона нет;
- *   - минута отдаётся пачкой по всем бумагам, последняя свеча пачки помечена
- *     `isBatchEnd` — сравнивать бумаги можно только на ней;
- *   - заявка адресуется бумаге: `this.execution.sell({ ticker, budget, sl, exitDeadline })`;
- *   - занятость слотов — `getPositions()` и `isBusy(ticker)`, капитал — `getEquity()`;
- *   - выход по времени — `exitDeadline`, его проверяет движок.
+ * Shows everything a strategy over a universe needs:
+ *   - the candle comes as the `next(candle)` argument with a `ticker` field — a
+ *     multi-ticker run keeps no history in `this.data`;
+ *   - a minute is released as a batch over all instruments, the last candle of the batch
+ *     is marked `isBatchEnd` — instruments can only be compared on it;
+ *   - an order is addressed to an instrument: `this.execution.sell({ ticker, budget, sl, exitDeadline })`;
+ *   - slot occupancy — `getPositions()` and `isBusy(ticker)`, equity — `getEquity()`;
+ *   - a time exit is `exitDeadline`, checked by the engine.
  *
- * Параметры (переменные окружения):
- *   TGS_ENTRY  — минута входа, «ЧЧ:ММ» МСК (11:00);
- *   TGS_EXIT   — дедлайн выхода, «ЧЧ:ММ» МСК (18:30);
- *   TGS_SLOTS  — сколько бумаг шортить одновременно (2);
- *   TGS_STOP_PCT — защитный стоп, % от цены входа (3).
+ * Parameters (environment variables):
+ *   TGS_ENTRY    — entry minute, "HH:MM" Moscow (11:00);
+ *   TGS_EXIT     — exit deadline, "HH:MM" Moscow (18:30);
+ *   TGS_SLOTS    — how many instruments to short at once (2);
+ *   TGS_STOP_PCT — protective stop, % of the entry price (3).
  *
- * Запуск:
+ * Run:
  *   node examples/make-data.mjs --out work/examples/universe.parquet --tickers AAA,BBB,CCC,DDD,EEE
  *   node src/diviner.js src/broker/simulated/broker.js work/examples/universe.parquet \
  *     --strategy examples/strategies/top-gainer-short/top-gainer-short.js \
@@ -34,7 +35,7 @@ const EXIT_MIN = toMinutes(process.env.TGS_EXIT ?? "18:30");
 const SLOTS = Number(process.env.TGS_SLOTS ?? 2);
 const STOP_PCT = Number(process.env.TGS_STOP_PCT ?? 3);
 
-/** Дата и минута дня по Москве. */
+/** Moscow date and minute of the day. */
 function msk(datetime) {
     const shifted = new Date(datetime.getTime() + MSK_OFFSET_MS);
     return {
@@ -45,7 +46,7 @@ function msk(datetime) {
 
 export class TopGainerShort extends Strategy {
     init() {
-        /** Тикер → { day, open, close } за текущий день. */
+        /** Ticker → { day, open, close } for the current day. */
         this.today = new Map();
         this.enteredOn = null;
     }
@@ -59,7 +60,7 @@ export class TopGainerShort extends Strategy {
             seen.close = candle.close;
         }
 
-        // Решение — раз в день, на последней свече пачки минуты входа или первой после неё.
+        // Decide once a day, on the last candle of the batch at the entry minute or the first one after it.
         if (!candle.isBatchEnd || minute < ENTRY_MIN || this.enteredOn === day) return;
         this.enteredOn = day;
 

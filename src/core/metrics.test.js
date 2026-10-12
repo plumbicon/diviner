@@ -4,14 +4,14 @@ import { PerformanceMetrics } from "./metrics.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** Отчёт по кривой капитала: одна свеча в день, сделок нет. */
+/** Report for an equity curve: one candle per day, no trades. */
 function report(equity, initialCash = 100) {
     const data = equity.map((_, i) => ({ datetime: new Date(Date.UTC(2026, 0, 1) + i * DAY), close: 1 }));
     return new PerformanceMetrics({ data, equity, trades: [], initialCash }).compile();
 }
 
 test("просадка считается от пика перед ней, а не от максимума прогона", () => {
-    // 100 → 90 в начале (−10%), потом рост до 300 и падение до 280 (−6.7%, но 20 в деньгах).
+    // 100 → 90 at the start (−10%), then a rise to 300 and a fall to 280 (−6.7%, but 20 in money).
     const m = report([100, 90, 150, 300, 280, 290]);
     assert.equal(m.maxDrawdownPct, 10, "ранняя просадка −10% не растворяется в финальном пике");
     assert.equal(m.maxDrawdown, 20, "в деньгах — самая глубокая, поздняя");

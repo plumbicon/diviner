@@ -9,7 +9,7 @@ import { DEFAULT_EXCHANGE } from "./market-data.js";
  * the current moment (look-ahead guard). It exposes the stable data facade that
  * strategies use: getCandles / getTradingSchedule / log / metadata.
  *
- * It is режим-слепой: it talks only to a data source (raw broker data source in
+ * It is mode-blind: it talks only to a data source (raw broker data source in
  * backtest, or a cache wrapping the live data source) and never knows whether
  * it is live or backtest.
  */
@@ -42,10 +42,10 @@ export class TemporalView {
     }
 
     /**
-     * Описание инструмента. Для мультитикерного датасета — по конкретной бумаге:
-     * лот и биржа у каждой свои, и брать их из общих метаданных нельзя.
-     * @param {string} [ticker] - Тикер; без него — инструмент датасета.
-     * @returns {object} Метаданные инструмента.
+     * Instrument description. For a multi-ticker dataset — of a specific instrument: each
+     * has its own lot and exchange, and they cannot be taken from the shared metadata.
+     * @param {string} [ticker] - Ticker; without it, the dataset's instrument.
+     * @returns {object} Instrument metadata.
      */
     getInstrumentMetadata(ticker = null) {
         const own = ticker ? this.dataSource?.getInstrument?.(ticker) : null;
@@ -54,9 +54,9 @@ export class TemporalView {
     }
 
     /**
-     * Тикеры, доступные стратегии. Кросс-секционной стратегии это и есть её
-     * вселенная; однобумажный датасет отдаёт свой единственный инструмент.
-     * @returns {Array<string>} Тикеры.
+     * Tickers available to the strategy. For a cross-sectional strategy this is its
+     * universe; a single-ticker dataset returns its only instrument.
+     * @returns {Array<string>} Tickers.
      */
     getSymbols() {
         const symbols = this.dataSource?.getSymbols?.();

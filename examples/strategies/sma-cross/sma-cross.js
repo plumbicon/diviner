@@ -1,17 +1,17 @@
 /**
- * Пример однобумажной стратегии: пересечение скользящих средних.
+ * Example single-ticker strategy: a moving average crossover.
  *
- * Лонг, когда быстрая средняя пересекает медленную снизу вверх; выход — при обратном
- * пересечении или по защитному стопу. Стоп проверяет движок, стратегия только объявляет
- * его уровень при входе.
+ * Long when the fast average crosses the slow one from below; exit on the opposite cross
+ * or by the protective stop. The engine checks the stop; the strategy only declares its
+ * level at entry.
  *
- * Параметры — переменные окружения (так параметризуются все стратегии: CLI передаёт
- * стратегии только историю и стартовый капитал):
- *   SMA_FAST      — длина быстрой средней, свечей (20);
- *   SMA_SLOW      — длина медленной средней, свечей (60);
- *   SMA_STOP_PCT  — защитный стоп, % от цены входа (1).
+ * Parameters are environment variables (that is how every strategy is parameterized: the
+ * CLI gives a strategy only its history and the starting capital):
+ *   SMA_FAST      — fast average length, candles (20);
+ *   SMA_SLOW      — slow average length, candles (60);
+ *   SMA_STOP_PCT  — protective stop, % of the entry price (1).
  *
- * Запуск:
+ * Run:
  *   node examples/make-data.mjs --out work/examples/demo.parquet --tickers DEMO
  *   node src/diviner.js src/broker/simulated/broker.js work/examples/demo.parquet \
  *     --strategy examples/strategies/sma-cross/sma-cross.js --balance 10000
@@ -23,11 +23,11 @@ const SLOW = Number(process.env.SMA_SLOW ?? 60);
 const STOP_PCT = Number(process.env.SMA_STOP_PCT ?? 1);
 
 /**
- * Среднее close за `length` свечей, заканчивая свечой `end` включительно.
- * @param {{at: (i: number) => object}} data - История.
- * @param {number} end - Индекс последней свечи.
- * @param {number} length - Длина окна.
- * @returns {number} Среднее.
+ * Average close over `length` candles ending at candle `end` inclusive.
+ * @param {{at: (i: number) => object}} data - History.
+ * @param {number} end - Index of the last candle.
+ * @param {number} length - Window length.
+ * @returns {number} Average.
  */
 function sma(data, end, length) {
     let sum = 0;
@@ -39,8 +39,8 @@ export class SmaCross extends Strategy {
     init() {}
 
     next() {
-        // В бэктесте this.data — весь листинг целиком. Смотреть можно только до
-        // текущего индекса: всё, что дальше, — будущее.
+        // In a backtest this.data is the whole listing at once. Only read up to the current
+        // index: everything beyond it is the future.
         const i = this.getDataIndex();
         if (i < SLOW) return;
 

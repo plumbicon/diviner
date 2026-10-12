@@ -4,7 +4,7 @@ import { buildOrderId } from "./order-manager.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const at = new Date("2026-10-08T04:00:00.000Z");
-// Ключ, который давала функция до переноса из удалённого однобумажного брокера.
+// The key the function produced before it moved out of the removed single-ticker broker.
 const EXPECTED = "963642a9-b583-5bbb-8d89-5ef53aaf9712";
 
 test("ключ заявки — UUIDv5: песочница и боевой API принимают только UUID", () => {
@@ -30,7 +30,7 @@ test("ключ различает бумагу, действие, направл
 });
 
 test("ключ не меняется при переносе функции между модулями", () => {
-    // Смена алгоритма тихо сломала бы идемпотентность заявок после рестарта бота.
+    // Changing the algorithm would silently break order idempotency after a bot restart.
     assert.equal(
         buildOrderId({ tag: "a", ticker: "SBER", action: "open", direction: "sell", at }),
         EXPECTED,

@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { missingTests, rejectionReasons } from "./universe.js";
 
-// ── сверка тестов инструмента со сданными на счёте ──────────────────────────
-// Найдено в бою: бумага проходит все флаги Share, но биржа отклоняет заявку с
-// «пройдите тест в разделе Профиль». Требование лежит не на инструменте, а на
-// активе, и сверять его надо со списком пройденного у самого счёта.
+// ── matching an instrument's required tests against the account's passed ones ─
+// Found live: an instrument passes every Share flag, yet the exchange rejects the order
+// with "pass a test in the Profile section". The requirement sits on the asset, not on
+// the instrument, and has to be matched against the account's own passed list.
 
 test("без требуемых тестов бумага доступна", () => {
     assert.deepEqual(missingTests([], ["russian_shares"]), []);
@@ -33,7 +33,7 @@ test("пустой список сданных отвергает любое т�
     assert.deepEqual(missingTests(["a"], undefined), ["a"]);
 });
 
-// ── флаговый отбор ──────────────────────────────────────────────────────────
+// ── flag selection ──────────────────────────────────────────────────────────
 
 const goodShare = {
     ticker: "AAA", shortEnabledFlag: true, liquidityFlag: true, apiTradeAvailableFlag: true,

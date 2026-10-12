@@ -41,12 +41,12 @@ test("slice() — представление без копирования, се
     assert.equal(view.length, 2);
     assert.equal(view.at(0).close, sample[1].close);
     assert.equal(view.at(1).ticker, sample[2].ticker);
-    // Границы за пределами и отрицательные — как у Array.
+    // Out-of-range and negative bounds — same as Array.
     assert.equal(series.slice(2).length, 2);
     assert.equal(series.slice(-2).length, 2);
     assert.equal(series.slice(3, 1).length, 0);
     assert.equal(series.slice(0, 99).length, 4);
-    // Срез среза остаётся согласованным.
+    // A slice of a slice stays consistent.
     assert.equal(view.slice(1).at(0).close, sample[2].close);
 });
 
@@ -57,8 +57,8 @@ test("итератор обходит серию в порядке индекс�
 
 test("двоичный поиск по времени", () => {
     const series = CandleSeries.from(sample);
-    assert.equal(series.lowerBound(2_000), 1);   // первая свеча ровно на 2000
-    assert.equal(series.upperBound(2_000), 3);   // первая строго после 2000
+    assert.equal(series.lowerBound(2_000), 1);   // the first candle exactly at 2000
+    assert.equal(series.upperBound(2_000), 3);   // the first one strictly after 2000
     assert.equal(series.lowerBound(0), 0);
     assert.equal(series.lowerBound(9_999), 4);
     assert.equal(series.upperBound(0), 0);

@@ -1,8 +1,7 @@
 import { evaluateStops } from "../../core/stops.js";
 
 /**
- * State Manager - управление состоянием позиции
- * Обеспечивает синхронизацию между стратегией и реальным состоянием
+ * State Manager — keeps the intended position state and mirrors it to the strategy.
  */
 export class StateManager {
     constructor(options = {}) {
@@ -11,7 +10,7 @@ export class StateManager {
     }
 
     /**
-     * Открыть позицию
+     * Open a position.
      */
     openPosition(params) {
         const { side, size, entryPrice, entryTime, sl, tp, exitDeadline = null } = params;
@@ -40,7 +39,7 @@ export class StateManager {
     }
 
     /**
-     * Закрыть позицию
+     * Close the position.
      */
     closePosition() {
         if (!this.position) {
@@ -60,14 +59,14 @@ export class StateManager {
     }
 
     /**
-     * Получить текущую позицию
+     * Current position.
      */
     getPosition() {
         return this.position;
     }
 
     /**
-     * Установить текущую позицию напрямую.
+     * Set the current position directly.
      */
     setPosition(position) {
         this.position = position ? { ...position } : null;
@@ -78,7 +77,7 @@ export class StateManager {
     }
 
     /**
-     * Обновить размер текущей позиции.
+     * Update the size of the current position.
      */
     updatePositionSize(size) {
         if (!this.position) {
@@ -97,22 +96,21 @@ export class StateManager {
     }
 
     /**
-     * Проверить, есть ли открытая позиция
+     * Whether a position is open.
      */
     hasPosition() {
         return this.position !== null;
     }
 
     /**
-     * Получить сторону позиции
+     * Side of the position.
      */
     getSide() {
         return this.position ? this.position.side : null;
     }
 
     /**
-     * Синхронизировать состояние со стратегией
-     * Вызывается для обновления внутреннего состояния стратегии
+     * Mirror the state into the strategy's own position field.
      */
     syncWithStrategy(strategy) {
         if (strategy._position !== this.position) {
@@ -124,8 +122,8 @@ export class StateManager {
     }
 
     /**
-     * Проверка SL/TP на основе текущей цены
-     * @returns {boolean} - true если сработал SL или TP
+     * SL/TP check at the current price.
+     * @returns {boolean} - true when SL or TP was hit
      */
     checkStopLossTakeProfit(currentPrice) {
         const reason = evaluateStops(this.position, currentPrice);
@@ -141,7 +139,7 @@ export class StateManager {
     }
 
     /**
-     * Сброс состояния позиции.
+     * Reset the position state.
      */
     reset() {
         if (this.position) {

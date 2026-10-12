@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * Собрать однобумажные листинги в один мультитикерный Parquet.
+ * Merge single-ticker listings into one multi-ticker Parquet.
  *
- * Кросс-секционной стратегии нужен доступ к любой бумаге вселенной, а не только
- * к той, на которой её запустили, — значит вселенная должна лежать одним
- * датасетом. Каждая строка результата помечена тикером и интервалом, метаданные
- * несут `tickers` и `instruments` (лот, биржа, figi по каждой бумаге).
+ * A cross-sectional strategy needs access to any instrument of the universe, not only
+ * the one it was started on — so the universe must be one dataset. Every output row is
+ * tagged with ticker and interval; the metadata carries `tickers` and `instruments` (lot,
+ * exchange, figi per instrument).
  *
- * Слияние потоковое: 62 читателя открываются одновременно, строки сливаются
- * по времени и пишутся сразу. Ни один листинг целиком в память не поднимается —
- * иначе год по всей вселенной (~40 млн свечей) не собрать.
+ * The merge is streaming: all readers are opened at once, rows are merged by time and
+ * written straight away. No listing is loaded into memory as a whole — otherwise a year
+ * of the universe (~40M candles) could not be built.
  *
- * Исходные файлы только читаются. Существующий выходной файл не перезаписывается
- * без --force: листинги не удаляем и не подменяем укороченной выборкой (AGENTS.md).
+ * Source files are only read. An existing output file is not overwritten without
+ * --force: listings are never deleted or replaced with a shorter sample (CONTRIBUTING.md).
  *
  * Usage:
  *   node src/bundle.js --out data/tinkoff/CORE62_2025_1m.parquet data/tinkoff/*_2025_1m.parquet
@@ -24,10 +24,10 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { candleSchema, PARQUET_METADATA_KEY } from "./core/candle-parquet.js";
 
-// Запас дневной истории перед --from: 21-дневное окно фич плюс праздники.
+// Daily history kept before --from: a 21-day feature window plus holidays.
 const HISTORY_LOOKBACK_DAYS = 40;
 
-/** Дата строки Parquet → Date. @private */
+/** Parquet row date → Date. @private */
 function toDate(ts) {
     if (typeof ts === "bigint") return new Date(Number(ts / 1_000_000n));
     if (typeof ts === "number") return new Date(ts > 1e12 ? ts : ts * 1000);
@@ -35,13 +35,13 @@ function toDate(ts) {
     return new Date(ts);
 }
 
-/** UTF8-колонка parquetjs приходит Buffer'ом. @private */
+/** A parquetjs UTF8 column arrives as a Buffer. @private */
 function text(value) {
     if (value == null) return null;
     return Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
 }
 
-/** Тикер файла: из метаданных, иначе из имени (AFKS_2025_1m.parquet → AFKS). @private */
+/** Ticker of a file: from its metadata, otherwise from the name (AFKS_2025_1m.parquet → AFKS). @private */
 function tickerOfFile(metadata, filePath) {
     const fromMeta = metadata?.ticker || metadata?.instrument?.ticker;
     if (fromMeta) return fromMeta;
@@ -50,8 +50,8 @@ function tickerOfFile(metadata, filePath) {
 }
 
 /**
- * Двоичная куча-минимум по (datetime, ticker, interval) — порядок слияния.
- * Линейный поиск минимума на 60+ источниках и 40 млн строк заметно тормозит.
+ * Binary min-heap by (datetime, ticker, interval) — the merge order. A linear search for
+ * the minimum over 60+ sources and 40M rows is noticeably slow.
  */
 class MinHeap {
     constructor() { this.items = []; }
@@ -95,10 +95,10 @@ class MinHeap {
 }
 
 /**
- * Слить листинги в один мультитикерный Parquet.
- * @param {string[]} inputs - Пути к исходным файлам.
+ * Merge listings into one multi-ticker Parquet.
+ * @param {string[]} inputs - Source file paths.
  * @param {object} options - { out, tickers, from, to, force }.
- * @returns {Promise<object>} Сводка { tickers, rows, intervals }.
+ * @returns {Promise<object>} Summary { tickers, rows, intervals }.
  */
 export async function bundle(inputs, options = {}) {
     const { out, tickers = null, from = null, to = null, force = false } = options;
@@ -110,16 +110,16 @@ export async function bundle(inputs, options = {}) {
     const allow = tickers ? new Set(tickers) : null;
     const fromTs = from ? new Date(`${from}T00:00:00.000+03:00`).getTime() : -Infinity;
     const toTs   = to   ? new Date(`${to}T23:59:59.999+03:00`).getTime()   :  Infinity;
-    // Нижняя граница режет только минутки. Дневные свечи нужны стратегиям как
-    // история d-1..d-5 (окно 21 календарный день), и если обрезать их по той же
-    // дате, первые недели прогона молча выпадут: истории для фич не наберётся.
-    // Верхняя граница общая — заглядывать вперёд нельзя ни на каком интервале.
+    // The lower bound cuts only minute candles. Strategies need daily candles as d-1..d-5
+    // history (a 21-calendar-day window); cutting them at the same date would silently
+    // drop the first weeks of a run: there would be no history for the features. The
+    // upper bound is shared — no interval may look ahead.
     const historyFromTs = from
         ? fromTs - HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
         : -Infinity;
 
-    // Открываем все источники сразу: слияние по времени требует одновременного
-    // доступа к головам всех потоков.
+    // Open all sources at once: merging by time needs simultaneous access to the heads
+    // of all streams.
     const sources = [];
     const instruments = {};
     for (const filePath of inputs) {
@@ -148,7 +148,7 @@ export async function bundle(inputs, options = {}) {
     const intervals = new Set();
     let rows = 0;
 
-    /** Дотянуть следующую подходящую строку источника в кучу. @private */
+    /** Pull the next matching row of a source into the heap. @private */
     const advance = async (src) => {
         for (;;) {
             const row = await src.cursor.next();

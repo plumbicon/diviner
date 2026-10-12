@@ -5,10 +5,10 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-// Стратегии — отдельный репозиторий со своими правилами; зависимости и артефакты не наши.
+// Strategies are a separate repository with their own rules; dependencies and artifacts are not ours.
 const SKIP = new Set(["node_modules", "data", "work", "logs", "reports", "src/strategies"]);
 
-/** Все .js/.mjs движка. */
+/** All .js/.mjs files of the engine. */
 function sources(dir = ROOT) {
     const out = [];
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -20,10 +20,23 @@ function sources(dir = ROOT) {
     return out;
 }
 
+const CYRILLIC = /[А-Яа-яЁё]/;
+
 /**
- * Нарушения стиля в файле: табуляция и хвостовые пробелы, отступ кода не кратен 4,
- * нет перевода строки в конце. Строки JSDoc (` * …`) и содержимое многострочных
- * шаблонных строк отступом не проверяются — там он часть текста.
+ * Comment part of a line, or null: a whole-line comment (`//`, `/*`, ` * …`) or a trailing
+ * `// …` after code.
+ */
+function commentOf(line) {
+    const trimmed = line.trim();
+    if (/^(\/\/|\/\*|\*)/.test(trimmed)) return trimmed;
+    const trailing = line.match(/\s\/\/\s.*$/);
+    return trailing ? trailing[0] : null;
+}
+
+/**
+ * Style violations in a file: tabs and trailing spaces, code indentation not a multiple
+ * of 4, no final newline, comments not in English. JSDoc lines (` * …`) and the content of
+ * multi-line template literals are not checked for indentation — there it is part of the text.
  */
 function violations(path) {
     const text = readFileSync(path, "utf8");
@@ -36,6 +49,8 @@ function violations(path) {
         const insideTemplate = inTemplate;
         if ((line.match(/`/g) || []).length % 2 === 1) inTemplate = !inTemplate;
         if (insideTemplate) return;
+        const comment = commentOf(line);
+        if (comment && CYRILLIC.test(comment)) found.push(`${where} comment is not in English`);
         const indent = line.match(/^( *)(\S)/);
         if (indent && indent[2] !== "*" && indent[1].length % 4 !== 0) {
             found.push(`${where} отступ ${indent[1].length} — не кратен 4`);
@@ -45,7 +60,7 @@ function violations(path) {
     return found;
 }
 
-test("код движка: отступ 4 пробела, без табуляций и хвостовых пробелов", () => {
+test("код движка: отступ 4 пробела, без табуляций и хвостовых пробелов, комментарии на английском", () => {
     const files = sources();
     assert.ok(files.length > 50, "файлы найдены");
     const all = files.flatMap(violations);

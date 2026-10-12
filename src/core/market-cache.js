@@ -3,7 +3,7 @@ import { getCandleIntervalConfig, toDate } from "./market-data.js";
 /**
  * Caching decorator over a broker data source's history.
  *
- * It is режим-слепой: it wraps any object exposing getHistory/getTradingSchedule
+ * It is mode-blind: it wraps any object exposing getHistory/getTradingSchedule
  * /stream and only memoises history. Where the candles come from is NOT its
  * concern — the backtest broker serves each interval straight from the
  * multi-interval parquet file (no aggregation), and the live broker requests the
@@ -28,9 +28,9 @@ export class MarketDataCache {
         return this.dataSource.getTradingSchedule(params);
     }
 
-    // Вселенная и описание инструментов — без кэша, как есть у источника. Без этих
-    // двух методов в бою context.getSymbols() возвращал пустой список, а
-    // getInstrumentMetadata(ticker) — общие метаданные вместо лота бумаги.
+    // Universe and instrument descriptions — uncached, straight from the source. Without
+    // these two methods context.getSymbols() returned an empty list live, and
+    // getInstrumentMetadata(ticker) returned the shared metadata instead of the lot.
     getSymbols() {
         return this.dataSource.getSymbols?.() ?? [];
     }
@@ -55,8 +55,8 @@ export class MarketDataCache {
             return this.dataSource.getHistory({ from, to, interval, until, ticker });
         }
 
-        // Тикер обязан входить в ключ: иначе запрос по второй бумаге попадёт в
-        // покрытие первой и молча вернёт чужие свечи.
+        // The ticker must be part of the key: otherwise a request for a second instrument
+        // would hit the first one's coverage and silently return someone else's candles.
         const key = `${ticker ?? ""}|${interval}`;
         const entry = this.byInterval.get(key);
 

@@ -529,8 +529,8 @@ export function buildCandleDerivedTradingSchedule(
         candlesByDate.get(dateParts.dateKey).push({ ts });
     };
 
-    // Колоночной серии хватает колонки времени — собирать объект на каждую свечу
-    // ради одного поля незачем, а расписание строится по всему листингу целиком.
+    // For a columnar series the time column is enough — no need to build an object per
+    // candle for a single field, and the schedule is built over the whole listing.
     if (candles && typeof candles.tsAt === "function") {
         for (let i = 0; i < candles.length; i += 1) {
             add(candles.tsAt(i));

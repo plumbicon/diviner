@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 /**
- * Дописать свежий период к существующему листингу.
+ * Append a fresh period to an existing listing.
  *
- * Листинги в `data/` не удаляются и не перезаписываются укороченной выборкой:
- * скачивание отдаёт файл за указанный интервал целиком, и рефлекс «скачал —
- * положил» молча укорачивает историю. Бэктест после этого продолжает считаться,
- * но уже на другом окне. Эта команда делает единственно верную операцию —
- * объединение по (datetime, interval) с дедупликацией, — и отказывается писать
- * результат, если он получился короче исходного.
+ * Listings in `data/` are never deleted or overwritten with a shorter sample: a download
+ * returns the file for the requested interval only, and the reflex "downloaded — put it
+ * in place" silently shortens the history. The backtest then keeps running, but on a
+ * different window. This command does the only correct operation — a merge by
+ * (datetime, interval) with deduplication — and refuses to write a result shorter than
+ * the original.
  *
- * Свежие свечи выигрывают у старых при совпадении времени: биржа могла
- * пересчитать бар.
+ * Fresh candles win over old ones at the same time: the exchange may have recomputed the bar.
  *
  * Usage:
  *   node src/append.js --into data/tinkoff/ALRS_2026_1m.parquet /tmp/ALRS_new.parquet
@@ -23,11 +22,11 @@ import { loadDataset } from "./core/data-loader.js";
 import { writeCandleSeriesAsParquet } from "./core/candle-parquet.js";
 
 /**
- * Объединить листинги одного инструмента.
- * @param {string} intoPath - Файл-приёмник (он же источник истории).
- * @param {Array<string>} sources - Файлы со свежими свечами.
+ * Merge listings of one instrument.
+ * @param {string} intoPath - Target file (also the source of history).
+ * @param {Array<string>} sources - Files with fresh candles.
  * @param {object} [options] - { dryRun }.
- * @returns {Promise<object>} Сводка по интервалам.
+ * @returns {Promise<object>} Per-interval summary.
  */
 export async function append(intoPath, sources, options = {}) {
     if (!existsSync(intoPath)) throw new Error(`${intoPath} does not exist`);
@@ -53,8 +52,8 @@ export async function append(intoPath, sources, options = {}) {
     for (const source of sources) {
         const fresh = await loadDataset(source);
         const freshTicker = fresh.metadata.ticker || fresh.metadata.instrument?.ticker || null;
-        // Слить два разных инструмента в один листинг — молчаливая порча данных,
-        // которую потом не отличить от рыночного шума.
+        // Merging two different instruments into one listing is silent data corruption
+        // that later cannot be told from market noise.
         if (targetTicker && freshTicker && targetTicker !== freshTicker) {
             throw new Error(`${source} holds ${freshTicker}, but ${intoPath} holds ${targetTicker}`);
         }

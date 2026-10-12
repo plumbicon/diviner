@@ -10,8 +10,9 @@ import { writeCandleSeriesAsParquet } from "./core/candle-parquet.js";
 const bar = (iso, close) => ({ datetime: new Date(iso), open: close, high: close, low: close, close, volume: 1 });
 
 /**
- * Два листинга, как их пишет fetch.js: минутки за 6 и 7 января и дневные за 5–7 января.
- * У BBB нет свечи в 07:01 6 января — тонкая бумага, минута без сделок.
+ * Two listings as fetch.js writes them: minute candles for January 6 and 7, daily ones
+ * for January 5–7. BBB has no candle at 07:01 on January 6 — a thin name, a minute
+ * without trades.
  */
 async function workspace() {
     const dir = await mkdtemp(join(tmpdir(), "diviner-bundle-"));
@@ -30,7 +31,7 @@ async function workspace() {
     return { dir, inputs, out: join(dir, "bundle.parquet") };
 }
 
-/** Дни свечей серии: серия бандла — колоночная, обходится итератором. */
+/** Days of a series' candles: a bundle series is columnar and is walked with its iterator. */
 const days = (series) => [...series].map((c) => c.datetime.toISOString().slice(0, 10));
 
 test("бандл несёт всю вселенную: тикеры, лоты по бумагам, все интервалы", async () => {
@@ -59,7 +60,7 @@ test("поток бандла идёт по времени, конец кажд�
         assert.deepEqual(flow, [
             "AAA 01-06T07:00 false",
             "BBB 01-06T07:00 true",
-            "AAA 01-06T07:01 true",     // BBB в эту минуту не торговалась — пачка из одной свечи
+            "AAA 01-06T07:01 true",     // BBB did not trade this minute — a one-candle batch
             "AAA 01-07T07:00 false",
             "BBB 01-07T07:00 true",
         ]);

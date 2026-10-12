@@ -10,13 +10,13 @@ import { TemporalView } from "../../core/temporal-view.js";
 const MIN = 60_000;
 const base = Date.UTC(2026, 0, 5, 4, 0);
 
-/** Свечи бумаги по заданным ценам закрытия; high/low раздвинуты на ±1%. */
+/** Candles of an instrument at the given closes; high/low spread by ±1%. */
 const bars = (ticker, closes) => closes.map((close, i) => ({
     datetime: new Date(base + i * MIN),
     open: close, high: close * 1.01, low: close * 0.99, close, volume: 1000, ticker,
 }));
 
-/** Мультитикерный брокер над синтетическим датасетом. */
+/** Multi-ticker broker over a synthetic dataset. */
 function makeBroker({ aaa, bbb, lots = { AAA: 10, BBB: 1 } }) {
     const bySymbol = new Map([
         ["AAA", new Map([[1, CandleSeries.from(bars("AAA", aaa))]])],
@@ -56,10 +56,11 @@ function makeBroker({ aaa, bbb, lots = { AAA: 10, BBB: 1 } }) {
 }
 
 /**
- * Шортит перечисленные бумаги на конце указанной минуты.
+ * Shorts the listed instruments at the end of the given minute.
  *
- * Аллокацию считает сама: `maxPositions` и бюджет `капитал / maxPositions` —
- * это её параметры, исполнитель о них не знает и в ордере получает готовую сумму.
+ * It computes the allocation itself: `maxPositions` and the budget
+ * `equity / maxPositions` are its parameters; the executor knows nothing about them and
+ * receives a ready amount with the order.
  */
 class ShortBoth extends Strategy {
     constructor(data, cash, commission) {
@@ -99,28 +100,28 @@ async function run(broker, strategy) {
 }
 
 test("обе позиции заливаются по open следующей свечи своей бумаги", async () => {
-    // Обе бумаги падают — шорты в плюсе, стопы не задеваются.
+    // Both instruments fall — the shorts are in profit, stops are not touched.
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     const report = await run(broker, strategy);
 
     assert.equal(report.trade_log.length, 2);
     const byTicker = Object.fromEntries(report.trade_log.map((t) => [t.ticker, t]));
-    // Сигнал на минуте 0, заливка по open минуты 1.
+    // Signal at minute 0, fill at the open of minute 1.
     assert.equal(byTicker.AAA.entryPrice, 100);
     assert.equal(byTicker.BBB.entryPrice, 50);
-    // Лот бумаги, а не общий: AAA кратно 10, BBB кратно 1.
+    // The instrument's lot, not a shared one: AAA in multiples of 10, BBB of 1.
     assert.equal(byTicker.AAA.size % 10, 0);
-    // Стратегия выделила по половине капитала: ~5000 на бумагу, а не всё на первую.
+    // The strategy allotted half the equity each: ~5000 per instrument, not all to the first.
     assert.ok(byTicker.AAA.size * 100 <= 5100, `AAA notional ${byTicker.AAA.size * 100}`);
     assert.ok(byTicker.BBB.size * 50 <= 5100, `BBB notional ${byTicker.BBB.size * 50}`);
-    // Оба шорта закрыты на конце данных в плюс.
+    // Both shorts are closed in profit at the end of the data.
     assert.ok(byTicker.AAA.pnl > 0 && byTicker.BBB.pnl > 0);
     assert.equal(byTicker.AAA.reason, "eod");
 });
 
 test("стоп срабатывает по своей бумаге и не трогает вторую", async () => {
-    // AAA улетает вверх (стоп +5% пробит на минуте 3), BBB спокойно падает.
+    // AAA shoots up (the +5% stop is hit at minute 3), BBB falls calmly.
     const broker = makeBroker({ aaa: [100, 100, 103, 112, 112], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     const report = await run(broker, strategy);
@@ -129,7 +130,7 @@ test("стоп срабатывает по своей бумаге и не тр�
     assert.equal(byTicker.AAA.reason, "sl");
     assert.equal(byTicker.AAA.exitPrice.toFixed(4), (100 * 1.05).toFixed(4), "выход ровно по уровню стопа");
     assert.ok(byTicker.AAA.pnl < 0);
-    // Вторая бумага доехала до конца данных и осталась прибыльной.
+    // The second instrument reached the end of the data and stayed profitable.
     assert.equal(byTicker.BBB.reason, "eod");
     assert.ok(byTicker.BBB.pnl > 0);
 });
@@ -138,14 +139,14 @@ test("капитал отмечается по одной точке на мин
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     await run(broker, strategy);
-    // 5 минут × 2 бумаги = 10 свечей, но отметок капитала должно быть 5.
+    // 5 minutes × 2 instruments = 10 candles, but there must be 5 equity marks.
     assert.equal(broker.exec.equity.length, 5);
     assert.equal(broker.exec.timeline.length, 5);
     assert.ok(broker.exec.equity.every((v) => Number.isFinite(v) && v > 0));
 });
 
 test("одна бумага — одна позиция: повторный ордер по занятой отклоняется", async () => {
-    // Ограничение биржи, а не политика: нетто-позиция по инструменту одна.
+    // An exchange constraint, not a policy: one net position per instrument.
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     strategy.tickers = ["AAA", "AAA", "BBB"];
@@ -162,7 +163,7 @@ test("сколько бумаг держать и на какую сумму —
 
     assert.equal(one.trade_log.length, 1, "стратегия сама не открыла вторую");
     assert.equal(one.trade_log[0].ticker, "AAA");
-    // Одна позиция забирает весь капитал, две делят пополам — разница вдвое.
+    // One position takes all the equity, two split it — a twofold difference.
     const sizeOf = (report, ticker) => report.trade_log.find((t) => t.ticker === ticker).size;
     assert.ok(sizeOf(one, "AAA") >= 2 * sizeOf(two, "AAA"),
         `1 позиция: ${sizeOf(one, "AAA")}, 2 позиции: ${sizeOf(two, "AAA")}`);
@@ -172,7 +173,7 @@ test("исполнитель не навязывает аллокацию: бе�
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     strategy.tickers = ["AAA"];
-    // Подменяем ордер на «без суммы» — так делают однобумажные стратегии.
+    // Replace the order with one "without an amount" — that is what single-ticker strategies do.
     const original = broker.exec.sell.bind(broker.exec);
     broker.exec.sell = ({ budget, ...order }) => original(order);
     const report = await run(broker, strategy);
@@ -194,18 +195,18 @@ test("closeAtLast закрывает сразу по цене последней
     const aaa = bars("AAA", [100, 101, 102, 103]);
     exec.setCurrentCandle(aaa[0]);
     assert.equal(exec.buy({ ticker: "AAA", budget: 5000 }), true);
-    exec.setCurrentCandle(aaa[1]);                       // заливка по open 101
+    exec.setCurrentCandle(aaa[1]);                       // fill at open 101
     const position = exec.getPositionOf("AAA");
     assert.equal(position?.entryPrice, 101);
-    exec.setCurrentCandle(aaa[2]);                       // последняя свеча бумаги: close 102
-    exec.closePosition("time", "AAA");                   // обычный выход ждал бы следующей свечи
+    exec.setCurrentCandle(aaa[2]);                       // the instrument's last candle: close 102
+    exec.closePosition("time", "AAA");                   // an ordinary exit would wait for the next candle
     assert.deepEqual(exec.getPendingTickers(), ["AAA"]);
     const trade = exec.closeAtLast("time", "AAA", new Date(base + 10 * MIN));
     assert.equal(trade.exitPrice, 102);
     assert.equal(trade.exitTime.getTime(), base + 10 * MIN);
     assert.equal(exec.getPositionOf("AAA"), null);
     assert.deepEqual(exec.getPendingTickers(), []);
-    exec.setCurrentCandle(aaa[3]);                       // следующая свеча уже ничего не заливает
+    exec.setCurrentCandle(aaa[3]);                       // the next candle no longer fills anything
     assert.equal(exec.getPositions().length, 0);
     assert.equal(exec.closeAtLast("time", "AAA"), null);
 });

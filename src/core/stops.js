@@ -1,13 +1,13 @@
 /**
- * Единая логика срабатывания stop-loss / take-profit.
+ * The single stop-loss / take-profit trigger logic.
  *
- * Чистая функция: по позиции и текущей цене возвращает причину выхода либо null.
- * Используется и backtest-путём (через Strategy), и live-путём (через StateManager),
- * чтобы условия триггера жили в одном месте.
+ * A pure function: from a position and the current price it returns the exit reason or
+ * null. Both the backtest and the live paths use it, so the trigger conditions live in
+ * one place.
  *
- * @param {{side: string, sl: number|null, tp: number|null}|null} position - Текущая позиция.
- * @param {number} price - Текущая цена (close).
- * @returns {'sl'|'tp'|null} Причина выхода или null.
+ * @param {{side: string, sl: number|null, tp: number|null}|null} position - Current position.
+ * @param {number} price - Current price (close).
+ * @returns {'sl'|'tp'|null} Exit reason or null.
  */
 export function evaluateStops(position, price) {
     if (!position) {
@@ -28,18 +28,16 @@ export function evaluateStops(position, price) {
 }
 
 /**
- * Внутрисвечная проверка SL/TP для бэктеста: триггерит по диапазону свечи
- * (high/low), а не только по close — то есть стоп считается сработавшим, если
- * цена коснулась уровня в пределах минуты, даже если к закрытию вернулась в
- * коридор. Если за одну свечу задеты и SL, и TP, приоритет у SL (пессимистично:
- * 1m-бар не хранит порядок тиков, поэтому считаем худший исход).
+ * Intrabar SL/TP check: triggers on the candle range (high/low), not only on the close —
+ * a stop counts as hit if the price touched the level within the minute, even if it came
+ * back inside by the close. If one candle touches both SL and TP, SL wins (pessimistic: a
+ * 1m bar does not keep the tick order, so the worst outcome is assumed).
  *
- * Только backtest-путь: live видит лишь текущую цену тика, будущих high/low у
- * него нет — там остаётся close-проверка через {@link evaluateStops}.
+ * Live, the executors apply it to the high/low of the closed candle that arrived.
  *
- * @param {{side: string, sl: number|null, tp: number|null}|null} position - Позиция.
- * @param {{high: number, low: number}} candle - Текущая свеча.
- * @returns {'sl'|'tp'|null} Причина выхода или null.
+ * @param {{side: string, sl: number|null, tp: number|null}|null} position - Position.
+ * @param {{high: number, low: number}} candle - Current candle.
+ * @returns {'sl'|'tp'|null} Exit reason or null.
  */
 export function evaluateIntrabarStop(position, candle) {
     if (!position || !candle) {
@@ -61,17 +59,17 @@ export function evaluateIntrabarStop(position, candle) {
 }
 
 /**
- * Выход позиции по времени (третий вид выхода наряду с SL/TP).
+ * Time exit of a position (the third kind of exit besides SL/TP).
  *
- * Чистая функция: позиция несёт абсолютный дедлайн `exitDeadline` (epoch ms),
- * заданный стратегией при открытии. Возвращает 'time', когда `now` достиг
- * дедлайна. В отличие от SL/TP это событие часов, а не цены — поэтому в live его
- * применяет не только потиковый путь движка, но и wall-clock-таймер брокера
- * (на случай, когда рыночная свеча в конце сессии не пришла).
+ * A pure function: the position carries an absolute deadline `exitDeadline` (epoch ms)
+ * set by the strategy at entry. Returns 'time' once `now` reaches the deadline. Unlike
+ * SL/TP this is a clock event, not a price event — so live it is applied not only on the
+ * engine's per-candle path but also by the broker's wall-clock timer (for when no market
+ * candle arrives near the end of the session).
  *
- * @param {{exitDeadline?: number|null}|null} position - Текущая позиция.
- * @param {number} now - Текущее время (epoch ms).
- * @returns {'time'|null} Причина выхода или null.
+ * @param {{exitDeadline?: number|null}|null} position - Current position.
+ * @param {number} now - Current time (epoch ms).
+ * @returns {'time'|null} Exit reason or null.
  */
 export function evaluateTimeExit(position, now) {
     if (!position || position.exitDeadline == null) {
@@ -81,20 +79,19 @@ export function evaluateTimeExit(position, now) {
 }
 
 /**
- * Различить трейлинг-стоп и защитный стоп-лосс.
+ * Tell a trailing stop from a protective stop-loss.
  *
- * Движок для обоих отдаёт `sl` — это один и тот же механизм, отличается только
- * уровень. Но для отчёта это разные события: защитный стоп означает, что сделка
- * пошла против нас на несколько процентов, а трейлинг — что прибыль зафиксирована
- * храповиком. Писать «закрыто по стоп-лоссу» на прибыльном выходе значит вводить
- * читателя в заблуждение.
+ * The engine reports `sl` for both — it is the same mechanism, only the level differs.
+ * For reporting they are different events: a protective stop means the trade went
+ * several percent against us, a trailing stop means the profit was locked by the
+ * ratchet. Writing "closed by stop-loss" on a profitable exit misleads the reader.
  *
- * Признак: для шорта защитный стоп стоит ВЫШЕ цены входа, а трейлинг взводится
- * только после хода в нашу сторону и всегда оказывается НИЖЕ входа. Для лонга —
- * зеркально.
+ * The sign: for a short the protective stop sits ABOVE the entry price, while the
+ * trailing stop arms only after a move in our favour and is always BELOW the entry. For a
+ * long it is mirrored.
  *
- * @param {{side: string, entryPrice: number, sl: number|null}|null} position - Позиция.
- * @returns {'trail'|'sl'} Уточнённая причина.
+ * @param {{side: string, entryPrice: number, sl: number|null}|null} position - Position.
+ * @returns {'trail'|'sl'} Refined reason.
  */
 export function classifyStopExit(position) {
     if (!position || position.sl == null || !(position.entryPrice > 0)) return "sl";

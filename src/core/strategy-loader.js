@@ -3,7 +3,7 @@ import { pathToFileURL } from "url";
 import { resolve } from "path";
 
 /**
- * Загрузить класс стратегии из файла
+ * Load a strategy class from a file.
  */
 export async function loadStrategy(strategyPath) {
     const absolutePath = resolve(strategyPath);

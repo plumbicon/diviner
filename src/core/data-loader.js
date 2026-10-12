@@ -3,7 +3,7 @@ import { PARQUET_METADATA_KEY } from "./candle-parquet.js";
 import { CandleSeriesBuilder } from "./candle-series.js";
 
 /**
- * Загрузить данные из Parquet файла
+ * Load candles from a Parquet file.
  */
 export async function loadData(pathOrBuffer) {
     const dataset = await loadDataset(pathOrBuffer);
@@ -11,22 +11,22 @@ export async function loadData(pathOrBuffer) {
 }
 
 /**
- * Загрузить свечи и metadata из Parquet файла.
+ * Load candles and metadata from a Parquet file.
  *
- * Файл может содержать несколько интервалов (минутные, дневные и т.п.): каждая
- * строка тогда помечена колонкой `interval` (длина в минутах). Свечи группируются
- * по интервалу в `series` (Map<minutes, candles[]>). `candles` — базовый
- * (наименьший) интервал: он стримится движком и сохраняет обратную совместимость.
- * Файлы старого формата без колонки `interval` трактуются как один базовый
- * интервал, взятый из `metadata.intervalMinutes` (по умолчанию 1).
+ * A file may hold several intervals (minute, daily and so on): each row is then tagged
+ * with the `interval` column (length in minutes). Candles are grouped by interval into
+ * `series` (Map<minutes, candles[]>). `candles` is the base (smallest) interval: the
+ * engine streams it, and it keeps backward compatibility. Old files without the
+ * `interval` column are read as one base interval taken from `metadata.intervalMinutes`
+ * (1 by default).
  *
- * Файл также может содержать несколько инструментов — тогда каждая строка
- * помечена колонкой `ticker`. Помимо общих `series` (все бумаги вперемешку, в
- * хронологическом порядке — это поток для мультитикерного движка) датасет отдаёт
- * `bySymbol`: тикер → (минуты → свечи). Однобумажный файл ведёт себя ровно как
- * раньше, только с одной записью в `bySymbol` и полем `ticker` на каждой свече.
+ * A file may also hold several instruments — each row is then tagged with the `ticker`
+ * column. Besides the shared `series` (all instruments mixed in chronological order — the
+ * stream for the multi-ticker engine) the dataset provides `bySymbol`: ticker → (minutes →
+ * candles). A single-ticker file behaves exactly as before, with one entry in `bySymbol`
+ * and a `ticker` field on every candle.
  *
- * @param {string|Buffer} pathOrBuffer - Путь к Parquet или Buffer.
+ * @param {string|Buffer} pathOrBuffer - Parquet path or Buffer.
  * @returns {Promise<{ candles: Array<object>, series: Map<number, Array<object>>,
  *   metadata: object, symbols: Array<string>, bySymbol: Map<string, Map<number, Array<object>>>,
  *   instruments: Map<string, object> }>} Dataset.
@@ -44,10 +44,10 @@ export async function loadDataset(pathOrBuffer) {
         const metadata = parseDivinerMetadata(reader.getMetadata?.() || {});
         const baseMinutesMeta = Number(metadata.intervalMinutes) || 1;
 
-        // Файлы, собранные bundle.js, несут список тикеров в метаданных и читаются
-        // колонками: вселенная за год объектами не помещается в кучу. Все скачанные
-        // однобумажные листинги такого поля не имеют и идут прежним путём — их
-        // поведение не меняется ни на байт.
+        // Files built by bundle.js carry the ticker list in their metadata and are read
+        // as columns: a year of the universe does not fit the heap as objects. Downloaded
+        // single-ticker listings have no such field and take the old path — their
+        // behaviour does not change by a byte.
         if (Array.isArray(metadata.tickers)) {
             return await readColumnar(reader, metadata, baseMinutesMeta);
         }
@@ -106,8 +106,8 @@ export async function loadDataset(pathOrBuffer) {
             }
         }
 
-        // Хронологический порядок; тикер — детерминированный тай-брейк, иначе на
-        // одной минуте бумаги шли бы в случайном порядке и прогон был бы невоспроизводим.
+        // Chronological order; the ticker is a deterministic tie-break, otherwise
+        // instruments of one minute would come in random order and runs would not reproduce.
         for (const bucket of series.values()) {
             bucket.sort(compareCandles);
         }
@@ -134,12 +134,12 @@ export async function loadDataset(pathOrBuffer) {
 }
 
 /**
- * Прочитать мультитикерный файл в колонки: тикер → интервал → CandleSeries.
+ * Read a multi-ticker file into columns: ticker → interval → CandleSeries.
  *
- * Физическая раскладка — по бумагам (внутри каждой время возрастает). Так
- * устроены все горячие запросы: фичи и сессионное окно спрашивают историю одной
- * бумаги. Общий хронологический поток по всей вселенной строится итератором
- * `mergeStream` слиянием — копии данных он не создаёт.
+ * The physical layout is per instrument (time ascending within each). That matches every
+ * hot query: features and the session window ask for one instrument's history. The shared
+ * chronological stream over the universe is built by the `mergeStream` iterator as a
+ * merge — it makes no copy of the data.
  * @private
  */
 async function readColumnar(reader, metadata, baseMinutesMeta) {
@@ -182,10 +182,10 @@ async function readColumnar(reader, metadata, baseMinutesMeta) {
         instruments.set(symbol, metadata.instruments?.[symbol] || { ticker: symbol, lot: 1 });
     }
 
-    // Собранный файл — всегда датасет-вселенная, даже если бумага в нём одна:
-    // доступ к данным идёт по тикеру. Общего `candles`/`series` у него нет, и это
-    // намеренно — склеивать вселенную во второй физический массив значит удвоить
-    // память ради того, что мультитикерному движку не нужно: ему нужен поток.
+    // A bundle is always a universe dataset, even with a single instrument: data is
+    // accessed by ticker. It has no shared `candles`/`series`, deliberately — gluing the
+    // universe into a second physical array would double the memory for something the
+    // multi-ticker engine does not need: it needs a stream.
     const baseMinutes = (() => {
         const intervals = new Set();
         for (const perInterval of bySymbol.values()) {
@@ -199,15 +199,15 @@ async function readColumnar(reader, metadata, baseMinutesMeta) {
         series: null,
         metadata, symbols, bySymbol, instruments,
         /**
-         * Хронологический поток по нескольким бумагам (слияние без копирования).
+         * Chronological stream over several instruments (a merge without copying).
          *
-         * Последняя свеча каждой минуты помечается `isBatchEnd`. Кросс-секционное
-         * решение возможно только когда минута собрана целиком: сравнивать скоры по
-         * вселенной, увидев половину бумаг, нельзя. Флаг ставится заглядыванием на
-         * одну свечу вперёд — иначе «минута закончилась» не определить.
-         * @param {number} minutes - Интервал.
-         * @param {Array<string>} [only] - Подмножество тикеров.
-         * @returns {Generator<object>} Свечи по возрастанию времени, тай-брейк по тикеру.
+         * The last candle of each minute is marked `isBatchEnd`. A cross-sectional
+         * decision is only possible once the minute is complete: scores across the
+         * universe cannot be compared having seen half of the instruments. The flag is set
+         * by looking one candle ahead — there is no other way to tell "the minute ended".
+         * @param {number} minutes - Interval.
+         * @param {Array<string>} [only] - Ticker subset.
+         * @returns {Generator<object>} Candles by ascending time, ticker as the tie-break.
          */
         *mergeStream(minutes, only = null) {
             const heads = [];
@@ -243,7 +243,7 @@ async function readColumnar(reader, metadata, baseMinutesMeta) {
     };
 }
 
-/** Значение колонки datetime → Date. @private */
+/** datetime column value → Date. @private */
 function toDatetime(ts) {
     if (typeof ts === "bigint") return new Date(Number(ts / 1_000_000n));
     if (typeof ts === "number") return new Date(ts > 1e12 ? ts : ts * 1000);
@@ -251,7 +251,7 @@ function toDatetime(ts) {
     return new Date(ts);
 }
 
-/** Сравнение свечей: время, затем тикер. @private */
+/** Candle comparison: time, then ticker. @private */
 function compareCandles(a, b) {
     const diff = a.datetime.getTime() - b.datetime.getTime();
     if (diff !== 0) return diff;
@@ -260,7 +260,7 @@ function compareCandles(a, b) {
     return at < bt ? -1 : at > bt ? 1 : 0;
 }
 
-/** Тикер из строки Parquet (parquetjs отдаёт UTF8 как Buffer). @private */
+/** Ticker from a Parquet row (parquetjs returns UTF8 as a Buffer). @private */
 function normalizeTicker(value) {
     if (value == null) return null;
     const text = Buffer.isBuffer(value) ? value.toString("utf8") : String(value);

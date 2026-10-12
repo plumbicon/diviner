@@ -154,8 +154,8 @@ test("buildClientOrderId is alphanumeric and ≤ 32 chars", () => {
 });
 
 test("сигнал стратегии доходит до исполнителя: размер по умолчанию, SL/TP и дедлайн сохранены", async () => {
-    // Strategy.sell передаёт один объект { size, sl, tp, exitDeadline }. Раньше OKX ждал
-    // позиционные аргументы, объект становился размером позиции, а стопы терялись.
+    // Strategy.sell passes a single object { size, sl, tp, exitDeadline }. OKX used to expect
+    // positional arguments, the object became the position size, and the stops were lost.
     const client = makeStubClient({ contractSize: 1, balance: 1000 });
     const exec = makeExecutor(client, { leverage: 1, marginFraction: 0.5 });
     await exec.refreshBalance();

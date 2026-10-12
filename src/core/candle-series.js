@@ -1,39 +1,37 @@
 /**
- * Колоночное хранение свечей.
+ * Columnar candle storage.
  *
- * Свеча-объект стоит ~259 байт в куче V8 (замерено на SBER 2025: 374 тыс. свечей
- * → 92 МБ при 20 МБ файла), из них большая часть — накладные расходы объекта и
- * отдельный Date внутри. Вселенная за год это ~40 млн свечей, то есть ~10 ГБ
- * объектами при лимите кучи 4.3 ГБ — кросс-секционный бэктест так просто не
- * поднять. Колонками та же вселенная занимает ~2 ГБ, причём типизированные
- * массивы живут вне кучи V8 и в её лимит не упираются.
+ * A candle object costs ~259 bytes of V8 heap (measured on SBER 2025: 374k candles →
+ * 92 MB for a 20 MB file), mostly object overhead and a separate Date inside. A universe
+ * for a year is ~40M candles, i.e. ~10 GB as objects against a 4.3 GB heap limit — a
+ * cross-sectional backtest simply cannot be loaded that way. As columns the same universe
+ * takes ~2 GB, and typed arrays live outside the V8 heap and do not count against its limit.
  *
- * Интерфейс намеренно совпадает с подмножеством Array: `length`, `at(i)`,
- * `slice(a, b)`, итератор. Обычный массив свечей ему уже удовлетворяет, поэтому
- * потребителю всё равно, что ему дали, — лишь бы он обращался через `at(i)`, а
- * не `[i]`. Это делает переход постепенным: однобумажные листинги можно оставить
- * массивами объектов, а мультитикерные отдавать колонками.
+ * The interface deliberately matches a subset of Array: `length`, `at(i)`, `slice(a, b)`,
+ * the iterator. A plain candle array already satisfies it, so a consumer does not care
+ * what it was given — as long as it uses `at(i)` and not `[i]`. That makes the move
+ * gradual: single-ticker listings can stay object arrays while multi-ticker ones are
+ * served as columns.
  *
- * Цены хранятся в Float64 — ровно та же точность, что у чисел в объектах.
- * Float32 сэкономил бы ещё вдвое, но мог бы сдвинуть срабатывание интрабарного
- * стопа в пограничном случае, а регрессия потикерных стратегий должна сходиться
- * цифра в цифру.
+ * Prices are stored as Float64 — exactly the precision of numbers in objects. Float32
+ * would halve the size again but could shift an intrabar stop in an edge case, and the
+ * regression of per-ticker strategies must match to the last digit.
  */
 
-/** Поля свечи, хранимые отдельными колонками (кроме тикера и времени). @private */
+/** Candle fields stored as separate columns (besides the ticker and the time). @private */
 const PRICE_FIELDS = ["open", "high", "low", "close", "volume"];
 
 export class CandleSeries {
     /**
-     * @param {object} columns - Колонки.
-     * @param {Float64Array} columns.ts - Время, epoch ms.
-     * @param {Float64Array} columns.open - Цена открытия.
-     * @param {Float64Array} columns.high - Максимум.
-     * @param {Float64Array} columns.low - Минимум.
-     * @param {Float64Array} columns.close - Цена закрытия.
-     * @param {Float64Array} columns.volume - Объём.
-     * @param {Int32Array|null} [columns.sym] - Индекс тикера в `symbols`.
-     * @param {Array<string>} [columns.symbols] - Таблица тикеров.
+     * @param {object} columns - Columns.
+     * @param {Float64Array} columns.ts - Time, epoch ms.
+     * @param {Float64Array} columns.open - Open price.
+     * @param {Float64Array} columns.high - High.
+     * @param {Float64Array} columns.low - Low.
+     * @param {Float64Array} columns.close - Close price.
+     * @param {Float64Array} columns.volume - Volume.
+     * @param {Int32Array|null} [columns.sym] - Ticker index into `symbols`.
+     * @param {Array<string>} [columns.symbols] - Ticker table.
      */
     constructor({ ts, open, high, low, close, volume, sym = null, symbols = [] }) {
         this.ts = ts;
@@ -51,10 +49,10 @@ export class CandleSeries {
     }
 
     /**
-     * Свеча по индексу. Объект собирается на месте — держать все свечи объектами
-     * и есть та проблема, ради которой существует этот класс.
-     * @param {number} index - Индекс; отрицательный отсчитывается с конца (как Array.at).
-     * @returns {object|undefined} Свеча.
+     * Candle by index. The object is built on the spot — keeping every candle as an
+     * object is exactly the problem this class exists to avoid.
+     * @param {number} index - Index; a negative one counts from the end (like Array.at).
+     * @returns {object|undefined} Candle.
      */
     at(index) {
         const i = index < 0 ? this.ts.length + index : index;
@@ -70,21 +68,21 @@ export class CandleSeries {
         };
     }
 
-    /** Время свечи без сборки объекта (для поиска и сравнений). */
+    /** Candle time without building an object (for searches and comparisons). */
     tsAt(index) {
         return this.ts[index];
     }
 
-    /** Тикер свечи без сборки объекта. */
+    /** Candle ticker without building an object. */
     tickerAt(index) {
         return this.sym ? this.symbols[this.sym[index]] : undefined;
     }
 
     /**
-     * Срез-представление: колонки не копируются, только сужается окно.
-     * @param {number} [start] - Начало (включительно).
-     * @param {number} [end] - Конец (не включая).
-     * @returns {CandleSeries} Представление.
+     * Slice view: the columns are not copied, only the window narrows.
+     * @param {number} [start] - Start (inclusive).
+     * @param {number} [end] - End (exclusive).
+     * @returns {CandleSeries} View.
      */
     slice(start = 0, end = this.ts.length) {
         const n = this.ts.length;
@@ -101,7 +99,7 @@ export class CandleSeries {
         });
     }
 
-    /** Первый индекс со временем ≥ ts (колонка отсортирована). */
+    /** First index with time ≥ ts (the column is sorted). */
     lowerBound(ts) {
         let lo = 0, hi = this.ts.length;
         while (lo < hi) {
@@ -111,7 +109,7 @@ export class CandleSeries {
         return lo;
     }
 
-    /** Первый индекс со временем > ts (колонка отсортирована). */
+    /** First index with time > ts (the column is sorted). */
     upperBound(ts) {
         let lo = 0, hi = this.ts.length;
         while (lo < hi) {
@@ -125,7 +123,7 @@ export class CandleSeries {
         for (let i = 0; i < this.ts.length; i += 1) yield this.at(i);
     }
 
-    /** Байт в типизированных массивах (вне кучи V8) — для диагностики. */
+    /** Bytes in typed arrays (outside the V8 heap) — for diagnostics. */
     get byteLength() {
         return this.ts.byteLength + this.open.byteLength + this.high.byteLength
             + this.low.byteLength + this.close.byteLength + this.volume.byteLength
@@ -133,10 +131,10 @@ export class CandleSeries {
     }
 
     /**
-     * Собрать колонки из массива свечей-объектов.
-     * @param {Array<object>} candles - Свечи.
-     * @param {Array<string>} [symbols] - Общая таблица тикеров (дополняется).
-     * @returns {CandleSeries} Колоночная серия.
+     * Build columns from an array of candle objects.
+     * @param {Array<object>} candles - Candles.
+     * @param {Array<string>} [symbols] - Shared ticker table (appended to).
+     * @returns {CandleSeries} Columnar series.
      */
     static from(candles, symbols = null) {
         const builder = new CandleSeriesBuilder({ symbols });
@@ -146,14 +144,14 @@ export class CandleSeries {
 }
 
 /**
- * Накопитель колонок с удвоением ёмкости: длина серии заранее неизвестна,
- * а перевыделять на каждую свечу нельзя.
+ * Column accumulator with capacity doubling: the series length is not known in advance,
+ * and reallocating on every candle is not an option.
  */
 export class CandleSeriesBuilder {
     /**
-     * @param {object} [params] - Параметры.
-     * @param {number} [params.capacity] - Начальная ёмкость.
-     * @param {Array<string>} [params.symbols] - Общая таблица тикеров.
+     * @param {object} [params] - Parameters.
+     * @param {number} [params.capacity] - Initial capacity.
+     * @param {Array<string>} [params.symbols] - Shared ticker table.
      */
     constructor({ capacity = 1024, symbols = null } = {}) {
         this.n = 0;
@@ -177,8 +175,8 @@ export class CandleSeriesBuilder {
     }
 
     /**
-     * Добавить свечу.
-     * @param {object} candle - Свеча с datetime/OHLCV и необязательным ticker.
+     * Append a candle.
+     * @param {object} candle - Candle with datetime/OHLCV and an optional ticker.
      */
     push(candle) {
         if (this.n === this.cap) this._grow();
@@ -205,8 +203,8 @@ export class CandleSeriesBuilder {
     }
 
     /**
-     * Закрыть накопитель, обрезав ёмкость до фактической длины.
-     * @returns {CandleSeries} Готовая серия.
+     * Close the accumulator, trimming the capacity to the actual length.
+     * @returns {CandleSeries} Finished series.
      */
     build() {
         const n = this.n;

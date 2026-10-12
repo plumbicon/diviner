@@ -1,60 +1,61 @@
 import { SIZING_SLIPPAGE_PAD } from "./portfolio.js";
 
 /**
- * Портфель на несколько одновременных позиций с общей кассой.
+ * Portfolio for several simultaneous positions with a shared cash pool.
  *
- * Позиции хранятся по бумагам: на счёте по инструменту бывает только одна нетто-
- * позиция, и это ограничение биржи, а не политика. А вот **как делить депозит
- * между бумагами — решает стратегия**, портфель об этом не знает. Он умеет
- * перевести выделенную сумму в размер позиции (округление до лотов, резерв под
- * комиссию и проскальзывание), но саму сумму получает извне.
+ * Positions are kept per instrument: an account holds only one net position per
+ * instrument, an exchange constraint rather than a policy. **How to split the deposit
+ * between instruments is the strategy's decision** — the portfolio does not know. It can
+ * convert an allotted amount into a position size (lot rounding, a reserve for commission
+ * and slippage), but the amount itself comes from outside.
  *
- * Отличие от {@link Portfolio} только в этом: размер считается от переданного
- * бюджета, а не от всего кэша, и лот берётся у инструмента сделки — у бумаг
- * вселенной он разный. Арифметика скопирована, поэтому портфель с одной позицией
- * и бюджетом во весь кэш обязан совпасть с однопозиционным цифра в цифру; это и
- * проверяется тестом.
+ * That is the only difference from {@link Portfolio}: the size is computed from the given
+ * budget instead of the whole cash, and the lot comes from the traded instrument — it
+ * differs across the universe. The arithmetic is copied, so a portfolio with one position
+ * and a budget of all the cash must match the single-position one to the last digit; a
+ * test checks exactly that.
  */
 export class MultiPortfolio {
     /**
-     * @param {object} params - Параметры.
-     * @param {number} [params.cash] - Стартовый капитал.
-     * @param {number} [params.commission] - Комиссия за сторону.
-     * @param {number} [params.leverage] - Плечо шорта.
+     * @param {object} params - Parameters.
+     * @param {number} [params.cash] - Starting capital.
+     * @param {number} [params.commission] - Commission per side.
+     * @param {number} [params.leverage] - Short leverage.
      */
     constructor({ cash = 10000, commission = 0.0005, leverage = 1, leverageFor = null } = {}) {
         this.initialCash = cash;
         this.cash = cash;
         this.commission = commission;
         this.leverage = Number.isFinite(Number(leverage)) && Number(leverage) > 0 ? Number(leverage) : 1;
-        // Плечо по бумаге: биржа и брокер ограничивают шорт ставкой риска, и потолок у
-        // каждой бумаги свой. Функция возвращает разрешённое плечо тикера; общий --leverage
-        // остаётся верхней границей. Без неё поведение прежнее — одно плечо на всё.
+        // Per-instrument leverage: the exchange and the broker cap shorts by a risk rate,
+        // and each instrument has its own cap. The function returns a ticker's allowed
+        // leverage; the global --leverage stays the upper bound. Without it behaviour is
+        // as before — one leverage for everything.
         this.leverageFor = typeof leverageFor === "function" ? leverageFor : null;
-        /** Тикер → позиция. @type {Map<string, object>} */
+        /** Ticker → position. @type {Map<string, object>} */
         this.positions = new Map();
         this.trades = [];
     }
 
-    /** Число открытых позиций. @returns {number} Открыто. */
+    /** Number of open positions. @returns {number} Open. */
     get openCount() {
         return this.positions.size;
     }
 
     /**
-     * Позиция по бумаге.
-     * @param {string} ticker - Тикер.
-     * @returns {object|null} Позиция.
+     * Position of an instrument.
+     * @param {string} ticker - Ticker.
+     * @returns {object|null} Position.
      */
     positionOf(ticker) {
         return this.positions.get(ticker) ?? null;
     }
 
     /**
-     * Плечо, с которым открывается шорт по бумаге: минимум из общего и разрешённого
-     * по этой бумаге. Лонги в симуляторе без плеча.
-     * @param {string} ticker - Тикер.
-     * @returns {number} Плечо.
+     * Leverage a short in the instrument opens with: the minimum of the global one and the
+     * one allowed for this instrument. Longs in the simulator are unleveraged.
+     * @param {string} ticker - Ticker.
+     * @returns {number} Leverage.
      */
     leverageOf(ticker) {
         if (!this.leverageFor) return this.leverage;
@@ -64,13 +65,13 @@ export class MultiPortfolio {
     }
 
     /**
-     * Размер позиции в штуках, округлённый вниз до целого числа лотов.
-     * Формула — из Portfolio._defaultSize, с бюджетом вместо всего кэша.
-     * @param {number} price - Цена сайзинга.
-     * @param {number} lot - Лот инструмента.
-     * @param {number} budget - Бюджет слота.
-     * @param {number} [leverage] - Плечо.
-     * @returns {number} Размер в штуках.
+     * Position size in shares, floored to whole lots. The formula is
+     * Portfolio._defaultSize's, with the budget instead of the whole cash.
+     * @param {number} price - Sizing price.
+     * @param {number} lot - Instrument lot.
+     * @param {number} budget - Slot budget.
+     * @param {number} [leverage] - Leverage.
+     * @returns {number} Size in shares.
      */
     sizeFor(price, lot, budget, leverage = this.leverage) {
         if (!Number.isFinite(price) || price <= 0) return 0;
@@ -80,16 +81,16 @@ export class MultiPortfolio {
     }
 
     /**
-     * Открыть позицию по бумаге.
+     * Open a position in an instrument.
      *
-     * Либо `size` (стратегия посчитала размер сама), либо `budget` — сумма, из
-     * которой размер получается округлением вниз до лотов по цене исполнения.
-     * Без обоих берётся весь свободный кэш: так ведёт себя однопозиционный
-     * Portfolio, и однобумажные стратегии на этом стоят.
+     * Either `size` (the strategy computed it itself) or `budget` — an amount the size is
+     * derived from by flooring to lots at the fill price. Without both, all free cash is
+     * used: that is how the single-position Portfolio behaves, and single-ticker
+     * strategies rely on it.
      *
-     * @param {string} ticker - Тикер.
-     * @param {object} order - Параметры ордера.
-     * @returns {object|null} Позиция либо null, если размер/кэш не позволяют.
+     * @param {string} ticker - Ticker.
+     * @param {object} order - Order parameters.
+     * @returns {object|null} Position, or null when the size/cash does not allow it.
      */
     open(ticker, {
         side = "short", price, datetime, lot = 1, size = null,
@@ -119,10 +120,10 @@ export class MultiPortfolio {
     }
 
     /**
-     * Закрыть позицию по бумаге.
-     * @param {string} ticker - Тикер.
+     * Close the position of an instrument.
+     * @param {string} ticker - Ticker.
      * @param {object} params - { price, datetime, reason }.
-     * @returns {object|null} Сделка.
+     * @returns {object|null} Trade.
      */
     close(ticker, { price, datetime, reason = "manual" }) {
         const position = this.positions.get(ticker);
@@ -135,8 +136,8 @@ export class MultiPortfolio {
             this.cash += size * price * (1 - this.commission);
         } else {
             pnl = size * (entryPrice - price) - fee;
-            // Возвращается залог именно этой позиции: при плече по бумаге общий
-            // this.leverage к ней отношения не имеет.
+            // The margin of this very position is returned: with per-instrument leverage the
+            // global this.leverage has nothing to do with it.
             this.cash += (size * entryPrice) / (position.leverage || this.leverage) + pnl;
         }
 
@@ -152,9 +153,9 @@ export class MultiPortfolio {
     }
 
     /**
-     * Капитал: кэш плюс маржа и нереализованный P&L по открытым позициям.
-     * @param {(ticker: string, position: object) => number|null} priceOf - Текущая цена бумаги.
-     * @returns {number} Капитал.
+     * Equity: cash plus margin and unrealized P&L of open positions.
+     * @param {(ticker: string, position: object) => number|null} priceOf - Current instrument price.
+     * @returns {number} Equity.
      */
     equity(priceOf) {
         let total = this.cash;

@@ -110,14 +110,14 @@ export class PerformanceMetrics {
     }
 
     /**
-     * Максимальная просадка кривой капитала: в рублях и в процентах.
+     * Maximum drawdown of the equity curve, in money and in percent.
      *
-     * Процент считается от пика, который был ПЕРЕД просадкой, а не от максимума
-     * всего прогона. Прежняя формула делила самую глубокую просадку в рублях на
-     * глобальный пик, и у растущей кривой ранние просадки почти исчезали: падение
-     * 100 → 90 в начале прогона при финальном пике 300 давало 3.3% вместо 10%.
-     * Отсчёт идёт от стартового капитала: просадка с первой свечи тоже считается.
-     * @returns {{amount: number, pct: number}} Просадка в деньгах и в процентах.
+     * The percentage is taken from the peak BEFORE the drawdown, not from the maximum of
+     * the whole run. The previous formula divided the deepest money drawdown by the global
+     * peak, and on a rising curve early drawdowns almost vanished: a fall of 100 → 90 at
+     * the start with a final peak of 300 gave 3.3% instead of 10%. Counting starts from
+     * the starting capital: a drawdown from the first candle counts too.
+     * @returns {{amount: number, pct: number}} Drawdown in money and in percent.
      */
     calculateMaxDrawdown() {
         let amount = 0;

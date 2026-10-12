@@ -8,8 +8,8 @@ const at = (iso) => new Date(iso);
 const bar = (iso, close) => ({ datetime: at(iso), open: close, high: close, low: close, close, volume: 1 });
 
 /**
- * Листинг с тремя интервалами, как его хранит fetch.js. Дневная свеча помечена полуночью
- * UTC, но означает московские сутки — её период кончается в 00:00 МСК следующего дня.
+ * A listing with three intervals, as fetch.js stores it. A daily candle is stamped at UTC
+ * midnight but means a Moscow day — its period ends at 00:00 Moscow the next day.
  */
 function context() {
     const series = new Map([
@@ -43,13 +43,13 @@ test("часовая свеча видна только после конца с
 
 test("дневная свеча сегодняшнего дня скрыта до полуночи МСК, вчерашняя видна", async () => {
     const view = context();
-    view.setNow(at("2026-01-06T07:03:00.000Z"));   // 10:03 МСК 6 января
+    view.setNow(at("2026-01-06T07:03:00.000Z"));   // 10:03 Moscow, January 6
     assert.deepEqual(times(await view.getCandles({ interval: "1d" })), ["2026-01-05T00:00"]);
 
-    view.setNow(at("2026-01-06T20:59:00.000Z"));   // 23:59 МСК — день ещё не закрыт
+    view.setNow(at("2026-01-06T20:59:00.000Z"));   // 23:59 Moscow — the day is not closed yet
     assert.equal((await view.getCandles({ interval: "1d" })).length, 1);
 
-    view.setNow(at("2026-01-06T21:00:00.000Z"));   // 00:00 МСК 7 января
+    view.setNow(at("2026-01-06T21:00:00.000Z"));   // 00:00 Moscow, January 7
     assert.deepEqual(times(await view.getCandles({ interval: "1d" })), ["2026-01-05T00:00", "2026-01-06T00:00"]);
 });
 

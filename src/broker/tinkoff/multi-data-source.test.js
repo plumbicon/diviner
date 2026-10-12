@@ -5,7 +5,7 @@ import { MultiSymbolTinkoffDataSource } from "./multi-data-source.js";
 const MIN = 60_000;
 const base = Date.UTC(2026, 7, 31, 4, 0);
 
-/** Клиент-заглушка: подписку принимает, наружу ничего не ходит. */
+/** Client stub: accepts the subscription, never goes to the network. */
 function fakeClient() {
     return {
         api: {},
@@ -28,11 +28,11 @@ const candle = (ticker, minute, close = 100) => ({
     open: close, high: close + 1, low: close - 1, close, volume: 10,
 });
 
-/** Собрать источник и выдать n свечей из потока. @private */
+/** Build a source and take n candles from its stream. @private */
 async function drain(src, count, feed) {
     const out = [];
     const iterator = src.stream();
-    const first = iterator.next();       // подписка выполняется внутри stream()
+    const first = iterator.next();       // the subscription happens inside stream()
     await new Promise((r) => setTimeout(r, 0));
     feed();
     out.push((await first).value);
@@ -47,7 +47,7 @@ test("минута выдаётся пачкой, последняя свеча 
     const got = await drain(src, 3, () => {
         src._accept(candle("BBB", 0, 200));
         src._accept(candle("AAA", 0, 100));
-        src._accept(candle("CCC", 0, 300));   // пришли все — пачка уходит сразу
+        src._accept(candle("CCC", 0, 300));   // everyone arrived — the batch goes out at once
     });
     assert.deepEqual(got.map((c) => c.ticker), ["AAA", "BBB", "CCC"], "порядок по тикеру");
     assert.deepEqual(got.map((c) => Boolean(c.isBatchEnd)), [false, false, true]);
@@ -60,7 +60,7 @@ test("неполная минута выдаётся по льготному о�
     });
     const got = await drain(src, 2, () => {
         src._accept(candle("AAA", 0));
-        src._accept(candle("BBB", 0));       // CCC молчит — ждём таймер
+        src._accept(candle("BBB", 0));       // CCC is silent — wait for the timer
     });
     assert.deepEqual(got.map((c) => c.ticker), ["AAA", "BBB"]);
     assert.equal(got[1].isBatchEnd, true, "последняя из пришедших закрывает пачку");
@@ -72,10 +72,10 @@ test("опоздавшая минута не уходит после более 
         client: fakeClient(), instruments, batchGraceMs: 10_000, stallTimeoutMin: 0,
     });
     const got = await drain(src, 4, () => {
-        src._accept(candle("AAA", 0));            // минута 0 неполная, таймер далеко
+        src._accept(candle("AAA", 0));            // minute 0 incomplete, the timer is far
         src._accept(candle("AAA", 1));
         src._accept(candle("BBB", 1));
-        src._accept(candle("CCC", 1));            // минута 1 полная → выдаём 0, потом 1
+        src._accept(candle("CCC", 1));            // minute 1 complete → release 0, then 1
     });
     const times = got.map((c) => c.datetime.getTime());
     assert.ok(times.every((t, i) => i === 0 || times[i - 1] <= t), "время не идёт назад");
@@ -91,8 +91,8 @@ test("дубль и устаревшая свеча по бумаге отбра
     });
     const got = await drain(src, 3, () => {
         src._accept(candle("AAA", 1, 111));
-        src._accept(candle("AAA", 1, 999));   // дубль той же минуты
-        src._accept(candle("AAA", 0, 888));   // устаревшая
+        src._accept(candle("AAA", 1, 999));   // duplicate of the same minute
+        src._accept(candle("AAA", 0, 888));   // stale
         src._accept(candle("BBB", 1));
         src._accept(candle("CCC", 1));
     });
@@ -123,9 +123,9 @@ test("подписка уходит списком инструментов", as
     await src.requestStop();
 });
 
-// ── сторож молчания ───────────────────────────────────────────────────────────
+// ── silence watchdog ──────────────────────────────────────────────────────────
 const MSK = 3 * 3600_000;
-/** Источник со сторожем и подставным расписанием. @private */
+/** Source with the watchdog and a stubbed schedule. @private */
 function withWatchdog(schedule) {
     const src = new MultiSymbolTinkoffDataSource({
         client: fakeClient(), instruments, stallTimeoutMin: 30, batchGraceMs: 10,
@@ -133,10 +133,10 @@ function withWatchdog(schedule) {
     src.getTradingSchedule = async () => schedule;
     return src;
 }
-const mskDay = (iso) => new Date(new Date(iso).getTime() - MSK);   // МСК → UTC
+const mskDay = (iso) => new Date(new Date(iso).getTime() - MSK);   // Moscow → UTC
 
 test("вне сессии тишина не вызывает переподписку", async () => {
-    // Торговый день, сессия 06:50–23:50 МСК; проверяем в 03:00 МСК.
+    // A trading day, session 06:50–23:50 Moscow; checked at 03:00 Moscow.
     const src = withWatchdog([{
         dateKey: "2026-08-31", isTradingDay: true,
         startTime: mskDay("2026-08-31T06:50:00Z").toISOString(),
@@ -144,7 +144,7 @@ test("вне сессии тишина не вызывает переподпи�
     }]);
     let reconnected = false;
     src._forceReconnect = async () => { reconnected = true; };
-    src._lastCandleWall = mskDay("2026-08-31T00:00:00Z").getTime();   // молчит 3 часа
+    src._lastCandleWall = mskDay("2026-08-31T00:00:00Z").getTime();   // silent for 3 hours
     await src._checkStall(mskDay("2026-08-31T03:00:00Z"));
     assert.equal(reconnected, false, "ночью переподписки быть не должно");
     await src.requestStop();
@@ -159,7 +159,7 @@ test("внутри сессии затяжная тишина вызывает �
     let reconnected = false;
     src._forceReconnect = async () => { reconnected = true; };
     src._lastCandleWall = mskDay("2026-08-31T08:00:00Z").getTime();
-    await src._checkStall(mskDay("2026-08-31T08:45:00Z"));            // 45 мин тишины
+    await src._checkStall(mskDay("2026-08-31T08:45:00Z"));            // 45 minutes of silence
     assert.equal(reconnected, true);
     await src.requestStop();
 });
@@ -175,14 +175,14 @@ test("в неторговый день сторож молчит", async () => {
 });
 
 test("без расписания работает запасное московское окно", async () => {
-    const src = withWatchdog([]);          // расписание недоступно
+    const src = withWatchdog([]);          // schedule unavailable
     let reconnected = false;
     src._forceReconnect = async () => { reconnected = true; };
     src._lastCandleWall = mskDay("2026-08-31T00:00:00Z").getTime();
-    await src._checkStall(mskDay("2026-08-31T04:00:00Z"));            // до 06:50 — вне окна
+    await src._checkStall(mskDay("2026-08-31T04:00:00Z"));            // before 06:50 — outside the window
     assert.equal(reconnected, false, "отказ расписания не должен включать сторожа ночью");
     src._lastCandleWall = mskDay("2026-08-31T08:00:00Z").getTime();
-    await src._checkStall(mskDay("2026-08-31T09:00:00Z"));            // внутри окна
+    await src._checkStall(mskDay("2026-08-31T09:00:00Z"));            // inside the window
     assert.equal(reconnected, true, "и не должен выключать его днём");
     await src.requestStop();
 });
@@ -193,18 +193,18 @@ test("свеча старше уже отданной минуты отбрас�
     });
     const got = await drain(src, 2, () => {
         src._accept(candle("AAA", 5));
-        src._accept(candle("BBB", 5));          // CCC молчит, пачка уйдёт по таймеру
+        src._accept(candle("BBB", 5));          // CCC is silent, the batch goes out by the timer
     });
     assert.equal(got.length, 2);
-    // Догрузка после переподключения подаёт старую минуту МОЛЧАВШЕЙ бумаги: по
-    // ней дедупликация не сработает, спасает только граница отданной минуты.
+    // The catch-up after a reconnect feeds an old minute of an instrument that WAS SILENT:
+    // per-instrument deduplication does not catch it, only the released-minute boundary does.
     src._accept(candle("CCC", 2));
     assert.equal(src._buckets.size, 0, "пачка за прошедшую минуту не создаётся");
     assert.equal(src._droppedLate, 1);
     await src.requestStop();
 });
 
-// ── повторная тишина: перезапуск процесса ─────────────────────────────────────
+// ── repeated silence: process restart ─────────────────────────────────────────
 const sessionDay = [{
     dateKey: "2026-08-31", isTradingDay: true,
     startTime: mskDay("2026-08-31T06:50:00Z").toISOString(),

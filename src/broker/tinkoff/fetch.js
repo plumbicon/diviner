@@ -108,12 +108,12 @@ async function findInstrument(api, ticker, classCode) {
     );
 
     if (!instrument) {
-        // Fallback: индексы/индикативы (IMOEX, RTSI, RVI…) не возвращаются
-        // findInstrument как shares — их отдаёт отдельный метод indicatives().
+        // Fallback: indices/indicatives (IMOEX, RTSI, RVI…) are not returned by
+        // findInstrument as shares — a separate indicatives() method serves them.
         const { instruments: indicatives } = await api.instruments.indicatives({});
         const indicative = indicatives.find((item) => item.ticker === ticker);
         if (indicative) {
-            return indicative;   // имеет uid/figi — достаточно для getCandles
+            return indicative;   // has uid/figi — enough for getCandles
         }
         throw new Error(`Instrument ${ticker} with class code ${classCode} not found.`);
     }
@@ -379,10 +379,10 @@ async function main() {
  */
 async function mergeIntoExistingFile({ path, seriesByMinutes, instrument, options }) {
     const existing = await loadDataset(path);
-    // Мультитикерный файл (собранный src/bundle.js) сюда дописывать нельзя: у него
-    // нет общего `series`, и слияние молча оставило бы в файле одну свежую бумагу
-    // вместо всей вселенной. Листинги — источник правды, сборка — производный
-    // артефакт: докачиваем в однобумажный листинг и пересобираем вселенную.
+    // A multi-ticker file (built by src/bundle.js) must not be appended to here: it has no
+    // shared `series`, and the merge would silently leave one fresh instrument in the file
+    // instead of the whole universe. Listings are the source of truth, a bundle is a
+    // derived artifact: append to the single-ticker listing and rebuild the universe.
     if (Array.isArray(existing.metadata?.tickers)) {
         throw new Error(
             `${path} is a multi-ticker bundle (${existing.symbols.length} tickers) — `

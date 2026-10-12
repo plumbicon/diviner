@@ -364,9 +364,9 @@ export class OkxExecutor {
         this.stateManager.syncWithStrategy(strategy);
     }
 
-    // Тот же вызов, что у остальных исполнителей: Strategy.buy/sell передают один
-    // объект. Позиционные аргументы здесь молча превращали объект в размер позиции,
-    // а SL/TP терялись.
+    // The same call as the other executors: Strategy.buy/sell pass a single object.
+    // Positional arguments here silently turned that object into the position size, and
+    // SL/TP were lost.
     buy({ size = null, sl = null, tp = null, exitDeadline = null } = {}) {
         return this._open("long", size, sl, tp, exitDeadline);
     }

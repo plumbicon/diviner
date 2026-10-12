@@ -1,7 +1,7 @@
 import { evaluateStops, evaluateTimeExit } from "./stops.js";
 
 /**
- * Unified, режим-слепой engine.
+ * Unified, mode-blind engine.
  *
  * It owns the tick loop and time, orchestrates SL/TP centrally, and drives the
  * strategy. It talks to a broker only through { data, exec, finalize } — it does
@@ -76,9 +76,9 @@ export class Engine {
                 broker.exec.closePosition("time");
             }
 
-            // Свеча передаётся аргументом: в мультитикерном прогоне история в
-            // strategy.data не копится (её там негде держать), и стратегия берёт
-            // текущую свечу отсюда. Однобумажные стратегии аргумент игнорируют.
+            // The candle is passed as an argument: in a multi-ticker run history is not
+            // accumulated in strategy.data (there is nowhere to keep it), so the strategy
+            // takes the current candle from here. Single-ticker strategies may ignore it.
             await strategy.next(candle);
             broker.exec.syncStrategyState(strategy);
 

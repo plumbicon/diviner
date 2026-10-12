@@ -13,7 +13,7 @@ const minute = (n, close) => ({ datetime: new Date(t0 + n * MIN), open: close, h
 const day = { datetime: new Date(Date.UTC(2026, 0, 5)), open: 90, high: 90, low: 90, close: 90, volume: 1 };
 const meta = (ticker) => ({ ticker, instrument: { ticker, lot: 10 }, intervalMinutes: 1 });
 
-/** Каталог с листингом-приёмником: минутки 0–4 и одна дневная свеча. */
+/** Directory with a target listing: minutes 0–4 and one daily candle. */
 async function workspace() {
     const dir = await mkdtemp(join(tmpdir(), "diviner-append-"));
     const into = join(dir, "DEMO_2026_1m.parquet");
@@ -34,7 +34,7 @@ const closes = async (path, minutes = 1) =>
 test("свежий период дописывается, история и другие интервалы сохраняются", async () => {
     const { dir, into, fresh } = await workspace();
     try {
-        // 3 и 4 перекрываются: биржа могла пересчитать бар — свежая свеча выигрывает.
+        // 3 and 4 overlap: the exchange may have recomputed the bar — the fresh candle wins.
         const src = await fresh("new.parquet", [3, 4, 5, 6].map((n) => minute(n, 200 + n)));
         const { summary } = await append(into, [src]);
 
@@ -50,7 +50,7 @@ test("свежий период дописывается, история и др
 });
 
 test("свежий файл короче листинга — история не укорачивается", async () => {
-    // Ровно та ошибка, от которой команда защищает: скачали кусок и положили на место файла.
+    // Exactly the mistake the command guards against: a fragment downloaded and put in place of the file.
     const { dir, into, fresh } = await workspace();
     try {
         const src = await fresh("short.parquet", [minute(2, 150)]);

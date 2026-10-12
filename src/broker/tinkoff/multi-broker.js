@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * Живой брокер T-Invest — единственный live-путь на MOEX. Вселенная из одного тикера
- * работает так же, как из сотни. Здесь только сборка и утилиты счёта — вся логика в
- * {@link MultiSymbolTinkoffDataSource} и {@link MultiSymbolTinkoffExecutor}.
+ * Live T-Invest broker — the only live path on MOEX. A one-ticker universe works the same
+ * way as a hundred-ticker one. Only assembly and account utilities live here — all the
+ * logic is in {@link MultiSymbolTinkoffDataSource} and {@link MultiSymbolTinkoffExecutor}.
  *
- * Вселенная задаётся списком (`--tickers`) либо файлом (`--universe-file`),
- * который делает `src/universe.js`. Резолв инструментов кэшируется на диск:
- * 97 тикеров через `getInstrumentByTicker` занимают ~40 секунд, и платить их
- * при каждом старте незачем.
+ * The universe is given as a list (`--tickers`) or a file (`--universe-file`) produced by
+ * `src/universe.js`. Instrument resolution is cached on disk: 97 tickers through
+ * `getInstrumentByTicker` take ~40 seconds, and there is no reason to pay that on every
+ * start.
  *
  * Usage:
  *   T_INVEST_TOKEN=<t> diviner src/broker/tinkoff/multi-broker.js \
- *     --strategy <путь-к-стратегии> --account <id> \
+ *     --strategy <path-to-strategy> --account <id> \
  *     --universe-file data/universe.json --intrabar-stops
  */
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -42,7 +42,7 @@ export const options = [
     { flags: "--print-balance", description: "Показать баланс и позиции и выйти", default: false },
     { flags: "--print-history", description: "Показать историю операций и выйти", default: false },
     { flags: "--history-from <date>", description: "Начало периода для --print-history" },
-    // Управление счетами песочницы (без стратегии, только с --sandbox):
+    // Sandbox account management (without a strategy, only with --sandbox):
     { flags: "--list-sandboxes", description: "Список счетов песочницы и выход", default: false },
     { flags: "--create-account", description: "Создать счёт в песочнице", default: false },
     { flags: "--remove-account", description: "Удалить счёт песочницы из --account", default: false },
@@ -52,9 +52,9 @@ export const options = [
 ];
 
 /**
- * Прочитать состав вселенной: явный список важнее файла.
- * @param {object} config - Конфиг CLI.
- * @returns {Promise<{tickers: Array<string>, cache: object|null, path: string|null}>} Вселенная.
+ * Read the universe composition: an explicit list wins over the file.
+ * @param {object} config - CLI config.
+ * @returns {Promise<{tickers: Array<string>, cache: object|null, path: string|null}>} Universe.
  */
 async function readUniverse(config) {
     if (config.tickers) {
@@ -70,16 +70,16 @@ async function readUniverse(config) {
 }
 
 /**
- * Резолв инструментов с кэшем на диске.
+ * Resolve instruments with an on-disk cache.
  *
- * `getInstrumentByTicker` ходит по одному инструменту: на 97 тикерах это ~40
- * секунд перед подпиской. Кэш снимает эту паузу, но лот и ставка риска со
- * временем меняются, поэтому он живёт ограниченный срок.
+ * `getInstrumentByTicker` fetches one instrument at a time: for 97 tickers that is ~40
+ * seconds before subscribing. The cache removes the pause, but lot and risk rate change
+ * over time, so it lives for a limited period.
  *
  * @param {object} client - TinkoffClient.
- * @param {object} universe - Результат readUniverse.
- * @param {number} maxAgeMs - Срок годности кэша.
- * @returns {Promise<Array<object>>} Инструменты.
+ * @param {object} universe - readUniverse result.
+ * @param {number} maxAgeMs - Cache lifetime.
+ * @returns {Promise<Array<object>>} Instruments.
  */
 async function resolveInstruments(client, universe, maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
     const fresh = universe.cache?.resolvedAt
@@ -122,9 +122,9 @@ async function resolveInstruments(client, universe, maxAgeMs = 7 * 24 * 60 * 60 
 }
 
 /**
- * Точка входа плагина: собрать живой мультиинструментный брокер.
- * @param {object} config - Разобранные опции CLI.
- * @returns {Promise<object>} Брокер { data, exec, finalize, metadata, needsCache }.
+ * Plugin entry point: build the live multi-instrument broker.
+ * @param {object} config - Parsed CLI options.
+ * @returns {Promise<object>} Broker { data, exec, finalize, metadata, needsCache }.
  */
 export async function createBroker(config = {}) {
     const token = process.env.T_INVEST_TOKEN || "";
@@ -175,7 +175,7 @@ export async function createBroker(config = {}) {
             tickers: instruments.map((i) => i.ticker),
             instruments: Object.fromEntries(instruments.map((i) => [i.ticker, i])),
         },
-        /** Свернуть сессию: по требованию закрыть позиции, снять подписку, отчитаться. */
+        /** Wind the session down: close positions if asked, drop the subscription, report. */
         async finalize() {
             if (config.closeOnExit) {
                 for (const position of exec.getPositions()) {

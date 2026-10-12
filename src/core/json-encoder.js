@@ -1,5 +1,5 @@
 /**
- * JSON энкодер для результатов бэктеста
+ * JSON encoder for backtest results.
  */
 export function encodeBacktestResult(result) {
     return JSON.stringify(result, (key, value) => {

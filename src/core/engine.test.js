@@ -8,8 +8,8 @@ const t0 = Date.UTC(2026, 0, 5, 7, 0);
 const candle = (n, close = 100) => ({ n, datetime: new Date(t0 + n * MIN), open: close, high: close, low: close, close });
 
 /**
- * Брокер-заглушка: поток из заданных свечей и исполнитель, который записывает каждый
- * вызов движка в общий журнал — по нему проверяется порядок такта.
+ * Broker stub: a stream of the given candles and an executor that records every engine
+ * call into a shared journal — the tick order is checked against it.
  */
 function makeBroker(candles, { intrabarStops = false, position = null, hooks = true } = {}) {
     const calls = [];
@@ -34,7 +34,7 @@ function makeBroker(candles, { intrabarStops = false, position = null, hooks = t
     return { broker, calls };
 }
 
-/** Стратегия, которая только отмечается в журнале. */
+/** A strategy that only records itself in the journal. */
 function probe(calls, data = []) {
     return new (class extends Strategy {
         init() { calls.push("strategy.init"); }

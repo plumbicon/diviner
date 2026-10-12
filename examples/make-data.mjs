@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Синтетические минутные свечи для примеров — чтобы прогнать бэктест без токена
- * брокера и без скачанных листингов.
+ * Synthetic minute candles for the examples — to run a backtest without a broker token
+ * and without downloaded listings.
  *
- * Один тикер — однобумажный листинг, как у `src/broker/tinkoff/fetch.js`.
- * Несколько тикеров — мультитикерный бандл, как у `src/bundle.js`. Цена — случайное
- * блуждание с фиксированным зерном: одинаковые параметры дают одинаковый файл.
- * Торговый день — будни, 10:00–18:39 МСК. Бумага печатает свечу не каждую минуту
- * (`--print-prob`), как тонкие бумаги на бирже: в мультитикерном потоке минута тогда
- * приходит неполной, и стратегия должна это переживать.
+ * One ticker gives a single-ticker listing, like `src/broker/tinkoff/fetch.js` writes.
+ * Several tickers give a multi-ticker bundle, like `src/bundle.js` builds. The price is a
+ * random walk with a fixed seed: the same parameters produce the same file. A trading day
+ * is a weekday, 10:00–18:39 Moscow time. Every instrument but the first prints a candle in
+ * only 85% of minutes, like thin names on the exchange: a minute of the multi-ticker
+ * stream then arrives incomplete, and the strategy has to cope with it.
  *
  * Usage:
  *   node examples/make-data.mjs --out work/examples/demo.parquet --tickers DEMO
@@ -25,13 +25,13 @@ import {
 
 const MINUTE_MS = 60 * 1000;
 const MSK_OFFSET_MS = 3 * 60 * MINUTE_MS;
-const SESSION_START_MIN = 10 * 60;      // 10:00 МСК
-const SESSION_END_MIN = 18 * 60 + 39;   // 18:39 МСК, последняя минута
+const SESSION_START_MIN = 10 * 60;      // 10:00 Moscow
+const SESSION_END_MIN = 18 * 60 + 39;   // 18:39 Moscow, the last minute
 
 /**
- * Генератор псевдослучайных чисел с зерном (mulberry32).
- * @param {number} seed - Зерно.
- * @returns {() => number} Число в [0, 1).
+ * Seeded pseudo-random number generator (mulberry32).
+ * @param {number} seed - Seed.
+ * @returns {() => number} Number in [0, 1).
  */
 function rng(seed) {
     let a = seed >>> 0;
@@ -45,8 +45,8 @@ function rng(seed) {
 }
 
 /**
- * Нормально распределённое число (Бокс — Мюллер).
- * @param {() => number} random - Источник равномерных чисел.
+ * Normally distributed number (Box–Muller).
+ * @param {() => number} random - Source of uniform numbers.
  * @returns {number} N(0, 1).
  */
 function gauss(random) {
@@ -55,9 +55,9 @@ function gauss(random) {
 }
 
 /**
- * Минутные свечи одной бумаги.
+ * Minute candles of one instrument.
  * @param {object} params - { from, days, seed, startPrice, printProb }.
- * @returns {Array<object>} Свечи { datetime, open, high, low, close, volume } по возрастанию времени.
+ * @returns {Array<object>} Candles { datetime, open, high, low, close, volume } by ascending time.
  */
 function candlesFor({ from, days, seed, startPrice, printProb }) {
     const random = rng(seed);
@@ -69,12 +69,12 @@ function candlesFor({ from, days, seed, startPrice, printProb }) {
         const weekday = new Date(midnightMsk).getUTCDay();
         if (weekday === 0 || weekday === 6) continue;
         tradingDays += 1;
-        // Ночной гэп: открытие дня не равно вчерашнему закрытию.
+        // Overnight gap: the day's open differs from yesterday's close.
         price *= Math.exp(0.004 * gauss(random));
         for (let minute = SESSION_START_MIN; minute <= SESSION_END_MIN; minute += 1) {
             const open = price;
             price *= Math.exp(0.0012 * gauss(random));
-            if (random() > printProb) continue;   // минута без сделок — свечи нет
+            if (random() > printProb) continue;   // a minute without trades — no candle
             const close = price;
             const wick = Math.abs(gauss(random)) * 0.0006 * open;
             candles.push({
@@ -93,15 +93,15 @@ function candlesFor({ from, days, seed, startPrice, printProb }) {
 const round = (value) => Math.round(value * 100) / 100;
 
 /**
- * Собрать и записать синтетический датасет.
- * @param {object} params - Параметры.
- * @param {string} params.out - Путь к parquet.
- * @param {Array<string>} params.tickers - Тикеры; один — листинг, несколько — бандл.
- * @param {number} [params.days] - Торговых дней.
- * @param {number} [params.seed] - Зерно.
- * @param {string} [params.from] - Первый календарный день, YYYY-MM-DD (МСК).
- * @param {number} [params.printProb] - Вероятность свечи в минуту у бумаг кроме первой.
- * @returns {Promise<{tickers: Array<string>, candles: number}>} Сводка.
+ * Build and write a synthetic dataset.
+ * @param {object} params - Parameters.
+ * @param {string} params.out - Parquet path.
+ * @param {Array<string>} params.tickers - Tickers; one gives a listing, several a bundle.
+ * @param {number} [params.days] - Trading days.
+ * @param {number} [params.seed] - Seed.
+ * @param {string} [params.from] - First calendar day, YYYY-MM-DD (Moscow).
+ * @param {number} [params.printProb] - Per-minute candle probability for all instruments but the first.
+ * @returns {Promise<{tickers: Array<string>, candles: number}>} Summary.
  */
 export async function generate({ out, tickers, days = 20, seed = 1, from = "2026-01-05", printProb = 0.85 }) {
     if (!tickers?.length) throw new Error("нужен хотя бы один тикер");

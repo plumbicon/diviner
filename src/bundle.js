@@ -179,7 +179,8 @@ export async function bundle(inputs, options = {}) {
         await advance(item.src);
     }
 
-    const symbols = sources.map((s) => s.ticker).sort();
+    // A bundle spanning several periods takes several listings of one instrument.
+    const symbols = [...new Set(sources.map((s) => s.ticker))].sort();
     writer.setMetadata(PARQUET_METADATA_KEY, JSON.stringify({
         source: "bundle",
         tickers: symbols,

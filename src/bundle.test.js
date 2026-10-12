@@ -89,6 +89,25 @@ test("--from cuts minute candles but keeps daily history for features; --to cuts
     }
 });
 
+test("listings of one instrument for different periods list its ticker once", async () => {
+    const { dir, inputs, out } = await workspace();
+    try {
+        const earlier = join(dir, "AAA_2025_1m.parquet");
+        await writeCandleSeriesAsParquet(new Map([[1, [bar("2025-12-30T07:00:00Z", 90)]]]),
+            earlier, { ticker: "AAA", instrument: { ticker: "AAA", lot: 10 }, intervalMinutes: 1 });
+
+        const summary = await bundle([earlier, ...inputs], { out });
+        assert.deepEqual(summary.tickers, ["AAA", "BBB"]);
+
+        const ds = await loadDataset(out);
+        assert.deepEqual(ds.metadata.tickers, ["AAA", "BBB"]);
+        assert.deepEqual(days(ds.bySymbol.get("AAA").get(1)), ["2025-12-30", "2026-01-06", "2026-01-06", "2026-01-07"],
+            "candles of both periods are in place");
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
 test("--tickers selects instruments, an existing file is not overwritten without --force", async () => {
     const { dir, inputs, out } = await workspace();
     try {

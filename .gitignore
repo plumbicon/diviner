@@ -8,6 +8,8 @@ reports/
 # Without the lock file installs are not reproducible: the server and the laptop get different versions.
 !package-lock.json
 AGENTS.md
+# Local Claude Code settings — per machine, not part of the engine.
+.claude/
 **/.DS_Store
 src/strategies/
 

@@ -131,7 +131,7 @@ export async function bundle(inputs, options = {}) {
         const ticker = tickerOfFile(metadata, filePath);
         if (!ticker) {
             await reader.close();
-            console.error(`  ${basename(filePath)}: тикер не определён — пропуск`);
+            console.error(`  ${basename(filePath)}: ticker unknown — skipped`);
             continue;
         }
         if (allow && !allow.has(ticker)) { await reader.close(); continue; }
@@ -197,13 +197,13 @@ export async function bundle(inputs, options = {}) {
 const program = new Command();
 program
     .name("diviner-bundle")
-    .description("Собрать однобумажные листинги в один мультитикерный Parquet")
-    .argument("<inputs...>", "Исходные Parquet-файлы")
-    .requiredOption("--out <path>", "Выходной файл")
-    .option("--tickers <list>", "Только эти тикеры (через запятую)")
-    .option("--from <YYYY-MM-DD>", "Нижняя граница по дате МСК")
-    .option("--to <YYYY-MM-DD>", "Верхняя граница по дате МСК")
-    .option("--force", "Перезаписать существующий выходной файл", false);
+    .description("Merge single-ticker listings into one multi-ticker Parquet")
+    .argument("<inputs...>", "Source Parquet files")
+    .requiredOption("--out <path>", "Output file")
+    .option("--tickers <list>", "Only these tickers (comma-separated)")
+    .option("--from <YYYY-MM-DD>", "Lower bound by Moscow date")
+    .option("--to <YYYY-MM-DD>", "Upper bound by Moscow date")
+    .option("--force", "Overwrite an existing output file", false);
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     program.parse();
@@ -214,8 +214,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         tickers: opts.tickers ? opts.tickers.split(",").map((t) => t.trim()) : null,
     });
     console.log(
-        `${opts.out}: ${summary.tickers.length} тикеров, `
-        + `${summary.rows.toLocaleString("ru-RU")} строк, интервалы [${summary.intervals.join(", ")}]m `
+        `${opts.out}: ${summary.tickers.length} tickers, `
+        + `${summary.rows.toLocaleString("en-US")} rows, intervals [${summary.intervals.join(", ")}]m `
         + `— ${((Date.now() - t0) / 1000).toFixed(1)}s`,
     );
 }

@@ -99,7 +99,7 @@ async function run(broker, strategy) {
     return new Engine().run({ broker, strategy, context, options: { verbose: false } });
 }
 
-test("обе позиции заливаются по open следующей свечи своей бумаги", async () => {
+test("both positions fill at the next open of their own instrument", async () => {
     // Both instruments fall — the shorts are in profit, stops are not touched.
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
@@ -120,7 +120,7 @@ test("обе позиции заливаются по open следующей с
     assert.equal(byTicker.AAA.reason, "eod");
 });
 
-test("стоп срабатывает по своей бумаге и не трогает вторую", async () => {
+test("a stop fires on its own instrument and leaves the other alone", async () => {
     // AAA shoots up (the +5% stop is hit at minute 3), BBB falls calmly.
     const broker = makeBroker({ aaa: [100, 100, 103, 112, 112], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
@@ -128,14 +128,14 @@ test("стоп срабатывает по своей бумаге и не тр�
 
     const byTicker = Object.fromEntries(report.trade_log.map((t) => [t.ticker, t]));
     assert.equal(byTicker.AAA.reason, "sl");
-    assert.equal(byTicker.AAA.exitPrice.toFixed(4), (100 * 1.05).toFixed(4), "выход ровно по уровню стопа");
+    assert.equal(byTicker.AAA.exitPrice.toFixed(4), (100 * 1.05).toFixed(4), "exit exactly at the stop level");
     assert.ok(byTicker.AAA.pnl < 0);
     // The second instrument reached the end of the data and stayed profitable.
     assert.equal(byTicker.BBB.reason, "eod");
     assert.ok(byTicker.BBB.pnl > 0);
 });
 
-test("капитал отмечается по одной точке на минуту, а не на свечу", async () => {
+test("equity is marked once per minute, not per candle", async () => {
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     await run(broker, strategy);
@@ -145,31 +145,31 @@ test("капитал отмечается по одной точке на мин
     assert.ok(broker.exec.equity.every((v) => Number.isFinite(v) && v > 0));
 });
 
-test("одна бумага — одна позиция: повторный ордер по занятой отклоняется", async () => {
+test("one instrument — one position: a repeated order for a busy one is refused", async () => {
     // An exchange constraint, not a policy: one net position per instrument.
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     strategy.tickers = ["AAA", "AAA", "BBB"];
     const report = await run(broker, strategy);
-    assert.equal(report.trade_log.length, 2, "AAA не должна открыться дважды");
+    assert.equal(report.trade_log.length, 2, "AAA must not open twice");
 });
 
-test("сколько бумаг держать и на какую сумму — решает стратегия", async () => {
+test("how many instruments to hold and for how much is the strategy's decision", async () => {
     const prices = { aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] };
     const withOne = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     withOne.maxPositions = 1;
     const one = await run(makeBroker(prices), withOne);
     const two = await run(makeBroker(prices), new ShortBoth(new StreamingCandleSink(), 10000, 0.0005));
 
-    assert.equal(one.trade_log.length, 1, "стратегия сама не открыла вторую");
+    assert.equal(one.trade_log.length, 1, "the strategy itself did not open a second one");
     assert.equal(one.trade_log[0].ticker, "AAA");
     // One position takes all the equity, two split it — a twofold difference.
     const sizeOf = (report, ticker) => report.trade_log.find((t) => t.ticker === ticker).size;
     assert.ok(sizeOf(one, "AAA") >= 2 * sizeOf(two, "AAA"),
-        `1 позиция: ${sizeOf(one, "AAA")}, 2 позиции: ${sizeOf(two, "AAA")}`);
+        `1 position: ${sizeOf(one, "AAA")}, 2 positions: ${sizeOf(two, "AAA")}`);
 });
 
-test("исполнитель не навязывает аллокацию: без бюджета берётся весь кэш", async () => {
+test("the executor does not impose an allocation: without a budget all the cash is used", async () => {
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const strategy = new ShortBoth(new StreamingCandleSink(), 10000, 0.0005);
     strategy.tickers = ["AAA"];
@@ -178,10 +178,10 @@ test("исполнитель не навязывает аллокацию: бе�
     broker.exec.sell = ({ budget, ...order }) => original(order);
     const report = await run(broker, strategy);
     assert.equal(report.trade_log.length, 1);
-    assert.ok(report.trade_log[0].size * 100 >= 9000, "размер посчитан от всего кэша");
+    assert.ok(report.trade_log[0].size * 100 >= 9000, "the size is computed from all the cash");
 });
 
-test("отчёт называет вселенную прогона", async () => {
+test("the report names the run's universe", async () => {
     const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
     const report = await run(broker, new ShortBoth(new StreamingCandleSink(), 10000, 0.0005));
     assert.deepEqual(report.backtest_parameters.symbols, ["AAA", "BBB"]);
@@ -189,7 +189,7 @@ test("отчёт называет вселенную прогона", async () =
     assert.equal(report.performance_metrics.tradesCount, 2);
 });
 
-test("closeAtLast закрывает сразу по цене последней сделки и снимает висящий ордер", () => {
+test("closeAtLast closes at once at the last trade price and drops the pending order", () => {
     const broker = makeBroker({ aaa: [100, 101, 102, 103], bbb: [50, 50, 50, 50] });
     const exec = broker.exec;
     const aaa = bars("AAA", [100, 101, 102, 103]);

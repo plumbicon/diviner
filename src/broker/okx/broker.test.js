@@ -153,7 +153,7 @@ test("buildClientOrderId is alphanumeric and ≤ 32 chars", () => {
     assert.equal(id, again);
 });
 
-test("сигнал стратегии доходит до исполнителя: размер по умолчанию, SL/TP и дедлайн сохранены", async () => {
+test("a strategy signal reaches the executor: default size, SL/TP and deadline kept", async () => {
     // Strategy.sell passes a single object { size, sl, tp, exitDeadline }. OKX used to expect
     // positional arguments, the object became the position size, and the stops were lost.
     const client = makeStubClient({ contractSize: 1, balance: 1000 });
@@ -169,14 +169,14 @@ test("сигнал стратегии доходит до исполнителя
 
     assert.equal(client.orders.length, 1);
     assert.equal(client.orders[0].side, "sell");
-    assert.equal(client.orders[0].amount, 5, "размер по умолчанию, а не объект");
+    assert.equal(client.orders[0].amount, 5, "the default size, not an object");
     const position = exec.getPosition();
     assert.equal(position.sl, 105);
     assert.equal(position.tp, 95);
     assert.equal(position.exitDeadline, deadline);
 });
 
-test("явный размер из сигнала стратегии соблюдается", async () => {
+test("an explicit size from the strategy signal is honoured", async () => {
     const client = makeStubClient({ contractSize: 1, balance: 1000 });
     const exec = makeExecutor(client, { leverage: 1, marginFraction: 0.5 });
     await exec.refreshBalance();

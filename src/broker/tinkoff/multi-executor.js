@@ -234,8 +234,8 @@ export class MultiSymbolTinkoffExecutor {
         if (this.accountRubBalance > block.balanceAt * BLOCK_RELEASE_RATIO) {
             this._blocked.delete(ticker);
             console.log(
-                `[MultiExec] ${ticker}: блокировка снята — касса выросла `
-                + `с ${block.balanceAt.toFixed(0)} до ${this.accountRubBalance.toFixed(0)} ₽.`,
+                `[MultiExec] ${ticker}: block lifted — cash grew `
+                + `from ${block.balanceAt.toFixed(0)} to ${this.accountRubBalance.toFixed(0)} ₽.`,
             );
             return false;
         }
@@ -263,7 +263,7 @@ export class MultiSymbolTinkoffExecutor {
             this._blocked.set(ticker, {
                 permanent: false, balanceAt: this.accountRubBalance, message,
             });
-            console.warn(`[MultiExec] ${ticker}: незнакомый отказ, бумага отложена до роста кассы.`);
+            console.warn(`[MultiExec] ${ticker}: unknown rejection, instrument deferred until cash grows.`);
             return;
         }
         this._blocked.set(ticker, {
@@ -271,9 +271,9 @@ export class MultiSymbolTinkoffExecutor {
         });
         console.warn(
             permanent
-                ? `[MultiExec] ${ticker}: бумага исключена до перезапуска — биржа отказывает постоянно.`
-                : `[MultiExec] ${ticker}: не хватает залога, бумага отложена до роста кассы `
-                    + `(сейчас ${this.accountRubBalance.toFixed(0)} ₽).`,
+                ? `[MultiExec] ${ticker}: instrument excluded until restart — the exchange rejects it permanently.`
+                : `[MultiExec] ${ticker}: insufficient margin, instrument deferred until cash grows `
+                    + `(now ${this.accountRubBalance.toFixed(0)} ₽).`,
         );
     }
 
@@ -336,13 +336,13 @@ export class MultiSymbolTinkoffExecutor {
         if (!slot || !instrument) return null;
 
         if (slot.position || this._inFlight.has(ticker)) {
-            if (this.verbose) console.log(`[MultiExec] ${ticker}: пропуск — бумага уже занята`);
+            if (this.verbose) console.log(`[MultiExec] ${ticker}: skipped — instrument already busy`);
             return null;
         }
         // A safety net in case the strategy did not check the block: otherwise the
         // rejection repeats and the slot is wasted again.
         if (this.isBlocked(ticker)) {
-            if (this.verbose) console.log(`[MultiExec] ${ticker}: пропуск — бумага заблокирована отказом`);
+            if (this.verbose) console.log(`[MultiExec] ${ticker}: skipped — instrument blocked by a rejection`);
             return null;
         }
         // A warm-up candle from the catch-up updates state but must not trade — its
@@ -358,8 +358,8 @@ export class MultiSymbolTinkoffExecutor {
             const ageMs = Date.now() - candleTime;
             if (ageMs > this.maxEntryAgeMs) {
                 console.warn(
-                    `[MultiExec] ${ticker}: вход отменён — свеча старше `
-                    + `${Math.round(ageMs / 1000)}с (порог ${Math.round(this.maxEntryAgeMs / 1000)}с).`,
+                    `[MultiExec] ${ticker}: entry cancelled — candle older than `
+                    + `${Math.round(ageMs / 1000)}s (limit ${Math.round(this.maxEntryAgeMs / 1000)}s).`,
                 );
                 return null;
             }
@@ -368,7 +368,7 @@ export class MultiSymbolTinkoffExecutor {
         const price = this.lastCandle.get(ticker)?.close ?? this.currentCandle?.close;
         const lots = size ?? this._lotsFor(ticker, price, budget);
         if (!Number.isFinite(lots) || lots <= 0) {
-            if (this.verbose) console.log(`[MultiExec] ${ticker}: пропуск — размер 0 (бюджет ${budget})`);
+            if (this.verbose) console.log(`[MultiExec] ${ticker}: skipped — size 0 (budget ${budget})`);
             return null;
         }
 
@@ -401,7 +401,7 @@ export class MultiSymbolTinkoffExecutor {
         const slot = this.slots.get(ticker);
         if (!slot?.position) return null;
         if (this._inFlight.has(ticker)) {
-            if (this.verbose) console.log(`[MultiExec] ${ticker}: выход отложен — по бумаге уже есть заявка`);
+            if (this.verbose) console.log(`[MultiExec] ${ticker}: exit deferred — an order for the instrument is in flight`);
             return null;
         }
         this._clearExitDeadline(ticker);
@@ -454,12 +454,12 @@ export class MultiSymbolTinkoffExecutor {
         slot.exitTimer = setTimeout(() => {
             slot.exitTimer = null;
             if (!slot.position) return;
-            console.log(`[MultiExec] ${ticker}: дедлайн ${new Date(exitDeadline).toISOString()} — закрываем по рынку.`);
+            console.log(`[MultiExec] ${ticker}: deadline ${new Date(exitDeadline).toISOString()} — closing at market.`);
             if (this.closePosition("time", ticker)) return;
             // The close was refused (an order is in flight). The timer is spent, and
             // without a retry the position would outlive the session: there may be no
             // candles near its end, so no candle-driven retry either.
-            console.warn(`[MultiExec] ${ticker}: дедлайн отложен — повтор через ${Math.round(DEADLINE_RETRY_MS / 1000)} с.`);
+            console.warn(`[MultiExec] ${ticker}: deadline deferred — retry in ${Math.round(DEADLINE_RETRY_MS / 1000)} s.`);
             slot.exitTimer = setTimeout(() => {
                 slot.exitTimer = null;
                 if (slot.position) this.closePosition("time", ticker);
@@ -479,7 +479,7 @@ export class MultiSymbolTinkoffExecutor {
     _enqueue(ticker, operation) {
         this.orderQueue = this.orderQueue
             .then(operation)
-            .catch((error) => console.error(`[MultiExec] ${ticker}: очередь заявок упала — ${error.message}`))
+            .catch((error) => console.error(`[MultiExec] ${ticker}: order queue failed — ${error.message}`))
             .finally(() => { this._inFlight.delete(ticker); });
         return this.orderQueue;
     }
@@ -499,7 +499,7 @@ export class MultiSymbolTinkoffExecutor {
             // price and rejects market orders, although the session is formally open.
             const status = await this.client.getTradingStatus?.(instrument.figi);
             if (status && status.marketOrderAvailableFlag === false) {
-                console.warn(`[MultiExec] ${ticker}: рыночные заявки недоступны (аукцион) — вход отменён.`);
+                console.warn(`[MultiExec] ${ticker}: market orders unavailable (auction) — entry cancelled.`);
                 this._abortEntry(ticker);
                 return;
             }
@@ -523,7 +523,7 @@ export class MultiSymbolTinkoffExecutor {
                 + ` (${summary.statusName})`,
             );
             if (executed !== lots && slot.position) {
-                console.warn(`[MultiExec] ${ticker}: исполнено ${executed} из ${lots} лотов — правим состояние.`);
+                console.warn(`[MultiExec] ${ticker}: filled ${executed} of ${lots} lots — adjusting the state.`);
                 slot.position.size = executed;
                 if (executed <= 0) this._abortEntry(ticker);
             }
@@ -536,7 +536,7 @@ export class MultiSymbolTinkoffExecutor {
             // computes them from the decision price — same as in the backtest.
             this._applyFillPrice(ticker, summary.avgPrice);
         } catch (error) {
-            console.error(`[MultiExec] ${ticker}: заявка не прошла — ${error.message}`);
+            console.error(`[MultiExec] ${ticker}: order failed — ${error.message}`);
             this._abortEntry(ticker);
             this._blockTicker(ticker, error.message || "");
         }
@@ -569,8 +569,8 @@ export class MultiSymbolTinkoffExecutor {
         });
         if (this.verbose || Math.abs(drift) >= 0.1) {
             console.log(
-                `[MultiExec] ${ticker}: цена входа уточнена по заливке `
-                + `${avgPrice} (${drift >= 0 ? "+" : ""}${drift.toFixed(2)}% к цене решения).`,
+                `[MultiExec] ${ticker}: entry price set from the fill `
+                + `${avgPrice} (${drift >= 0 ? "+" : ""}${drift.toFixed(2)}% vs the decision price).`,
             );
         }
     }
@@ -597,7 +597,7 @@ export class MultiSymbolTinkoffExecutor {
             });
             const summary = this.client.getOrderExecutionSummary(result);
             const executed = summary.lotsExecuted ?? position.size;
-            if (executed <= 0) throw new Error(`ордер не исполнен (${summary.statusName})`);
+            if (executed <= 0) throw new Error(`order not filled (${summary.statusName})`);
             if (executed < position.size) {
                 // Partially closed — the remainder goes back into the state, otherwise it
                 // would stay on the account unknown to us and unprotected. The state file
@@ -612,7 +612,7 @@ export class MultiSymbolTinkoffExecutor {
                     sl: rest.sl ?? null, tp: rest.tp ?? null, exitDeadline: rest.exitDeadline ?? null,
                 });
                 this._armExitDeadline(ticker, rest.exitDeadline);
-                console.warn(`[MultiExec] ${ticker}: закрыто ${executed} из ${position.size} лотов, остаток под наблюдением.`);
+                console.warn(`[MultiExec] ${ticker}: closed ${executed} of ${position.size} lots, the remainder stays tracked.`);
             }
             this.sessionTrades.push({
                 kind: "close", ticker, reason, lots: executed,
@@ -639,8 +639,8 @@ export class MultiSymbolTinkoffExecutor {
             });
             this._armExitDeadline(ticker, position.exitDeadline);
             console.error(
-                `[MultiExec] ${ticker}: ЗАКРЫТЬ НЕ УДАЛОСЬ (${error.message}). `
-                + "Позиция возвращена в состояние под защиту стопа и дедлайна; попробуем на следующей свече.",
+                `[MultiExec] ${ticker}: CLOSE FAILED (${error.message}). `
+                + "The position is back in the state under its stop and deadline; retrying on the next candle.",
             );
         }
         await this.refreshBalance();
@@ -655,7 +655,7 @@ export class MultiSymbolTinkoffExecutor {
         } catch (error) {
             // Do not fail the tick: keep working with the previous value, but do not mark
             // it fresh, so the read is retried on the next minute.
-            console.error(`[MultiExec] Остаток счёта не получен — ${error.message}`);
+            console.error(`[MultiExec] Account balance not received — ${error.message}`);
         }
         return this.accountRubBalance;
     }
@@ -676,7 +676,7 @@ export class MultiSymbolTinkoffExecutor {
             try {
                 live = await this.client.getInstrumentPosition(instrument.figi, lot);
             } catch (error) {
-                console.error(`[MultiExec] ${ticker}: позицию счёта не получить — ${error.message}`);
+                console.error(`[MultiExec] ${ticker}: account position unavailable — ${error.message}`);
                 continue;
             }
             if (!live) {
@@ -700,10 +700,10 @@ export class MultiSymbolTinkoffExecutor {
             this._armExitDeadline(ticker, exitDeadline);
             restored += 1;
             console.warn(
-                `[MultiExec] ${ticker}: на счёте ${live.side} ${live.lots} лот(ов) — состояние восстановлено`
-                + `${matched ? ` (sl=${saved.sl} tp=${saved.tp})` : ", БЕЗ уровней защиты"}.`,
+                `[MultiExec] ${ticker}: account holds ${live.side} ${live.lots} lot(s) — state restored`
+                + `${matched ? ` (sl=${saved.sl} tp=${saved.tp})` : ", WITHOUT protective levels"}.`,
             );
         }
-        console.log(`[MultiExec] Сверка со счётом: ${restored} открытых позиций из ${this.byTicker.size} бумаг.`);
+        console.log(`[MultiExec] Account reconciled: ${restored} open positions across ${this.byTicker.size} instruments.`);
     }
 }

@@ -39,7 +39,7 @@ function multiSource() {
     });
 }
 
-test("история отдаётся по запрошенной бумаге", async () => {
+test("history is served for the requested instrument", async () => {
     const src = multiSource();
     const aaa = await src.getHistory({ ticker: "AAA", interval: "1m" });
     const bbb = await src.getHistory({ ticker: "BBB", interval: "1m" });
@@ -50,7 +50,7 @@ test("история отдаётся по запрошенной бумаге",
     assert.equal(bbb[0].close, 200.5);
 });
 
-test("окно from/to режется двоичным поиском по колонкам", async () => {
+test("a from/to window is cut by binary search over the columns", async () => {
     const src = multiSource();
     const slice = await src.getHistory({
         ticker: "AAA", interval: "1m",
@@ -59,17 +59,17 @@ test("окно from/to режется двоичным поиском по ко�
     assert.deepEqual(slice.map((c) => c.datetime.getTime() - base).map((v) => v / MIN), [5, 6, 7]);
 });
 
-test("мультитикерный датасет требует явного тикера", async () => {
+test("a multi-ticker dataset requires an explicit ticker", async () => {
     const src = multiSource();
     await assert.rejects(() => src.getHistory({ interval: "1m" }), /needs an explicit ticker/);
 });
 
-test("неизвестный тикер называет доступные", async () => {
+test("an unknown ticker lists the available ones", async () => {
     const src = multiSource();
     await assert.rejects(() => src.getHistory({ ticker: "ZZZ", interval: "1m" }), /no candles for ZZZ/);
 });
 
-test("расписание выводится из свечей конкретной бумаги", async () => {
+test("the schedule is derived from a specific instrument's candles", async () => {
     const src = multiSource();
     const aaa = await src.getTradingSchedule({ ticker: "AAA" });
     const bbb = await src.getTradingSchedule({ ticker: "BBB" });
@@ -79,7 +79,7 @@ test("расписание выводится из свечей конкретн
     assert.equal(new Date(bbb[0].startTime).getTime(), base + 10 * MIN);
 });
 
-test("поток слияния идёт по возрастанию времени и несёт тикер", async () => {
+test("the merge stream goes by ascending time and carries the ticker", async () => {
     const src = multiSource();
     const out = [];
     for await (const candle of src.stream()) out.push(candle);
@@ -89,7 +89,7 @@ test("поток слияния идёт по возрастанию време�
     assert.ok(out.some((c) => c.ticker === "BBB"));
 });
 
-test("инструмент берётся по бумаге, а не из общих метаданных", () => {
+test("the instrument is taken per ticker, not from the shared metadata", () => {
     const src = multiSource();
     assert.equal(src.getInstrument("AAA").lot, 10);
     assert.equal(src.getInstrument("BBB").lot, 1);

@@ -7,16 +7,16 @@ const at = new Date("2026-10-08T04:00:00.000Z");
 // The key the function produced before it moved out of the removed single-ticker broker.
 const EXPECTED = "963642a9-b583-5bbb-8d89-5ef53aaf9712";
 
-test("ключ заявки — UUIDv5: песочница и боевой API принимают только UUID", () => {
+test("the order key is a UUIDv5: the sandbox and the live API accept only UUIDs", () => {
     assert.match(buildOrderId({ tag: "div", ticker: "SBER", action: "open", direction: "sell", at }), UUID);
 });
 
-test("ключ детерминирован: повтор той же заявки в ту же секунду брокер отбросит как дубль", () => {
+test("the key is deterministic: the broker drops a repeat of the same order in the same second as a duplicate", () => {
     const params = { tag: "div", ticker: "SBER", action: "open", direction: "sell", at };
     assert.equal(buildOrderId(params), buildOrderId({ ...params }));
 });
 
-test("ключ различает бумагу, действие, направление, метку и секунду", () => {
+test("the key tells apart instrument, action, direction, tag and second", () => {
     const base = { tag: "div", ticker: "SBER", action: "open", direction: "sell", at };
     const ids = new Set([
         buildOrderId(base),
@@ -29,7 +29,7 @@ test("ключ различает бумагу, действие, направл
     assert.equal(ids.size, 6);
 });
 
-test("ключ не меняется при переносе функции между модулями", () => {
+test("the key does not change when the function moves between modules", () => {
     // Changing the algorithm would silently break order idempotency after a bot restart.
     assert.equal(
         buildOrderId({ tag: "a", ticker: "SBER", action: "open", direction: "sell", at }),

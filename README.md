@@ -1,17 +1,17 @@
 # Diviner
 
-**Diviner** — экосистема для бэктестинга и live-трейдинга торговых стратегий: загрузка данных,
-конвертация в Parquet, бэктесты и торговля в реальном времени через биржевых брокеров — Tinkoff
-Investments API (MOEX) и OKX (крипта).
+**Diviner** is an ecosystem for backtesting and live trading of trading strategies: data download,
+conversion to Parquet, backtests and real-time trading through exchange brokers — the Tinkoff
+Investments API (MOEX) and OKX (crypto).
 
-Архитектура построена вокруг одного принципа: **брокер — единственный носитель различия между
-backtest и live**. Движок один и слеп — он тактирует поток свечей, централизованно оркеструет
-SL/TP и передаёт сигналы брокеру, ничего не зная про деньги, режим и источник данных. Один и тот
-же файл стратегии без изменений гоняется и на исторических Parquet-данных, и на боевом счёте.
+The architecture rests on one principle: **the broker is the only thing that differs between
+backtest and live**. There is a single, blind engine — it clocks the candle stream, orchestrates
+SL/TP centrally and passes signals to the broker, knowing nothing about money, mode or the data
+source. The same strategy file runs unchanged on historical Parquet data and on a live account.
 
-## Быстрый старт
+## Quick start
 
-Без токена и без данных — на синтетических свечах ([`examples/`](examples/README.md)):
+No token and no data — on synthetic candles ([`examples/`](examples/README.md)):
 
 ```bash
 npm install
@@ -20,104 +20,101 @@ node src/diviner.js src/broker/simulated/broker.js work/examples/demo.parquet \
   --strategy examples/strategies/sma-cross/sma-cross.js --balance 10000
 ```
 
-С данными MOEX и брокером:
+With MOEX data and the broker:
 
 ```bash
 export T_INVEST_TOKEN=<your-token>
 
-# бэктест всех тикеров (параллельно, worker_threads)
-node scripts/backtest.mjs --strategy <ИМЯ> --year 2026 --leverage 4 --intrabar-stops
+# backtest every ticker (in parallel, worker_threads)
+node scripts/backtest.mjs --strategy <NAME> --year 2026 --leverage 4 --intrabar-stops
 
-# бэктест одного инструмента
+# backtest one instrument
 diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
-  --strategy <путь-к-стратегии> --balance 10000 --commission 0.0005
+  --strategy <path-to-strategy> --balance 10000 --commission 0.0005
 
-# live (sandbox) на вселенной бумаг; одна бумага — --tickers SBER
-diviner src/broker/tinkoff/multi-broker.js --strategy <путь-к-стратегии> \
+# live (sandbox) on a universe of instruments; a single instrument is --tickers SBER
+diviner src/broker/tinkoff/multi-broker.js --strategy <path-to-strategy> \
   --sandbox --account <id> --universe-file data/universe.json --intrabar-stops
 
-# загрузка свечей MOEX → Parquet
+# download MOEX candles → Parquet
 T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-date 2024-01-01 \
   --till-date 2024-12-31 --interval 1 --parquet > data/tinkoff/SBER_2024_1m.parquet
 
-# отобрать шортируемые ликвидные бумаги через API (список тикеров в stdout)
+# select shortable liquid shares through the API (ticker list on stdout)
 T_INVEST_TOKEN=<token> node src/universe.js --table
 
-# дописать свежий период к существующему листингу (только рост, без укорачивания)
+# append a fresh period to an existing listing (growth only, never shortening)
 node src/append.js --into data/tinkoff/ALRS_2026_1m.parquet /tmp/ALRS_fresh.parquet
 
-# сборка вселенной в один мультитикерный Parquet (для кросс-секционных стратегий)
+# build a universe into one multi-ticker Parquet (for cross-sectional strategies)
 node src/bundle.js --out data/tinkoff/CORE62_2026_1m.parquet \
   --tickers ALRS,ROSN,SBER --from 2026-01-01 --to 2026-06-08 data/tinkoff/*_2026_1m.parquet
 ```
 
-### Состав вселенной
+### Universe composition
 
-`src/universe.js` спрашивает у брокера все акции и отбирает пригодные к торговле
-по флагам инструмента: `shortEnabledFlag` (шорт разрешён), `liquidityFlag`
-(ликвидность), `apiTradeAvailableFlag` и `sellAvailableFlag`, за вычетом
-внебиржи, блокировок и бумаг только для квалов; плюс порог по глубине минутной
-истории (`--min-history-days`). Отдельно считается стоимость лота — на счёте в
-10 000 ₽ с четырьмя слотами бумага с лотом дороже 2 500 ₽ не покупается физически
+`src/universe.js` asks the broker for every share and keeps the tradeable ones by instrument flags:
+`shortEnabledFlag` (shorting allowed), `liquidityFlag` (liquidity), `apiTradeAvailableFlag` and
+`sellAvailableFlag`, minus OTC, blocked and qualified-investor-only instruments, plus a minimum
+depth of minute history (`--min-history-days`). Lot cost is computed separately — on a 10,000 ₽
+account with four slots an instrument whose lot costs more than 2,500 ₽ cannot physically be bought
 (`--max-lot-cost`).
 
-Смысл в том, чтобы состав вселенной обновлялся сам: бумага, которой отключили
-шорт, выпадает из списка на следующем запуске, а не живёт в захардкоженной
-константе, пока кто-то не заметит. `--show-rejected` показывает, кого и почему
-отсеяли — без этого неожиданное исчезновение бумаги превращается в гадание.
+The point is that the universe updates itself: an instrument whose short was disabled drops out of
+the list on the next run instead of living in a hard-coded constant until someone notices.
+`--show-rejected` shows who was rejected and why — without it an instrument that unexpectedly
+disappears turns debugging into guesswork.
 
-### Мультитикерные датасеты
+### Multi-ticker datasets
 
-Кросс-секционной стратегии нужен доступ к любой бумаге вселенной, а не только к
-той, на которой её запустили. `src/bundle.js` сливает однобумажные листинги в
-один Parquet, помечая каждую строку тикером; исходники только читаются, а
-существующий выход без `--force` не перезаписывается.
+A cross-sectional strategy needs access to any instrument of the universe, not only the one it was
+started on. `src/bundle.js` merges single-ticker listings into one Parquet, tagging every row with
+its ticker; the sources are only read, and an existing output is not overwritten without `--force`.
 
-Такой файл `loadDataset` читает **колонками** (`src/core/candle-series.js`):
-свеча-объект стоит ~259 байт в куче V8, поэтому вселенная за год (~40 млн свечей)
-объектами не помещается в лимит кучи вовсе. Колонки — 52 байта на свечу, лежат
-вне кучи, и объект собирается только при обращении `at(i)`. Замер на core62 за
-январь–июнь 2026: 7.5 млн свечей — 370 МБ колонками против 1.8 ГБ объектами,
-загрузка 6.5 с.
+`loadDataset` reads such a file **as columns** (`src/core/candle-series.js`): a candle object costs
+~259 bytes of V8 heap, so a year of the universe (~40M candles) does not fit the heap limit as
+objects at all. Columns take 52 bytes per candle, live outside the heap, and an object is built only
+on `at(i)`. Measured on core62 for January–June 2026: 7.5M candles — 370 MB as columns against
+1.8 GB as objects, loaded in 6.5 s.
 
-Датасет отдаёт `bySymbol` (тикер → интервал → серия), `symbols`, `instruments`
-(лот/биржа/figi) и `mergeStream(minutes)` — хронологический поток по всей
-вселенной слиянием, без копирования данных. Однобумажные листинги читаются
-прежним путём, массивами объектов: их поведение не меняется.
+The dataset provides `bySymbol` (ticker → interval → series), `symbols`, `instruments`
+(lot/exchange/figi) and `mergeStream(minutes)` — a chronological stream over the whole universe by
+merging, without copying data. Single-ticker listings are read the old way, as object arrays: their
+behaviour does not change.
 
-Интерфейс серии — подмножество `Array` (`length`, `at(i)`, `slice()`, итератор),
-поэтому потребителю безразлично, массив ему дали или колонки. Единственное
-требование: обращаться через `at(i)`, а не `[i]`.
+The series interface is a subset of `Array` (`length`, `at(i)`, `slice()`, the iterator), so a
+consumer does not care whether it got an array or columns. The only requirement: use `at(i)`, not
+`[i]`.
 
-Полная CLI-справка (все опции backtest/live) — [`devs/usage.md`](devs/usage.md).
+The full CLI reference (every backtest/live option) is in [`devs/usage.md`](devs/usage.md).
 
-## Тесты
+## Tests
 
 ```bash
 npm test
 ```
 
-## Структура проекта
+## Project layout
 
 ```
 diviner/
-├── diviner              sh-обёртка → node src/diviner.js
-├── scripts/             backtest.mjs (батч-бэктест) · convert.mjs · merge-okx-orderbook.mjs
+├── diviner              sh wrapper → node src/diviner.js
+├── scripts/             backtest.mjs (batch backtest) · convert.mjs · merge-okx-orderbook.mjs
 ├── src/
-│   ├── diviner.js        точка входа: diviner <broker-path> [опции]
-│   ├── universe.js       отбор вселенной через API · bundle.js — бандл · append.js — дозапись листинга
-│   ├── broker/           simulated (бэктест) · tinkoff (live MOEX) · okx (крипта) · common
-│   ├── core/             режим-слепое ядро: engine, stops, portfolio, strategy, данные, метрики
-│   └── strategies/       стратегии — отдельный репозиторий, в git движка не входит
-├── examples/             стратегии-примеры и генератор синтетических свечей
-├── data/                 Parquet-свечи (не в git): tinkoff/ (MOEX) · okx/ (крипта)
-├── work/                 артефакты замеров (не в git)
-└── devs/                 документация для разработчиков
+│   ├── diviner.js        entry point: diviner <broker-path> [options]
+│   ├── universe.js       universe selection via the API · bundle.js — bundle · append.js — listing append
+│   ├── broker/           simulated (backtest) · tinkoff (live MOEX) · okx (crypto) · common
+│   ├── core/             mode-blind core: engine, stops, portfolio, strategy, data, metrics
+│   └── strategies/       strategies — a separate repository, not part of the engine's git
+├── examples/             example strategies and a synthetic candle generator
+├── data/                 Parquet candles (not in git): tinkoff/ (MOEX) · okx/ (crypto)
+├── work/                 measurement artifacts (not in git)
+└── devs/                 developer documentation
 ```
 
-## Документация для разработчиков → [`devs/`](devs/)
+## Developer documentation → [`devs/`](devs/)
 
-- [`devs/structure.md`](devs/structure.md) — архитектура: как взаимодействуют брокер, движок и стратегия на программном уровне.
-- [`devs/usage.md`](devs/usage.md) — CLI-справка: backtest / live / fetch / convert / аккаунт-утилиты, цикл разработки.
-- [`examples/`](examples/README.md) — две стратегии-примера и синтетические данные: с чего начать свою стратегию.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — правила разработки: стиль, тесты, документация, данные.
+- [`devs/structure.md`](devs/structure.md) — architecture: how the broker, the engine and the strategy interact in code.
+- [`devs/usage.md`](devs/usage.md) — CLI reference: backtest / live / fetch / convert / account utilities.
+- [`examples/`](examples/README.md) — two example strategies and synthetic data: where to start your own strategy.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development rules: style, tests, documentation, data.

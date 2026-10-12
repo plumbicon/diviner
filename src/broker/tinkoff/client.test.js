@@ -5,7 +5,7 @@ import { OrderExecutionReportStatus } from "tinkoff-invest-api/dist/generated/or
 
 // The TinkoffInvestApi constructor opens nothing, so a client can be built without network.
 
-test("фасад отдаёт работу со свечами стриму", async () => {
+test("the facade delegates candle work to the stream", async () => {
     const client = new TinkoffClient("t.test");
     const calls = [];
     client.candles = {
@@ -20,12 +20,12 @@ test("фасад отдаёт работу со свечами стриму", as
     assert.deepEqual(calls, [["subscribe", 4], ["restart", "silence"], ["stop"], ["stop"]]);
 });
 
-test("заявка до init() — понятная ошибка, а не падение на undefined", async () => {
+test("an order before init() gives a clear error instead of failing on undefined", async () => {
     const client = new TinkoffClient("t.test");
     await assert.rejects(client.postOrder({ figi: "F", quantity: 1, direction: "sell" }), /Call init\(\) first/);
 });
 
-test("сводка исполнения заявки читает статус, лоты и цену", () => {
+test("the order execution summary reads status, lots and price", () => {
     const client = new TinkoffClient("t.test");
     const summary = client.getOrderExecutionSummary({
         executionReportStatus: OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_FILL,

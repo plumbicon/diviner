@@ -14,7 +14,7 @@ const sample = [
     candle(3_000, 40, "BBB"),
 ];
 
-test("at() воспроизводит свечу-объект поле в поле", () => {
+test("at() reproduces the candle object field by field", () => {
     const series = CandleSeries.from(sample);
     assert.equal(series.length, sample.length);
     for (let i = 0; i < sample.length; i += 1) {
@@ -27,7 +27,7 @@ test("at() воспроизводит свечу-объект поле в пол
     }
 });
 
-test("отрицательный индекс и выход за границы — как у Array.at", () => {
+test("negative index and out of bounds — like Array.at", () => {
     const series = CandleSeries.from(sample);
     assert.equal(series.at(-1).close, sample.at(-1).close);
     assert.equal(series.at(-4).close, sample.at(-4).close);
@@ -35,7 +35,7 @@ test("отрицательный индекс и выход за границы 
     assert.equal(series.at(-5), undefined);
 });
 
-test("slice() — представление без копирования, семантика Array.slice", () => {
+test("slice() — a view without copying, Array.slice semantics", () => {
     const series = CandleSeries.from(sample);
     const view = series.slice(1, 3);
     assert.equal(view.length, 2);
@@ -50,12 +50,12 @@ test("slice() — представление без копирования, се
     assert.equal(view.slice(1).at(0).close, sample[2].close);
 });
 
-test("итератор обходит серию в порядке индексов", () => {
+test("the iterator walks the series in index order", () => {
     const series = CandleSeries.from(sample);
     assert.deepEqual([...series].map((c) => c.close), sample.map((c) => c.close));
 });
 
-test("двоичный поиск по времени", () => {
+test("binary search by time", () => {
     const series = CandleSeries.from(sample);
     assert.equal(series.lowerBound(2_000), 1);   // the first candle exactly at 2000
     assert.equal(series.upperBound(2_000), 3);   // the first one strictly after 2000
@@ -64,13 +64,13 @@ test("двоичный поиск по времени", () => {
     assert.equal(series.upperBound(0), 0);
 });
 
-test("серия без тикеров не заводит колонку символов", () => {
+test("a series without tickers creates no symbol column", () => {
     const series = CandleSeries.from([candle(1_000, 10), candle(2_000, 20)]);
     assert.equal(series.sym, null);
     assert.equal(series.at(0).ticker, undefined);
 });
 
-test("накопитель переживает рост ёмкости без потери данных", () => {
+test("the accumulator survives capacity growth without losing data", () => {
     const builder = new CandleSeriesBuilder({ capacity: 2 });
     const many = Array.from({ length: 1_000 }, (_, i) => candle(i * 60_000, i + 1, i % 2 ? "AAA" : "BBB"));
     for (const c of many) builder.push(c);
@@ -82,7 +82,7 @@ test("накопитель переживает рост ёмкости без �
     assert.equal(series.symbols.length, 2);
 });
 
-test("at() отдаёт свежий объект — потребитель может его хранить и править", () => {
+test("at() returns a fresh object — the consumer may keep and modify it", () => {
     const series = CandleSeries.from(sample);
     const first = series.at(0);
     first.close = -1;

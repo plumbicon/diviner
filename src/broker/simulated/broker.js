@@ -53,8 +53,8 @@ export function loadShortLeverageCaps(file) {
         const dshort = Number(typeof value === "object" && value !== null ? value.dshort : value);
         if (Number.isFinite(dshort) && dshort > 0) caps.set(ticker, 1 / dshort);
     }
-    if (caps.size === 0) throw new Error(`--risk-rates: в ${file} нет ни одной ставки dshort`);
-    console.error(`[SimulatedBroker] ставки риска: ${caps.size} бумаг, плечо шорта ограничено 1/dshort`);
+    if (caps.size === 0) throw new Error(`--risk-rates: ${file} holds no dshort rates`);
+    console.error(`[SimulatedBroker] risk rates: ${caps.size} instruments, short leverage capped at 1/dshort`);
     return (ticker) => caps.get(ticker) ?? Infinity;
 }
 

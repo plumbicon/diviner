@@ -38,7 +38,7 @@ test("no touch → null; no position/candle → null", () => {
     assert.equal(evaluateIntrabarStop(pos, null), null);
 });
 
-test("трейлинг отличается от защитного стопа по расположению уровня", () => {
+test("a trailing stop is told from a protective stop by the level's position", () => {
     // Short: the protective stop is above the entry, the trailing stop arms only after a favourable move.
     assert.equal(classifyStopExit({ side: "short", entryPrice: 100, sl: 105 }), "sl");
     assert.equal(classifyStopExit({ side: "short", entryPrice: 100, sl: 98 }), "trail");

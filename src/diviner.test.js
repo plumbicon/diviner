@@ -22,24 +22,24 @@ function slowStream() {
     };
 }
 
-test("writeFully ждёт подтверждения записи, а не возврата write()", async () => {
+test("writeFully waits for the write acknowledgement, not for write() to return", async () => {
     const s = slowStream();
     let done = false;
-    const p = writeFully(s, "отчёт").then(() => { done = true; });
+    const p = writeFully(s, "report").then(() => { done = true; });
 
     await new Promise((r) => setImmediate(r));
-    assert.equal(s.chunks.join(""), "отчёт", "данные переданы в поток");
-    assert.equal(done, false, "но промис ещё не разрешён — подтверждения не было");
+    assert.equal(s.chunks.join(""), "report", "data was handed to the stream");
+    assert.equal(done, false, "but the promise is not resolved yet — no acknowledgement came");
 
     s.flush();
     await p;
-    assert.equal(done, true, "разрешается только после подтверждения");
+    assert.equal(done, true, "resolves only after the acknowledgement");
 });
 
-test("writeFully отклоняется при ошибке записи", async () => {
+test("writeFully rejects on a write error", async () => {
     const s = slowStream();
-    const p = writeFully(s, "отчёт");
+    const p = writeFully(s, "report");
     await new Promise((r) => setImmediate(r));
-    s.flush(new Error("канал закрыт"));
-    await assert.rejects(p, /канал закрыт/);
+    s.flush(new Error("pipe closed"));
+    await assert.rejects(p, /pipe closed/);
 });

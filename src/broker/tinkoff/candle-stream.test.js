@@ -32,7 +32,7 @@ function stubbedStream(subscribeCandles) {
     return stream;
 }
 
-test("сторож не запускает второе переподключение поверх идущего", async () => {
+test("the watchdog does not start a second reconnect on top of a running one", async () => {
     let starts = 0;
     let release;
     const stream = stubbedStream(async () => {
@@ -43,29 +43,29 @@ test("сторож не запускает второе переподключе
     stream._scheduleReconnect(new Error("stream error"));
     await settle();                                       // timer fired, subscription hangs
 
-    assert.equal(starts, 1, "переподключение началось");
-    assert.equal(stream.reconnectTimer, null, "таймер обнулён в начале колбэка");
+    assert.equal(starts, 1, "the reconnect started");
+    assert.equal(stream.reconnectTimer, null, "the timer is cleared at the start of the callback");
 
     // The health check sees a stream that is not connected and no timer pending. Before
     // the fix it started a second reconnect on top of the running one.
-    assert.equal(Boolean(stream.api.stream?.market?.connected), false, "стрим ещё не поднялся");
+    assert.equal(Boolean(stream.api.stream?.market?.connected), false, "the stream is not up yet");
     stream._checkHealth();
     await settle();
-    assert.equal(starts, 1, "второго переподключения поверх идущего не случилось");
-    assert.equal(stream.isReconnecting, true, "признак работы держится до конца");
+    assert.equal(starts, 1, "no second reconnect on top of the running one");
+    assert.equal(stream.isReconnecting, true, "the in-progress flag holds until the end");
 
     // A direct call of the scheduler is dropped as well while the flag is up.
     stream._scheduleReconnect(new Error("again"));
     await settle();
-    assert.equal(starts, 1, "планировщик отбрасывает попытку во время работы");
+    assert.equal(starts, 1, "the scheduler drops an attempt while one is running");
 
     release();
     await settle();
-    assert.equal(stream.isReconnecting, false, "флаг снят по завершении");
+    assert.equal(stream.isReconnecting, false, "the flag is cleared on completion");
     stream.isClosing = true;
 });
 
-test("упавшее переподключение повторяется, флаг не запирает повтор", async () => {
+test("a failed reconnect is retried, the flag does not lock the retry", async () => {
     let starts = 0;
     const stream = stubbedStream(async () => {
         starts += 1;
@@ -75,9 +75,9 @@ test("упавшее переподключение повторяется, фл
     stream._scheduleReconnect(new Error("stream error"));
     await waitFor(() => starts === 3 && !stream.isReconnecting);   // delays grow 1, 2, 4 ms
 
-    assert.equal(starts, 3, "две неудачи и успех на третьей попытке");
-    assert.equal(stream.isReconnecting, false, "флаг снят");
-    assert.equal(stream.reconnectAttempts, 0, "счётчик сброшен успехом");
+    assert.equal(starts, 3, "two failures and success on the third attempt");
+    assert.equal(stream.isReconnecting, false, "the flag is cleared");
+    assert.equal(stream.reconnectAttempts, 0, "success resets the counter");
     stream.isClosing = true;
 });
 
@@ -116,7 +116,7 @@ function queuedStream(markets) {
     return stream;
 }
 
-test("зависшая подписка не запирает переподключение: стрим брошен, повтор в новом", async () => {
+test("a hung subscription does not lock the reconnect: the stream is abandoned, the retry goes into a new one", async () => {
     // 2026-10-08: the subscription awaited its status with no timeout, isReconnecting
     // stayed up for 7 hours, and every later stream error was dropped.
     const dead = fakeMarket({ hang: true });
@@ -126,56 +126,56 @@ test("зависшая подписка не запирает переподкл
     stream._scheduleReconnect(new Error("read ECONNRESET"));
     await waitFor(() => fresh.subscribes === 1 && !stream.isReconnecting);
 
-    assert.equal(dead.subscribes, 1, "первая попытка ушла в молчащий стрим");
-    assert.equal(dead.cancelled, true, "брошенный вызов закрыт");
-    assert.equal(dead.emitter.listenerCount("data"), 0, "обработчики зависшей подписки сняты");
-    assert.equal(stream.api.stream.market, fresh, "на месте брошенного — новый стрим");
-    assert.equal(fresh.subscribes, 1, "повтор подписался в новом стриме");
-    assert.equal(stream.isReconnecting, false, "флаг не заперт");
-    assert.equal(stream.reconnectAttempts, 0, "успех сбросил счётчик");
+    assert.equal(dead.subscribes, 1, "the first attempt went into the silent stream");
+    assert.equal(dead.cancelled, true, "the abandoned call is closed");
+    assert.equal(dead.emitter.listenerCount("data"), 0, "the hung subscription's handlers are removed");
+    assert.equal(stream.api.stream.market, fresh, "a new stream replaces the abandoned one");
+    assert.equal(fresh.subscribes, 1, "the retry subscribed in the new stream");
+    assert.equal(stream.isReconnecting, false, "the flag is not stuck");
+    assert.equal(stream.reconnectAttempts, 0, "success reset the counter");
     stream.isClosing = true;
 });
 
-test("стрим без свечей и пингов дольше порога бросается и переподписывается", async () => {
+test("a stream without candles and pings beyond the threshold is abandoned and resubscribed", async () => {
     const silent = fakeMarket();
     const fresh = fakeMarket();
     const stream = queuedStream([silent, fresh]);
     stream.silenceMs = 1000;
 
     stream._checkHealth(stream.lastMessageAt + 500);
-    assert.equal(stream.api.stream.market, silent, "в пределах порога стрим не трогаем");
+    assert.equal(stream.api.stream.market, silent, "within the threshold the stream is left alone");
 
     const before = stream.lastMessageAt;
     await settle(2);
     silent.emitter.emit("data", { ping: {} });
-    assert.ok(stream.lastMessageAt > before, "ping брокера — признак жизни");
+    assert.ok(stream.lastMessageAt > before, "a broker ping is a sign of life");
 
     stream._checkHealth(stream.lastMessageAt + 1500);
-    assert.equal(stream.api.stream.market, fresh, "молчащий стрим заменён");
+    assert.equal(stream.api.stream.market, fresh, "the silent stream is replaced");
     await waitFor(() => fresh.subscribes === 1);
-    assert.equal(fresh.subscribes, 1, "подписка восстановлена в новом стриме");
+    assert.equal(fresh.subscribes, 1, "the subscription is restored in the new stream");
     stream.isClosing = true;
 });
 
-test("переподписка по сторожу идёт в новый вызов, а не в молчащий", async () => {
+test("a watchdog resubscription goes into a new call, not the silent one", async () => {
     const stale = fakeMarket();
     const fresh = fakeMarket();
     const stream = queuedStream([stale, fresh]);
 
     await stream.restart("candle silence");
-    assert.equal(stale.subscribes, 0, "в старый вызов подписка не отправлялась");
+    assert.equal(stale.subscribes, 0, "no subscription was sent into the old call");
     assert.equal(stale.cancelled, true);
     assert.equal(fresh.subscribes, 1);
     assert.equal(stream.isReconnecting, false);
 
     stream.isReconnecting = true;
     await assert.rejects(stream.restart("again"), /already in progress/,
-        "поверх идущего переподключения второе не запускается");
+        "no second reconnect starts on top of a running one");
     stream.isReconnecting = false;
     stream.isClosing = true;
 });
 
-test("свеча стрима переводится в форму движка", () => {
+test("a stream candle is converted to the engine's shape", () => {
     const candle = formatCandle({
         candle: {
             figi: "F", instrumentUid: "U", time: new Date("2026-10-08T04:00:00Z"),

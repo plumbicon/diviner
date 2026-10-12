@@ -94,10 +94,10 @@ export async function append(intoPath, sources, options = {}) {
 const program = new Command();
 program
     .name("diviner-append")
-    .description("Дописать свежий период к существующему листингу (только рост, без укорачивания)")
-    .argument("<sources...>", "Файлы со свежими свечами")
-    .requiredOption("--into <path>", "Листинг-приёмник")
-    .option("--dry-run", "Показать, что получится, ничего не записывая", false);
+    .description("Append a fresh period to an existing listing (growth only, never shortening)")
+    .argument("<sources...>", "Files with fresh candles")
+    .requiredOption("--into <path>", "Target listing")
+    .option("--dry-run", "Show the result without writing anything", false);
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     program.parse();

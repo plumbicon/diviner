@@ -20,7 +20,7 @@ function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = 
         accountId: "acc1",
         async getRubBalance() {
             state.calls += 1;
-            if (state.fail) throw new Error("брокер молчит");
+            if (state.fail) throw new Error("the broker is silent");
             return state.balance;
         },
         async getInstrumentPosition(figi) { return positions[figi] ?? null; },
@@ -32,7 +32,7 @@ function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = 
         async postMarketOrder(order) {
             placed.push(order);
             if (orders.throwOn === figiToTicker[order.figi]) {
-                throw new Error(orders.throwMessage ?? "отказ биржи");
+                throw new Error(orders.throwMessage ?? "exchange rejection");
             }
             return { __lots: orders.executedLots ?? order.quantity };
         },
@@ -57,70 +57,70 @@ const candle = (ticker, close, extra = {}) => ({
     ticker, datetime: new Date(), open: close, high: close + 1, low: close - 1, close, volume: 1, ...extra,
 });
 
-test("бюджет переводится в лоты с округлением вниз", async () => {
+test("the budget is converted to lots, rounded down", async () => {
     const { exec } = build();
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("BBB", 100));           // lot 10 → 1 lot ≈ 1010 ₽ with the reserve
     const position = exec.sell({ ticker: "BBB", budget: 2500 });
-    assert.equal(position.size, 2, "2 лота, не 2.5");
+    assert.equal(position.size, 2, "2 lots, not 2.5");
     await exec.drainOrders();
 });
 
-test("бюджет ограничен свободным кэшом", async () => {
+test("the budget is capped by free cash", async () => {
     const { exec } = build({ balance: 900 });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("BBB", 100));
-    assert.equal(exec.sell({ ticker: "BBB", budget: 100000 }), null, "на 900 ₽ лот в 1000 ₽ не берётся");
+    assert.equal(exec.sell({ ticker: "BBB", budget: 100000 }), null, "a 1000 ₽ lot cannot be bought with 900 ₽");
 });
 
-test("одна бумага — одна позиция, пока заявка в полёте бумага занята", async () => {
+test("one instrument — one position; the instrument is busy while an order is in flight", async () => {
     const { exec, placed } = build();
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
     assert.ok(exec.sell({ ticker: "AAA", budget: 5000 }));
     assert.equal(exec.isBusy("AAA"), true);
-    assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null, "второй вход в ту же бумагу отклонён");
+    assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null, "a second entry into the same instrument is refused");
     await exec.drainOrders();
     assert.equal(placed.length, 1);
-    assert.deepEqual(exec.getPendingTickers(), [], "после исполнения бумага свободна");
+    assert.deepEqual(exec.getPendingTickers(), [], "the instrument is free after the fill");
     assert.equal(exec.getPositions().length, 1);
 });
 
-test("устаревшая свеча не торгуется", async () => {
+test("a stale candle does not trade", async () => {
     const { exec } = build();
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50, { datetime: new Date(Date.now() - 10 * MIN) }));
     assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null);
 });
 
-test("разогревочная свеча из догрузки не торгуется", async () => {
+test("a warm-up candle from the catch-up does not trade", async () => {
     const { exec } = build();
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50, { noTrade: true }));
     assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null);
 });
 
-test("отказ биржи откатывает оптимистично открытую позицию", async () => {
+test("an exchange rejection rolls back the optimistically opened position", async () => {
     const { exec } = build({ orders: { throwOn: "AAA" } });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
-    assert.ok(exec.sell({ ticker: "AAA", budget: 5000 }), "позиция ставится оптимистично");
+    assert.ok(exec.sell({ ticker: "AAA", budget: 5000 }), "the position is set optimistically");
     await exec.drainOrders();
-    assert.equal(exec.getPositionOf("AAA"), null, "после отказа состояние очищено");
+    assert.equal(exec.getPositionOf("AAA"), null, "the state is cleared after the rejection");
     assert.equal(exec.isBusy("AAA"), false);
 });
 
-test("аукцион: рыночные заявки недоступны — вход отменяется", async () => {
+test("auction: market orders unavailable — the entry is cancelled", async () => {
     const { exec, placed } = build({ status: { figi_AAA: { marketOrderAvailableFlag: false } } });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
     exec.sell({ ticker: "AAA", budget: 5000 });
     await exec.drainOrders();
-    assert.equal(placed.length, 0, "заявка не отправлена");
+    assert.equal(placed.length, 0, "no order sent");
     assert.equal(exec.getPositionOf("AAA"), null);
 });
 
-test("частичное исполнение правит размер позиции", async () => {
+test("a partial fill adjusts the position size", async () => {
     const { exec } = build({ orders: { executedLots: 3 } });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -129,7 +129,7 @@ test("частичное исполнение правит размер пози
     assert.equal(exec.getPositionOf("AAA").size, 3);
 });
 
-test("интрабарный стоп закрывает позицию по бумаге свечи", async () => {
+test("an intrabar stop closes the position of the candle's instrument", async () => {
     const { exec, placed } = build();
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -137,13 +137,13 @@ test("интрабарный стоп закрывает позицию по б�
     await exec.drainOrders();
     const hit = candle("AAA", 51, { high: 53 });          // the wick touched 52
     exec.setCurrentCandle(hit);
-    assert.ok(exec.checkStops(hit), "стоп сработал");
+    assert.ok(exec.checkStops(hit), "the stop fired");
     await exec.drainOrders();
     assert.equal(exec.getPositionOf("AAA"), null);
-    assert.equal(placed.at(-1).direction, "buy", "шорт закрывается покупкой");
+    assert.equal(placed.at(-1).direction, "buy", "a short is closed by a buy");
 });
 
-test("позиции разных бумаг живут независимо", async () => {
+test("positions in different instruments are independent", async () => {
     const { exec } = build();
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -156,10 +156,10 @@ test("позиции разных бумаг живут независимо", a
     exec.closePosition("signal", "AAA");
     await exec.drainOrders();
     assert.equal(exec.getPositionOf("AAA"), null);
-    assert.ok(exec.getPositionOf("BBB"), "вторая бумага не задета");
+    assert.ok(exec.getPositionOf("BBB"), "the second instrument is untouched");
 });
 
-test("сверка со счётом поднимает реальные позиции", async () => {
+test("reconciliation picks up actual account positions", async () => {
     const { exec } = build({
         positions: { figi_BBB: { side: "short", lots: 4, averagePrice: 99, currentPrice: 98 } },
     });
@@ -167,11 +167,11 @@ test("сверка со счётом поднимает реальные поз�
     const restored = exec.getPositionOf("BBB");
     assert.equal(restored.size, 4);
     assert.equal(restored.side, "short");
-    assert.equal(restored.sl, null, "без файла состояния уровней нет");
+    assert.equal(restored.sl, null, "no levels without a state file");
     assert.equal(exec.getPositionOf("AAA"), null);
 });
 
-test("капитал = касса минус стоимость шорта, прибыль учитывается", async () => {
+test("equity = cash minus short value, profit included", async () => {
     const { exec, state } = build();
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 100));
@@ -185,7 +185,7 @@ test("капитал = касса минус стоимость шорта, пр
 });
 
 
-test("остаток перечитывается после ВХОДА, а не только после выхода", async () => {
+test("the balance is re-read after an ENTRY, not only after an exit", async () => {
     const { exec, state } = build();
     await exec.init();
     const before = state.calls;
@@ -193,11 +193,11 @@ test("остаток перечитывается после ВХОДА, а не
     state.balance = 7_000;                       // the account cash changed
     exec.sell({ ticker: "AAA", budget: 3000 });
     await exec.drainOrders();
-    assert.ok(state.calls > before, "запрос остатка после входа был");
-    assert.equal(exec.getBalance(), 7_000, "кэш обновлён");
+    assert.ok(state.calls > before, "the balance was requested after the entry");
+    assert.equal(exec.getBalance(), 7_000, "cash updated");
 });
 
-test("капитал не удваивает выручку от продажи в шорт", async () => {
+test("equity does not double the short sale proceeds", async () => {
     const { exec, state } = build();
     await exec.init();
     exec.setCurrentCandle(candle("AAA", 100));
@@ -211,7 +211,7 @@ test("капитал не удваивает выручку от продажи 
     assert.equal(Math.round(exec.getEquity()), 10_000);
 });
 
-test("на конце минуты остаток перечитывается, если устарел", async () => {
+test("at the end of a minute a stale balance is re-read", async () => {
     const { exec, state } = build();
     await exec.init();
     exec._balanceAt = Date.now() - 120_000;      // the previous read is long ago
@@ -223,16 +223,16 @@ test("на конце минуты остаток перечитывается, 
     assert.equal(exec.getBalance(), 8_110);
 });
 
-test("свежий остаток на конце минуты повторно не запрашивается", async () => {
+test("a fresh balance is not requested again at the end of a minute", async () => {
     const { exec, state } = build();
     await exec.init();
     const before = state.calls;
     exec.setCurrentCandle(candle("AAA", 50, { isBatchEnd: true }));
     await exec.drainOrders();
-    assert.equal(state.calls, before, "лишнего запроса нет");
+    assert.equal(state.calls, before, "no extra request");
 });
 
-test("отказ при чтении остатка не роняет такт и не помечает значение свежим", async () => {
+test("a failed balance read does not fail the tick and does not mark the value fresh", async () => {
     const { exec, state } = build();
     await exec.init();
     const known = exec.getBalance();
@@ -240,15 +240,15 @@ test("отказ при чтении остатка не роняет такт �
     exec._balanceAt = Date.now() - 120_000;
     exec.setCurrentCandle(candle("AAA", 50, { isBatchEnd: true }));
     await exec.drainOrders();
-    assert.equal(exec.getBalance(), known, "работаем на прошлом значении");
+    assert.equal(exec.getBalance(), known, "keeps working with the previous value");
     state.fail = false;
     state.balance = 5_555;
     exec.setCurrentCandle(candle("BBB", 50, { isBatchEnd: true }));
     await exec.drainOrders();
-    assert.equal(exec.getBalance(), 5_555, "попытка повторилась на следующей минуте");
+    assert.equal(exec.getBalance(), 5_555, "the read was retried on the next minute");
 });
 
-test("трейлинг помечается как trail, защитный стоп — как sl", async () => {
+test("a trailing stop is labelled trail, a protective stop sl", async () => {
     const { exec } = build();
     await exec.init();
     // Protective stop: the level is ABOVE the entry (the short went against us).
@@ -272,48 +272,48 @@ test("трейлинг помечается как trail, защитный ст�
     assert.equal(exec.sessionTrades.at(-1).reason, "trail");
 });
 
-test("провал закрытия возвращает позицию в состояние, а не оставляет фантомный флэт", async () => {
+test("a failed close returns the position to the state instead of leaving a phantom flat", async () => {
     const { exec } = build();
     await exec.init();
     exec.setCurrentCandle(candle("AAA", 50));
     exec.sell({ ticker: "AAA", budget: 4000, sl: 52, exitDeadline: Date.now() + 3_600_000 });
     await exec.drainOrders();
     const before = exec.getPositionOf("AAA");
-    assert.ok(before, "позиция открыта");
+    assert.ok(before, "position open");
 
     // The exchange rejects the close.
     const om = exec.orderManager;
-    om.closePosition = async () => { throw new Error("отказ биржи"); };
+    om.closePosition = async () => { throw new Error("exchange rejection"); };
     exec.closePosition("signal", "AAA");
     await exec.drainOrders();
 
     const after = exec.getPositionOf("AAA");
-    assert.ok(after, "позиция обязана вернуться в состояние");
+    assert.ok(after, "the position must return to the state");
     assert.equal(after.size, before.size);
-    assert.equal(after.sl, 52, "уровень защиты сохранён");
-    assert.equal(exec.isBusy("AAA"), true, "бумага занята — повторного входа не будет");
+    assert.equal(after.sl, 52, "the protective level is kept");
+    assert.equal(exec.isBusy("AAA"), true, "the instrument is busy — no re-entry");
 });
 
-test("частичное закрытие оставляет остаток с уровнями и дедлайном", async () => {
+test("a partial close keeps the remainder with its levels and deadline", async () => {
     const { exec } = build();
     await exec.init();
     exec.setCurrentCandle(candle("AAA", 50));
     exec.sell({ ticker: "AAA", budget: 4000, sl: 52, exitDeadline: Date.now() + 3_600_000 });
     await exec.drainOrders();
     const size = exec.getPositionOf("AAA").size;
-    assert.ok(size > 1, "нужен размер больше одного лота");
+    assert.ok(size > 1, "a size above one lot is needed");
 
     // The exchange fills only one lot out of several.
     exec.client.getOrderExecutionSummary = () => ({ lotsExecuted: 1, avgPrice: 50, statusName: "PARTIAL" });
     exec.closePosition("signal", "AAA");
     await exec.drainOrders();
     const rest = exec.getPositionOf("AAA");
-    assert.ok(rest, "остаток под наблюдением");
+    assert.ok(rest, "the remainder is tracked");
     assert.equal(rest.size, size - 1);
-    assert.equal(rest.sl, 52, "остаток не остался без стопа");
+    assert.equal(rest.sl, 52, "the remainder is not left without a stop");
 });
 
-test("дедлайн повторяется, если бумага занята заявкой", async () => {
+test("the deadline is retried while the instrument has an order in flight", async () => {
     const { exec } = build();
     await exec.init();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -323,8 +323,8 @@ test("дедлайн повторяется, если бумага занята 
     const slot = exec.slots.get("AAA");
     exec._inFlight.add("AAA");                       // simulate an order in flight
     await new Promise((r) => setTimeout(r, 60));     // the deadline fired and was refused
-    assert.ok(slot.exitTimer, "таймер перевзведён, а не потерян");
-    assert.ok(exec.getPositionOf("AAA"), "позиция ещё на месте");
+    assert.ok(slot.exitTimer, "the timer is re-armed, not lost");
+    assert.ok(exec.getPositionOf("AAA"), "the position is still there");
     exec._inFlight.delete("AAA");
     slot.exitTimer = null;
 });
@@ -334,23 +334,23 @@ test("дедлайн повторяется, если бумага занята 
 // rejected the order, the slot rolled back — until the end of the day. The rejection
 // must be remembered, otherwise the next candidate never gets a chance.
 
-test("постоянный отказ биржи исключает бумагу до перезапуска", async () => {
+test("a permanent exchange rejection excludes the instrument until restart", async () => {
     const { exec, placed } = build({
         orders: { throwOn: "AAA", throwMessage: "Dlya torgovli e`tim instrumentom neobxodimo projti test" },
     });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
-    assert.ok(exec.sell({ ticker: "AAA", budget: 5000 }), "первая попытка уходит в биржу");
+    assert.ok(exec.sell({ ticker: "AAA", budget: 5000 }), "the first attempt goes to the exchange");
     await exec.drainOrders();
 
-    assert.equal(exec.isBlocked("AAA"), true, "после отказа бумага заблокирована");
+    assert.equal(exec.isBlocked("AAA"), true, "the instrument is blocked after the rejection");
     exec.setCurrentCandle(candle("AAA", 50));
-    assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null, "повторная заявка не ставится");
+    assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null, "no repeated order");
     await exec.drainOrders();
-    assert.equal(placed.length, 1, "в биржу ушла ровно одна заявка, а не по одной в минуту");
+    assert.equal(placed.length, 1, "exactly one order went to the exchange, not one per minute");
 });
 
-test("постоянная блокировка не снимается ростом кассы", async () => {
+test("a permanent block is not lifted by cash growth", async () => {
     const { exec, state } = build({
         balance: 1000,
         orders: { throwOn: "AAA", throwMessage: "trading is not available for this instrument" },
@@ -362,10 +362,10 @@ test("постоянная блокировка не снимается рост
 
     state.balance = 100_000;
     await exec.refreshBalance();
-    assert.equal(exec.isBlocked("AAA"), true, "тест в приложении деньгами не заменяется");
+    assert.equal(exec.isBlocked("AAA"), true, "money does not replace a test in the app");
 });
 
-test("нехватка залога снимается, когда касса выросла", async () => {
+test("an insufficient-margin block is lifted once cash grows", async () => {
     const { exec, state } = build({
         balance: 1000,
         orders: { throwOn: "AAA", throwMessage: "Not enough assets for a margin trade" },
@@ -374,22 +374,22 @@ test("нехватка залога снимается, когда касса в
     exec.setCurrentCandle(candle("AAA", 50));
     exec.sell({ ticker: "AAA", budget: 500 });
     await exec.drainOrders();
-    assert.equal(exec.isBlocked("AAA"), true, "на той же кассе повторять незачем");
+    assert.equal(exec.isBlocked("AAA"), true, "no point retrying with the same cash");
 
     state.balance = 1200;                    // +20%, short of the 25% threshold
     await exec.refreshBalance();
-    assert.equal(exec.isBlocked("AAA"), true, "копеечный рост кассы блокировку не снимает");
+    assert.equal(exec.isBlocked("AAA"), true, "a penny of cash growth does not lift the block");
 
     state.balance = 2000;                    // a position closed, noticeably more money
     await exec.refreshBalance();
-    assert.equal(exec.isBlocked("AAA"), false, "после роста кассы бумагу можно пробовать снова");
+    assert.equal(exec.isBlocked("AAA"), false, "after cash growth the instrument can be tried again");
 
     exec.setCurrentCandle(candle("AAA", 50));
-    assert.ok(exec.sell({ ticker: "AAA", budget: 500 }), "заявка снова принимается");
+    assert.ok(exec.sell({ ticker: "AAA", budget: 500 }), "the order is accepted again");
     await exec.drainOrders();
 });
 
-test("отказ по одной бумаге не блокирует остальные", async () => {
+test("a rejection for one instrument does not block the others", async () => {
     const { exec, placed } = build({ orders: { throwOn: "AAA", throwMessage: "neobxodimo projti test" } });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -397,7 +397,7 @@ test("отказ по одной бумаге не блокирует остал
     await exec.drainOrders();
 
     exec.setCurrentCandle(candle("BBB", 100));
-    assert.ok(exec.sell({ ticker: "BBB", budget: 2500 }), "слот достаётся следующему кандидату");
+    assert.ok(exec.sell({ ticker: "BBB", budget: 2500 }), "the slot goes to the next candidate");
     await exec.drainOrders();
     assert.equal(placed.length, 2);
     assert.deepEqual(exec.getBlocked().map((b) => b.ticker), ["AAA"]);
@@ -408,44 +408,44 @@ test("отказ по одной бумаге не блокирует остал
 // kept, MFE — and so the moment the trailing stop arms — would be measured from it, and
 // live would drift from the backtest by the slippage.
 
-test("цена входа заменяется фактической ценой исполнения", async () => {
+test("the entry price is replaced by the actual fill price", async () => {
     const { exec } = build({ orders: { avgPrice: 49.4 } });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));            // decided at 50
     const position = exec.sell({ ticker: "AAA", budget: 5000 });
-    assert.equal(position.entryPrice, 50, "до заливки — цена решения");
+    assert.equal(position.entryPrice, 50, "before the fill — the decision price");
     await exec.drainOrders();
-    assert.equal(exec.getPositionOf("AAA").entryPrice, 49.4, "после заливки — цена сделки");
+    assert.equal(exec.getPositionOf("AAA").entryPrice, 49.4, "after the fill — the trade price");
 });
 
-test("уровни SL и TP уточнением цены не двигаются", async () => {
+test("SL and TP levels do not move when the price is refined", async () => {
     const { exec } = build({ orders: { avgPrice: 49.4 } });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
     exec.sell({ ticker: "AAA", budget: 5000, sl: 52.5, tp: 47.5 });
     await exec.drainOrders();
     const position = exec.getPositionOf("AAA");
-    assert.equal(position.sl, 52.5, "стоп считает стратегия от цены решения — как в бэктесте");
+    assert.equal(position.sl, 52.5, "the strategy computes the stop from the decision price — as in the backtest");
     assert.equal(position.tp, 47.5);
 });
 
-test("без цены исполнения от брокера остаётся цена решения", async () => {
+test("without a fill price from the broker the decision price stays", async () => {
     const { exec } = build({ orders: { avgPrice: null } });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
     exec.sell({ ticker: "AAA", budget: 5000 });
     await exec.drainOrders();
-    assert.equal(exec.getPositionOf("AAA").entryPrice, 50, "выдумывать цену нечем");
+    assert.equal(exec.getPositionOf("AAA").entryPrice, 50, "nothing to invent a price from");
 });
 
-test("уточнённая цена входа переживает перезапуск", async () => {
+test("the refined entry price survives a restart", async () => {
     const { exec } = build({ orders: { avgPrice: 49.4 } });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
     exec.sell({ ticker: "AAA", budget: 5000 });
     await exec.drainOrders();
     const saved = exec.slots.get("AAA").store.load();
-    assert.equal(saved.entryPrice, 49.4, "в файл состояния записана цена сделки");
+    assert.equal(saved.entryPrice, 49.4, "the trade price is written to the state file");
 });
 
 // ── account equity ──────────────────────────────────────────────────────────
@@ -454,7 +454,7 @@ test("уточнённая цена входа переживает переза
 // by the whole short position, the strategy takes a share of it for the next slot — and
 // positions grow through the session.
 
-test("шорт по цене входа: капитал равен исходному депозиту", async () => {
+test("a short at the entry price: equity equals the starting deposit", async () => {
     const { exec, state } = build({ balance: 10_000 });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -464,10 +464,10 @@ test("шорт по цене входа: капитал равен исходн�
     state.balance = 15_000;                 // the broker credited proceeds of 100 × 50
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
-    assert.equal(exec.getEquity(), 10_000, "выручка от шорта не создаёт капитал");
+    assert.equal(exec.getEquity(), 10_000, "short proceeds do not create equity");
 });
 
-test("прибыль по шорту увеличивает капитал ровно на прибыль", async () => {
+test("a short's profit raises equity by exactly the profit", async () => {
     const { exec, state } = build({ balance: 10_000 });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -477,10 +477,10 @@ test("прибыль по шорту увеличивает капитал ро�
     state.balance = 15_000;
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 45));   // the price fell by 5
-    assert.equal(exec.getEquity(), 10_500, "100 бумаг × 5 ₽ прибыли");
+    assert.equal(exec.getEquity(), 10_500, "100 shares × 5 ₽ profit");
 });
 
-test("лот больше единицы учитывается в стоимости позиции", async () => {
+test("a lot above one counts in the position value", async () => {
     const { exec, state } = build({ balance: 10_000 });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("BBB", 37.3));  // lot 10
@@ -493,7 +493,7 @@ test("лот больше единицы учитывается в стоимо�
     assert.equal(Math.round(exec.getEquity()), 10_000);
 });
 
-test("лонг: капитал равен кассе плюс стоимость бумаг", async () => {
+test("long: equity equals cash plus the shares' value", async () => {
     const { exec, state } = build({ balance: 10_000 });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -503,10 +503,10 @@ test("лонг: капитал равен кассе плюс стоимость
     state.balance = 5_000;                  // the purchase debited 100 × 50
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 55));
-    assert.equal(exec.getEquity(), 10_500, "рост бумаг увеличивает капитал");
+    assert.equal(exec.getEquity(), 10_500, "rising shares raise equity");
 });
 
-test("несколько шортов не раздувают капитал друг за другом", async () => {
+test("several shorts do not inflate equity one after another", async () => {
     const { exec, state } = build({ balance: 10_000 });
     await exec.refreshBalance();
     exec.setCurrentCandle(candle("AAA", 50));
@@ -523,12 +523,12 @@ test("несколько шортов не раздувают капитал д�
 
     exec.setCurrentCandle(candle("AAA", 50));
     exec.setCurrentCandle(candle("BBB", 100));
-    assert.equal(exec.getEquity(), 10_000, "две короткие позиции — капитал прежний");
+    assert.equal(exec.getEquity(), 10_000, "two short positions — equity unchanged");
 });
 
-test("quotationToNumber: {units, nano} → число, пустая и нулевая ставка — null", () => {
+test("quotationToNumber: {units, nano} → number, absent and zero rate → null", () => {
     assert.equal(quotationToNumber({ units: 0, nano: 300000000 }), 0.3);
     assert.equal(quotationToNumber({ units: 1, nano: 500000000 }), 1.5);
     assert.equal(quotationToNumber(undefined), null);
-    assert.equal(quotationToNumber({ units: 0, nano: 0 }), null, "нулевая ставка — как не заданная");
+    assert.equal(quotationToNumber({ units: 0, nano: 0 }), null, "a zero rate counts as unset");
 });

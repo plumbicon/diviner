@@ -10,26 +10,26 @@ function report(equity, initialCash = 100) {
     return new PerformanceMetrics({ data, equity, trades: [], initialCash }).compile();
 }
 
-test("просадка считается от пика перед ней, а не от максимума прогона", () => {
+test("drawdown is measured from the peak before it, not from the run's maximum", () => {
     // 100 → 90 at the start (−10%), then a rise to 300 and a fall to 280 (−6.7%, but 20 in money).
     const m = report([100, 90, 150, 300, 280, 290]);
-    assert.equal(m.maxDrawdownPct, 10, "ранняя просадка −10% не растворяется в финальном пике");
-    assert.equal(m.maxDrawdown, 20, "в деньгах — самая глубокая, поздняя");
+    assert.equal(m.maxDrawdownPct, 10, "an early −10% drawdown does not dissolve in the final peak");
+    assert.equal(m.maxDrawdown, 20, "in money — the deepest, the late one");
 });
 
-test("поздняя просадка от большего пика тоже видна", () => {
+test("a late drawdown from a higher peak is visible too", () => {
     const m = report([100, 110, 99, 200, 150]);
     assert.equal(m.maxDrawdownPct, 25, "200 → 150");
     assert.equal(m.maxDrawdown, 50);
 });
 
-test("просадка с первой свечи отсчитывается от стартового капитала", () => {
+test("a drawdown from the first candle is measured from the starting capital", () => {
     const m = report([95, 97, 120]);
     assert.equal(m.maxDrawdownPct, 5);
     assert.equal(m.maxDrawdown, 5);
 });
 
-test("кривая без падений — нулевая просадка, Calmar не определён", () => {
+test("a curve without falls — zero drawdown, Calmar undefined", () => {
     const m = report([100, 105, 110, 120]);
     assert.equal(m.maxDrawdownPct, 0);
     assert.equal(m.maxDrawdown, 0);
@@ -37,7 +37,7 @@ test("кривая без падений — нулевая просадка, Ca
     assert.equal(m.returnOnMaxDD, null);
 });
 
-test("Calmar и доходность на просадку делятся на процент просадки от пика", () => {
+test("Calmar and return-over-drawdown divide by the drawdown percentage from the peak", () => {
     const m = report([100, 90, 150, 300, 280, 290]);
     assert.equal(m.returnPct, 190);
     assert.equal(m.returnOnMaxDD, 19, "190% / 10%");

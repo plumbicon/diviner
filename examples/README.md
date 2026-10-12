@@ -1,12 +1,12 @@
-# Примеры
+# Examples
 
-Две маленькие стратегии и генератор синтетических свечей: бэктест запускается за минуту, без
-токена брокера и без скачанных листингов. Обе стратегии прогоняет `examples.test.js`, так что
-пример, разошедшийся с движком, сломает `npm test`.
+Two small strategies and a synthetic candle generator: a backtest runs in a minute, without a broker
+token and without downloaded listings. `examples.test.js` runs both strategies, so an example that
+drifts away from the engine breaks `npm test`.
 
-## Однобумажная стратегия — `strategies/sma-cross`
+## Single-ticker strategy — `strategies/sma-cross`
 
-Лонг на пересечении скользящих средних, выход на обратном пересечении или по стопу.
+Long on a moving average crossover, exit on the opposite cross or by the stop.
 
 ```bash
 node examples/make-data.mjs --out work/examples/demo.parquet --tickers DEMO
@@ -16,16 +16,16 @@ node src/diviner.js src/broker/simulated/broker.js work/examples/demo.parquet \
   --strategy examples/strategies/sma-cross/sma-cross.js --balance 10000
 ```
 
-На что смотреть в коде:
-- история — `this.data`, текущая свеча — `this.data.at(this.getDataIndex())`. В бэктесте
-  `this.data` содержит весь листинг, поэтому читать можно только до текущего индекса;
-- вход — `this.buy({ sl })`, выход — `this.closePosition()`. Стоп проверяет движок;
-- параметры — переменные окружения (`SMA_FAST=10 node src/diviner.js …`).
+What to look at in the code:
+- history is `this.data`, the current candle is `this.data.at(this.getDataIndex())`. In a backtest
+  `this.data` holds the whole listing, so only read up to the current index;
+- entry is `this.buy({ sl })`, exit is `this.closePosition()`. The engine checks the stop;
+- parameters are environment variables (`SMA_FAST=10 node src/diviner.js …`).
 
-## Кросс-секционная стратегия — `strategies/top-gainer-short`
+## Cross-sectional strategy — `strategies/top-gainer-short`
 
-Раз в день в 11:00 МСК шорт двух бумаг, сильнее всех выросших с открытия; выход по стопу или
-по дедлайну в 18:30.
+Once a day at 11:00 Moscow time, short the two instruments that rose the most since the open; exit by
+the stop or by the deadline at 18:30.
 
 ```bash
 node examples/make-data.mjs --out work/examples/universe.parquet --tickers AAA,BBB,CCC,DDD,EEE
@@ -36,28 +36,29 @@ node src/diviner.js src/broker/simulated/broker.js work/examples/universe.parque
   --balance 100000 --fill-next-open --intrabar-stops
 ```
 
-На что смотреть в коде:
-- свеча приходит аргументом `next(candle)` с полем `ticker`; своей истории у мультитикерного
-  прогона нет, за ней ходят в `this.context.getCandles({ ticker, … })`;
-- минута отдаётся пачкой по всем бумагам, последняя свеча пачки помечена `isBatchEnd`. Решение
-  «какую бумагу выбрать» принимается только на ней — раньше половина бумаг ещё не пришла;
-- заявка адресуется бумаге: `this.execution.sell({ ticker, budget, sl, exitDeadline })`. Размер
-  в бумагах из `budget` считает исполнитель — с лотом и ценой заливки;
-- `exitDeadline` — абсолютное время выхода (epoch ms), его проверяет движок.
+What to look at in the code:
+- the candle comes as the `next(candle)` argument with a `ticker` field; a multi-ticker run has no
+  history of its own, it is read through `this.context.getCandles({ ticker, … })`;
+- a minute is released as a batch over all instruments, its last candle is marked `isBatchEnd`. The
+  "which instrument to pick" decision is made only on it — before it, half of the instruments have
+  not arrived;
+- an order is addressed to an instrument: `this.execution.sell({ ticker, budget, sl, exitDeadline })`.
+  The executor converts `budget` into shares — with the lot and the fill price;
+- `exitDeadline` is an absolute exit time (epoch ms), checked by the engine.
 
-## Генератор данных — `make-data.mjs`
+## Data generator — `make-data.mjs`
 
-| Опция | Что делает | По умолчанию |
+| Option | What it does | Default |
 |---|---|---|
-| `--out <path>` | куда записать parquet | — |
-| `--tickers <list>` | тикеры через запятую; один — листинг, несколько — бандл | `DEMO` |
-| `--days <n>` | торговых дней (будни, 10:00–18:39 МСК) | `20` |
-| `--seed <n>` | зерно случайного блуждания: те же параметры — тот же файл | `1` |
-| `--from <date>` | первый календарный день | `2026-01-05` |
+| `--out <path>` | where to write the parquet | — |
+| `--tickers <list>` | comma-separated tickers; one gives a listing, several a bundle | `DEMO` |
+| `--days <n>` | trading days (weekdays, 10:00–18:39 Moscow) | `20` |
+| `--seed <n>` | random walk seed: the same parameters give the same file | `1` |
+| `--from <date>` | first calendar day | `2026-01-05` |
 
-Первая бумага печатает свечу каждую минуту, остальные — в 85% минут, как тонкие бумаги на
-бирже. Формат файлов тот же, что у настоящих листингов (`src/broker/tinkoff/fetch.js`) и бандлов
-(`src/bundle.js`), — см. раздел «Данные» в [`devs/structure.md`](../devs/structure.md).
+The first instrument prints a candle every minute, the others in 85% of minutes, like thin names on
+the exchange. The file format is the same as real listings (`src/broker/tinkoff/fetch.js`) and
+bundles (`src/bundle.js`) — see "Data" in [`devs/structure.md`](../devs/structure.md).
 
-Свою стратегию удобно начинать с копии одного из примеров. Боевые стратегии живут в
-`src/strategies/<ИМЯ>/<ИМЯ>.js` — этот каталог в репозиторий движка не входит.
+It is convenient to start your own strategy from a copy of one of the examples. Production strategies
+live in `src/strategies/<NAME>/<NAME>.js` — that directory is not part of the engine repository.

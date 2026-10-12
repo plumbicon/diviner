@@ -25,30 +25,30 @@ import { runUtility, isUtilityRequest } from "./sandbox-utils.js";
 export { runUtility, isUtilityRequest };
 
 export const options = [
-    { flags: "--tickers <list>", description: "Инструменты вселенной через запятую" },
-    { flags: "--universe-file <path>", description: "JSON со списком тикеров и кэшем инструментов (см. src/universe.js)" },
+    { flags: "--tickers <list>", description: "Universe instruments, comma-separated" },
+    { flags: "--universe-file <path>", description: "JSON with the ticker list and instrument cache (see src/universe.js)" },
     { flags: "--account <id>", description: "Account ID" },
-    { flags: "--sandbox", description: "Песочница (виртуальные деньги)", default: false },
-    { flags: "--dry-run", description: "Стратегия работает, заявки не отправляются", default: false },
-    { flags: "--interval <minutes>", description: "Интервал свечей, минут", default: "1" },
-    { flags: "--close-on-exit", description: "Закрыть открытые позиции при остановке", default: false },
-    { flags: "--order-retries <count>", description: "Повторы при транзиентных ошибках заявки", default: "2" },
-    { flags: "--order-tag <tag>", description: "Метка в ключе идемпотентности заявки", default: "div" },
-    { flags: "--stall-timeout <minutes>", description: "Порог тишины ВСЕГО стрима до переподписки (0 — выключить)", default: "30" },
-    { flags: "--batch-grace-ms <ms>", description: "Окно сбора минуты: сколько ждать отставших бумаг перед решением", default: "8000" },
-    { flags: "--state-dir <path>", description: "Каталог файлов состояния позиций (по умолчанию .diviner-state)" },
-    { flags: "--intrabar-stops", description: "Проверять SL/TP по high/low пришедшей свечи, а не только по close", default: false },
-    { flags: "--leverage <n>", description: "Плечо. >1 шлёт confirmMarginTrade=true", default: "1" },
-    { flags: "--print-balance", description: "Показать баланс и позиции и выйти", default: false },
-    { flags: "--print-history", description: "Показать историю операций и выйти", default: false },
-    { flags: "--history-from <date>", description: "Начало периода для --print-history" },
+    { flags: "--sandbox", description: "Sandbox (virtual money)", default: false },
+    { flags: "--dry-run", description: "The strategy runs, but no orders are sent", default: false },
+    { flags: "--interval <minutes>", description: "Candle interval, minutes", default: "1" },
+    { flags: "--close-on-exit", description: "Close open positions on shutdown", default: false },
+    { flags: "--order-retries <count>", description: "Retries on transient order errors", default: "2" },
+    { flags: "--order-tag <tag>", description: "Label in the order idempotency key", default: "div" },
+    { flags: "--stall-timeout <minutes>", description: "Silence threshold of the WHOLE stream before resubscribing (0 disables)", default: "30" },
+    { flags: "--batch-grace-ms <ms>", description: "Minute grace window: how long to wait for late instruments before deciding", default: "8000" },
+    { flags: "--state-dir <path>", description: "Directory of position state files (default .diviner-state)" },
+    { flags: "--intrabar-stops", description: "Check SL/TP against the arrived candle's high/low, not only its close", default: false },
+    { flags: "--leverage <n>", description: "Leverage. >1 sends confirmMarginTrade=true", default: "1" },
+    { flags: "--print-balance", description: "Print balance and positions and exit", default: false },
+    { flags: "--print-history", description: "Print the operations history and exit", default: false },
+    { flags: "--history-from <date>", description: "Start of the period for --print-history" },
     // Sandbox account management (without a strategy, only with --sandbox):
-    { flags: "--list-sandboxes", description: "Список счетов песочницы и выход", default: false },
-    { flags: "--create-account", description: "Создать счёт в песочнице", default: false },
-    { flags: "--remove-account", description: "Удалить счёт песочницы из --account", default: false },
-    { flags: "--reset-positions", description: "Обнулить позиции в бумагах на счёте песочницы (рубли остаются)", default: false },
-    { flags: "--increase-balance <amount>", description: "Пополнить рублёвый баланс счёта песочницы" },
-    { flags: "--log <path>", description: "Дублировать вывод в файл" },
+    { flags: "--list-sandboxes", description: "List sandbox accounts and exit", default: false },
+    { flags: "--create-account", description: "Create a sandbox account", default: false },
+    { flags: "--remove-account", description: "Remove the sandbox account given by --account", default: false },
+    { flags: "--reset-positions", description: "Reset share positions of the sandbox account (RUB stays)", default: false },
+    { flags: "--increase-balance <amount>", description: "Increase the RUB balance of the sandbox account" },
+    { flags: "--log <path>", description: "Duplicate output to a file" },
 ];
 
 /**
@@ -87,7 +87,7 @@ async function resolveInstruments(client, universe, maxAgeMs = 7 * 24 * 60 * 60 
     if (fresh) {
         const cached = universe.tickers.map((t) => universe.cache.byTicker?.[t]).filter(Boolean);
         if (cached.length === universe.tickers.length) {
-            console.log(`[MultiBroker] Инструменты из кэша: ${cached.length}.`);
+            console.log(`[MultiBroker] Instruments from cache: ${cached.length}.`);
             return cached;
         }
     }
@@ -102,9 +102,9 @@ async function resolveInstruments(client, universe, maxAgeMs = 7 * 24 * 60 * 60 
             missing.push(`${ticker} (${error.message})`);
         }
     }
-    if (missing.length) console.warn(`[MultiBroker] Не резолвятся: ${missing.join(", ")}`);
+    if (missing.length) console.warn(`[MultiBroker] Not resolved: ${missing.join(", ")}`);
     if (!instruments.length) throw new Error("no instruments resolved");
-    console.log(`[MultiBroker] Резолв ${instruments.length} инструментов за ${((Date.now() - started) / 1000).toFixed(1)}с.`);
+    console.log(`[MultiBroker] Resolved ${instruments.length} instruments in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
 
     if (universe.path) {
         const byTicker = Object.fromEntries(instruments.map((i) => [i.ticker, i]));
@@ -115,7 +115,7 @@ async function resolveInstruments(client, universe, maxAgeMs = 7 * 24 * 60 * 60 
                 instruments: { resolvedAt: new Date().toISOString(), byTicker },
             }, null, 2));
         } catch (error) {
-            console.warn(`[MultiBroker] Кэш инструментов не сохранён: ${error.message}`);
+            console.warn(`[MultiBroker] Instrument cache not saved: ${error.message}`);
         }
     }
     return instruments;
@@ -136,7 +136,7 @@ export async function createBroker(config = {}) {
         orderRetries: parseInt(config.orderRetries ?? "2", 10),
         verbose: Boolean(config.verbose),
     });
-    console.log(`[MultiBroker] Подключение к T-Invest (${config.sandbox ? "SANDBOX" : "REAL"})…`);
+    console.log(`[MultiBroker] Connecting to T-Invest (${config.sandbox ? "SANDBOX" : "REAL"})…`);
     await client.init();
 
     const universe = await readUniverse(config);
@@ -179,7 +179,7 @@ export async function createBroker(config = {}) {
         async finalize() {
             if (config.closeOnExit) {
                 for (const position of exec.getPositions()) {
-                    console.log(`[MultiBroker] Закрываю ${position.ticker} на выходе (--close-on-exit).`);
+                    console.log(`[MultiBroker] Closing ${position.ticker} on exit (--close-on-exit).`);
                     exec.closePosition("shutdown", position.ticker);
                 }
                 await exec.drainOrders();
@@ -188,13 +188,13 @@ export async function createBroker(config = {}) {
             const opens = exec.sessionTrades.filter((t) => t.kind === "open").length;
             const closes = exec.sessionTrades.filter((t) => t.kind === "close").length;
             const held = exec.getPositions().map((p) => `${p.ticker} ${p.side} ${p.size}`);
-            console.log(`[MultiBroker] За сессию: ${opens} входов / ${closes} выходов. Кэш ${exec.getBalance().toFixed(2)} ₽.`);
-            console.log(`[MultiBroker] Открыто на выходе: ${held.length ? held.join(", ") : "нет"}.`);
+            console.log(`[MultiBroker] Session: ${opens} entries / ${closes} exits. Cash ${exec.getBalance().toFixed(2)} ₽.`);
+            console.log(`[MultiBroker] Open at exit: ${held.length ? held.join(", ") : "none"}.`);
             const blocked = exec.getBlocked?.() ?? [];
             if (blocked.length) {
                 console.log(
-                    "[MultiBroker] Отклонены биржей: "
-                    + blocked.map((b) => `${b.ticker} (${b.permanent ? "постоянно" : "нет залога"})`).join(", "),
+                    "[MultiBroker] Rejected by the exchange: "
+                    + blocked.map((b) => `${b.ticker} (${b.permanent ? "permanently" : "no margin"})`).join(", "),
                 );
             }
             await client.close();

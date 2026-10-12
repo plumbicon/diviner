@@ -1,68 +1,74 @@
-# Правила разработки
+# Contributing
 
-Как устроен движок — [`devs/structure.md`](devs/structure.md), как им пользоваться —
-[`devs/usage.md`](devs/usage.md), с чего начать стратегию — [`examples/`](examples/README.md).
+How the engine is built — [`devs/structure.md`](devs/structure.md); how to use it —
+[`devs/usage.md`](devs/usage.md); where to start a strategy — [`examples/`](examples/README.md).
 
-## Где что лежит
+## Language
 
-- `src/core/` — режим-слепое ядро: движок, стопы, портфель, данные, метрики. Ядро не знает
-  ни брокеров, ни режима запуска. `src/core/engine.js` — общий контракт всех брокеров и
-  стратегий, его меняют только после обсуждения.
-- `src/broker/<имя>/` — брокер: `broker.js` с `options` и `createBroker()`, плюс его клиенты
-  и загрузчики данных. Вся разница между бэктестом и live живёт здесь.
-- `src/*.js` — самостоятельные команды (`universe.js`, `bundle.js`, `append.js`); `scripts/` —
-  вспомогательные скрипты над проектом.
-- `examples/` — стратегии-примеры и синтетические данные.
-- `src/strategies/` — стратегии, отдельный репозиторий. В репозиторий движка не попадают ни код
-  стратегий, ни их параметры, ни результаты замеров — в том числе в комментариях, документации и
-  сообщениях коммитов.
-- Разовый анализ, отчёты, автоматизация над проектом — вне репозитория; артефакты замеров — в
-  `work/` (не в git).
+**Everything in the project is in English:** code comments, log messages, error texts, CLI option
+descriptions, test names, documentation and commit messages. The only exception is data — for
+example, regular expressions that match the broker's Russian replies. `src/style.test.js` fails
+`npm test` on Cyrillic anywhere in the code outside such regex literals.
 
-## Код
+## Where things live
 
-- Node.js ≥ 18, ES-модули, `async`/`await`.
-- Отступ — 4 пробела, строки — в двойных кавычках, без табуляций и хвостовых пробелов.
-  `.editorconfig` настраивает редактор, `src/style.test.js` проверяет отступы и пробелы в
-  `npm test`. Переносы длинных параметров — тоже по сетке в 4 пробела, без выравнивания под скобку.
-- JSDoc у публичных функций и классов.
-- Комментарий объясняет **почему**: какое ограничение, какой инцидент, почему не очевидный
-  вариант. Что делает код — видно из кода.
-- **Комментарии в коде (`//`, `/* */`, JSDoc) — только на английском.** Встреченный русский
-  комментарий переводится на английский; `src/style.test.js` проверяет это в `npm test`.
-- Ошибки не глотаются молча: либо понятное сообщение в лог и осознанное продолжение, либо
-  исключение. Молча посчитать более выгодный результат хуже, чем упасть.
-- Новая зависимость — только если без неё никак. `package-lock.json` коммитится.
-- Секреты (токены брокеров) — только через переменные окружения, никогда в коде и в логах.
+- `src/core/` — the mode-blind core: engine, stops, portfolio, data, metrics. The core knows neither
+  brokers nor the run mode. `src/core/engine.js` is the shared contract of every broker and strategy;
+  change it only after a discussion.
+- `src/broker/<name>/` — a broker: `broker.js` with `options` and `createBroker()`, plus its clients
+  and data loaders. All the difference between backtest and live lives here.
+- `src/*.js` — standalone commands (`universe.js`, `bundle.js`, `append.js`); `scripts/` — helper
+  scripts over the project.
+- `examples/` — example strategies and synthetic data.
+- `src/strategies/` — strategies, a separate repository. Neither strategy code, nor their parameters,
+  nor measurement results get into the engine repository — including comments, documentation and
+  commit messages.
+- One-off analysis, reports and automation over the project stay outside the repository; measurement
+  artifacts go to `work/` (not in git).
 
-## Тесты
+## Code
 
-- `npm test` — встроенный `node:test`; тест лежит рядом с модулем: `foo.js` → `foo.test.js`.
-- Исправление ошибки приходит с тестом, который без исправления падает.
-- Live-код (`src/broker/tinkoff/`) тестируется на сценариях отказа: обрыв, зависший ответ,
-  отказ брокера. Сеть в тестах заменяется заглушкой.
-- Стратегии-примеры прогоняются через CLI в `examples/examples.test.js` — пример, разошедшийся с
-  движком, ломает `npm test`.
+- Node.js ≥ 18, ES modules, `async`/`await`.
+- 4-space indentation, double-quoted strings, no tabs and no trailing spaces. `.editorconfig`
+  configures the editor, `src/style.test.js` checks indentation and whitespace in `npm test`. Wrapped
+  parameter lists also follow the 4-space grid, without aligning under the parenthesis.
+- JSDoc on public functions and classes.
+- A comment explains **why**: which constraint, which incident, why not the obvious option. What the
+  code does is visible from the code.
+- Errors are never swallowed silently: either a clear log message and a deliberate continuation, or
+  an exception. Silently computing a more profitable result is worse than failing.
+- A new dependency only when there is no way around it. `package-lock.json` is committed.
+- Secrets (broker tokens) only through environment variables, never in code or logs.
 
-## Документация
+## Tests
 
-- Новая команда или опция — в [`README.md`](README.md) и [`devs/usage.md`](devs/usage.md): что
-  делает, параметры, пример запуска.
-- Меняется контракт брокера или стратегии — [`devs/structure.md`](devs/structure.md) тем же
-  коммитом.
+- `npm test` — the built-in `node:test`; a test sits next to its module: `foo.js` → `foo.test.js`.
+- A bug fix comes with a test that fails without the fix.
+- Live code (`src/broker/tinkoff/`) is tested on failure scenarios: a dropped connection, a hung
+  answer, a broker rejection. The network is replaced with stubs in tests.
+- The example strategies run through the CLI in `examples/examples.test.js` — an example that drifts
+  away from the engine breaks `npm test`.
 
-## Данные
+## Documentation
 
-- Свечи в `data/` (не в git) **только дописываются**: свежий период добавляется к существующему
-  листингу (`src/append.js`), а не заменяет его. Укороченный листинг молча сдвигает окно бэктеста,
-  и замеры перестают быть сопоставимыми.
-- Перед перезаписью любого файла в `data/` сверить покрытие старого и нового: если новый короче —
-  это ошибка, а не обновление.
-- Формат Parquet меняется только с обратной совместимостью: уже скачанные файлы должны читаться.
+- A new command or option goes into [`README.md`](README.md) and [`devs/usage.md`](devs/usage.md):
+  what it does, its parameters, a usage example.
+- A change of the broker or strategy contract updates [`devs/structure.md`](devs/structure.md) in the
+  same commit.
 
-## Коммиты
+## Data
 
-- Сообщение по-русски. Первая строка — `<область>: что изменилось` (`metrics: …`, `tinkoff: …`),
-  в теле — почему.
-- Один коммит — одна тема: исправление, уборка и форматирование идут раздельно.
-- Правки live-брокеров выкатываются вне торговой сессии.
+- Candles in `data/` (not in git) are **only appended to**: a fresh period is added to the existing
+  listing (`src/append.js`) instead of replacing it. A shortened listing silently shifts the backtest
+  window, and measurements stop being comparable.
+- Before overwriting any file in `data/`, compare the coverage of the old and the new one: if the new
+  one is shorter, it is a mistake, not an update.
+- The Parquet format changes only with backward compatibility: files already downloaded must stay
+  readable.
+
+## Commits
+
+- The message is in English. The first line is `<area>: what changed` (`metrics: …`, `tinkoff: …`);
+  the body explains why.
+- One commit, one topic: a fix, a cleanup and a reformatting go separately.
+- Changes to live brokers are deployed outside the trading session.

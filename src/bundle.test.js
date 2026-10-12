@@ -34,7 +34,7 @@ async function workspace() {
 /** Days of a series' candles: a bundle series is columnar and is walked with its iterator. */
 const days = (series) => [...series].map((c) => c.datetime.toISOString().slice(0, 10));
 
-test("бандл несёт всю вселенную: тикеры, лоты по бумагам, все интервалы", async () => {
+test("a bundle carries the whole universe: tickers, per-instrument lots, all intervals", async () => {
     const { dir, inputs, out } = await workspace();
     try {
         const summary = await bundle(inputs, { out });
@@ -43,15 +43,15 @@ test("бандл несёт всю вселенную: тикеры, лоты п
 
         const ds = await loadDataset(out);
         assert.deepEqual(ds.symbols, ["AAA", "BBB"]);
-        assert.equal(ds.instruments.get("AAA").lot, 10, "лот у каждой бумаги свой");
+        assert.equal(ds.instruments.get("AAA").lot, 10, "each instrument has its own lot");
         assert.equal(ds.instruments.get("BBB").lot, 1);
-        assert.equal(ds.bySymbol.get("AAA").get(1440).length, 3, "дневные свечи на месте");
+        assert.equal(ds.bySymbol.get("AAA").get(1440).length, 3, "daily candles are in place");
     } finally {
         await rm(dir, { recursive: true, force: true });
     }
 });
 
-test("поток бандла идёт по времени, конец каждой минуты помечен isBatchEnd", async () => {
+test("the bundle stream goes by time, the end of each minute is marked isBatchEnd", async () => {
     const { dir, inputs, out } = await workspace();
     try {
         await bundle(inputs, { out });
@@ -69,27 +69,27 @@ test("поток бандла идёт по времени, конец кажд�
     }
 });
 
-test("--from режет минутки, но оставляет дневную историю для фич; --to режет всё", async () => {
+test("--from cuts minute candles but keeps daily history for features; --to cuts everything", async () => {
     const { dir, inputs, out } = await workspace();
     try {
         await bundle(inputs, { out, from: "2026-01-07" });
         const fromDs = await loadDataset(out);
         assert.deepEqual(days(fromDs.bySymbol.get("AAA").get(1)), ["2026-01-07"]);
         assert.deepEqual(days(fromDs.bySymbol.get("AAA").get(1440)), ["2026-01-05", "2026-01-06", "2026-01-07"],
-            "дневные до --from нужны стратегии как история d-1…d-5");
+            "daily candles before --from are needed by strategies as d-1…d-5 history");
 
         const toOut = join(dir, "to.parquet");
         await bundle(inputs, { out: toOut, to: "2026-01-06" });
         const toDs = await loadDataset(toOut);
         assert.deepEqual(days(toDs.bySymbol.get("AAA").get(1)), ["2026-01-06", "2026-01-06"]);
         assert.deepEqual(days(toDs.bySymbol.get("AAA").get(1440)), ["2026-01-05", "2026-01-06"],
-            "после --to нельзя ни на каком интервале — это заглядывание вперёд");
+            "nothing after --to on any interval — that would be look-ahead");
     } finally {
         await rm(dir, { recursive: true, force: true });
     }
 });
 
-test("--tickers отбирает бумаги, существующий файл без --force не перезаписывается", async () => {
+test("--tickers selects instruments, an existing file is not overwritten without --force", async () => {
     const { dir, inputs, out } = await workspace();
     try {
         await bundle(inputs, { out, tickers: ["BBB"] });

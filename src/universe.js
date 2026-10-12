@@ -67,20 +67,20 @@ export function rejectionReasons(share, options = {}) {
     } = options;
 
     const out = [];
-    if (!share.shortEnabledFlag) out.push("шорт запрещён");
-    if (!share.liquidityFlag) out.push("неликвид");
-    if (!share.apiTradeAvailableFlag) out.push("нет торговли через API");
-    if (!share.sellAvailableFlag) out.push("продажа недоступна");
-    if (share.otcFlag) out.push("внебиржа");
-    if (share.blockedTcaFlag) out.push("блокировка ТКА");
-    if (share.forQualInvestorFlag && !allowQual) out.push("только для квалов");
-    if (currency && String(share.currency).toLowerCase() !== currency) out.push(`валюта ${share.currency}`);
-    if (exchangePattern && !exchangePattern.test(share.exchange || "")) out.push(`биржа ${share.exchange}`);
+    if (!share.shortEnabledFlag) out.push("short disabled");
+    if (!share.liquidityFlag) out.push("illiquid");
+    if (!share.apiTradeAvailableFlag) out.push("no API trading");
+    if (!share.sellAvailableFlag) out.push("selling unavailable");
+    if (share.otcFlag) out.push("OTC");
+    if (share.blockedTcaFlag) out.push("TCA block");
+    if (share.forQualInvestorFlag && !allowQual) out.push("qualified investors only");
+    if (currency && String(share.currency).toLowerCase() !== currency) out.push(`currency ${share.currency}`);
+    if (exchangePattern && !exchangePattern.test(share.exchange || "")) out.push(`exchange ${share.exchange}`);
 
     const first = share.first1minCandleDate ? new Date(share.first1minCandleDate).getTime() : null;
-    if (!first) out.push("нет минутной истории");
+    if (!first) out.push("no minute history");
     else if ((now - first) / DAY_MS < minHistoryDays) {
-        out.push(`история ${Math.round((now - first) / DAY_MS)} дн. < ${minHistoryDays}`);
+        out.push(`history ${Math.round((now - first) / DAY_MS)} days < ${minHistoryDays}`);
     }
     return out;
 }
@@ -117,7 +117,7 @@ async function withRetry(call, label, attempts = 4) {
         } catch (error) {
             lastError = error;
             const delay = 1000 * 2 ** i;
-            console.error(`[universe] ${label}: ${error.message?.split("\n")[0]} — повтор через ${delay} мс`);
+            console.error(`[universe] ${label}: ${error.message?.split("\n")[0]} — retry in ${delay} ms`);
             await new Promise((resolve) => { setTimeout(resolve, delay); });
         }
     }
@@ -146,8 +146,8 @@ async function filterByRequiredTests(api, selected, rejected) {
         ));
     } catch (error) {
         console.error(
-            `[universe] тесты счёта недоступны (${error.message?.split("\n")[0]}) — `
-            + "проверка пропущена, непройденный тест выяснится отказом заявки.",
+            `[universe] account tests unavailable (${error.message?.split("\n")[0]}) — `
+            + "check skipped, a missing test will show up as an order rejection.",
         );
         return { passedTests: null, checked: 0 };
     }
@@ -165,7 +165,7 @@ async function filterByRequiredTests(api, selected, rejected) {
             }
         }
     } catch (error) {
-        console.error(`[universe] список активов недоступен (${error.message?.split("\n")[0]}) — проверка пропущена.`);
+        console.error(`[universe] asset list unavailable (${error.message?.split("\n")[0]}) — check skipped.`);
         return { passedTests, checked: 0 };
     }
 
@@ -196,7 +196,7 @@ async function filterByRequiredTests(api, selected, rejected) {
         const item = selected[i];
         const missing = missingTests(item.requiredTests, passedTests);
         if (missing.length > 0) {
-            item.reasons = [`не сдан тест: ${missing.join(", ")}`];
+            item.reasons = [`test not passed: ${missing.join(", ")}`];
             rejected.push(...selected.splice(i, 1));
         }
     }
@@ -246,8 +246,8 @@ export async function selectUniverse(options = {}) {
         const { passedTests, checked } = await filterByRequiredTests(api, selected, rejected);
         if (passedTests) {
             console.error(
-                `[universe] проверено активов: ${checked}; счёт сдал тесты: `
-                + `${passedTests.length ? passedTests.join(", ") : "нет"}.`,
+                `[universe] assets checked: ${checked}; tests passed by the account: `
+                + `${passedTests.length ? passedTests.join(", ") : "none"}.`,
             );
         }
     }
@@ -271,7 +271,7 @@ export async function selectUniverse(options = {}) {
                 item.lotCost = price != null ? price * item.lot : null;
             }
         } catch (error) {
-            console.error(`[universe] последние цены недоступны: ${error.message}`);
+            console.error(`[universe] last prices unavailable: ${error.message}`);
         }
     }
 
@@ -280,7 +280,7 @@ export async function selectUniverse(options = {}) {
         for (let i = selected.length - 1; i >= 0; i -= 1) {
             const item = selected[i];
             if (item.lotCost != null && item.lotCost > maxLotCost) {
-                item.reasons = [`лот ${item.lotCost.toFixed(0)} ₽ > ${maxLotCost} ₽`];
+                item.reasons = [`lot ${item.lotCost.toFixed(0)} ₽ > ${maxLotCost} ₽`];
                 rejected.push(...selected.splice(i, 1));
             }
         }
@@ -294,15 +294,15 @@ export async function selectUniverse(options = {}) {
 const program = new Command();
 program
     .name("diviner-universe")
-    .description("Отобрать шортируемые ликвидные бумаги через T-Invest API")
-    .option("--min-history-days <n>", "Минимальная глубина минутной истории, дней", "400")
-    .option("--max-lot-cost <rub>", "Отбросить бумаги, у которых лот дороже (0 = без фильтра)", "0")
-    .option("--allow-qual", "Не исключать бумаги для квалифицированных инвесторов", false)
-    .option("--no-check-tests", "Не сверять требуемые тесты инструментов с пройденными на счёте")
-    .option("--table", "Человекочитаемая таблица вместо списка тикеров", false)
-    .option("--json", "Полные записи в JSON", false)
-    .option("--show-rejected", "Показать отсеянные и причины", false)
-    .option("--out <path>", "Записать файл вселенной для multi-broker (--universe-file)");
+    .description("Select shortable liquid shares through the T-Invest API")
+    .option("--min-history-days <n>", "Minimum depth of minute history, days", "400")
+    .option("--max-lot-cost <rub>", "Drop instruments whose lot costs more (0 = no filter)", "0")
+    .option("--allow-qual", "Keep instruments for qualified investors", false)
+    .option("--no-check-tests", "Do not match instruments' required tests against the account's passed tests")
+    .option("--table", "Human-readable table instead of a ticker list", false)
+    .option("--json", "Full records as JSON", false)
+    .option("--show-rejected", "Show rejected instruments and the reasons", false)
+    .option("--out <path>", "Write the universe file for multi-broker (--universe-file)");
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     program.parse();
@@ -330,14 +330,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                 checkTests: opts.checkTests !== false,
             },
         }, null, 2));
-        console.error(`[universe] ${selected.length} тикеров → ${opts.out}`);
+        console.error(`[universe] ${selected.length} tickers → ${opts.out}`);
     }
 
     if (opts.json) {
         console.log(JSON.stringify({ selected, rejected }, null, 2));
     } else if (opts.table) {
-        console.log(`Отобрано ${selected.length} бумаг из ${selected.length + rejected.length}\n`);
-        console.log("  Ticker    Lot   Цена ₽   Лот ₽   dshort  История с");
+        console.log(`Selected ${selected.length} of ${selected.length + rejected.length} instruments\n`);
+        console.log("  Ticker    Lot  Price ₽   Lot ₽   dshort  History from");
         for (const s of selected) {
             console.log(
                 `  ${s.ticker.padEnd(8)} ${String(s.lot).padStart(4)} `
@@ -357,7 +357,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                 byReason.get(reason).push(r.ticker);
             }
         }
-        console.error(`\nОтсеяно ${rejected.length}:`);
+        console.error(`\nRejected ${rejected.length}:`);
         for (const [reason, tickers] of [...byReason].sort((a, b) => b[1].length - a[1].length)) {
             console.error(`  ${reason} — ${tickers.length}: ${tickers.slice(0, 12).join(" ")}${tickers.length > 12 ? " …" : ""}`);
         }

@@ -7,28 +7,28 @@ import { missingTests, rejectionReasons } from "./universe.js";
 // with "pass a test in the Profile section". The requirement sits on the asset, not on
 // the instrument, and has to be matched against the account's own passed list.
 
-test("без требуемых тестов бумага доступна", () => {
+test("without required tests the instrument is available", () => {
     assert.deepEqual(missingTests([], ["russian_shares"]), []);
     assert.deepEqual(missingTests(undefined, ["russian_shares"]), []);
     assert.deepEqual(missingTests(null, null), []);
 });
 
-test("сданный тест снимает требование", () => {
+test("a passed test lifts the requirement", () => {
     assert.deepEqual(missingTests(["russian_shares"], ["russian_shares", "derivatives"]), []);
 });
 
-test("несданный тест возвращается как причина отказа", () => {
+test("a missing test is returned as a rejection reason", () => {
     assert.deepEqual(missingTests(["structured_bonds"], ["russian_shares"]), ["structured_bonds"]);
 });
 
-test("из нескольких требований возвращаются только несданные", () => {
+test("of several requirements only the missing ones are returned", () => {
     assert.deepEqual(
         missingTests(["a", "b", "c"], ["b"]),
         ["a", "c"],
     );
 });
 
-test("пустой список сданных отвергает любое требование", () => {
+test("an empty passed list rejects any requirement", () => {
     assert.deepEqual(missingTests(["a"], []), ["a"]);
     assert.deepEqual(missingTests(["a"], undefined), ["a"]);
 });
@@ -41,27 +41,27 @@ const goodShare = {
     currency: "rub", exchange: "MOEX", first1minCandleDate: new Date("2020-01-01"),
 };
 
-test("пригодная бумага проходит без замечаний", () => {
+test("a suitable instrument passes without remarks", () => {
     assert.deepEqual(rejectionReasons(goodShare, { now: Date.parse("2026-09-01") }), []);
 });
 
-test("запрет шорта отсеивает бумагу", () => {
+test("a short ban rejects the instrument", () => {
     const reasons = rejectionReasons({ ...goodShare, shortEnabledFlag: false }, { now: Date.parse("2026-09-01") });
-    assert.deepEqual(reasons, ["шорт запрещён"]);
+    assert.deepEqual(reasons, ["short disabled"]);
 });
 
-test("короткая история отсеивает бумагу и называет глубину", () => {
+test("a short history rejects the instrument and states the depth", () => {
     const reasons = rejectionReasons(
         { ...goodShare, first1minCandleDate: new Date("2026-06-01") },
         { now: Date.parse("2026-09-01"), minHistoryDays: 400 },
     );
     assert.equal(reasons.length, 1);
-    assert.match(reasons[0], /^история \d+ дн\. < 400$/);
+    assert.match(reasons[0], /^history \d+ days < 400$/);
 });
 
-test("--allow-qual возвращает бумаги для квалов", () => {
+test("--allow-qual brings back qualified-investor instruments", () => {
     const share = { ...goodShare, forQualInvestorFlag: true };
     const now = Date.parse("2026-09-01");
-    assert.deepEqual(rejectionReasons(share, { now }), ["только для квалов"]);
+    assert.deepEqual(rejectionReasons(share, { now }), ["qualified investors only"]);
     assert.deepEqual(rejectionReasons(share, { now, allowQual: true }), []);
 });

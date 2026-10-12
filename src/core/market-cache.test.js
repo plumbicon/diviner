@@ -11,13 +11,13 @@ const source = {
     async getTradingSchedule() { return []; },
 };
 
-test("через кэш стратегия видит вселенную и лоты бумаг, как в бэктесте", () => {
+test("through the cache the strategy sees the universe and lots, as in the backtest", () => {
     const context = new TemporalView({ dataSource: new MarketDataCache(source), metadata: { source: "tinkoff" } });
     assert.deepEqual(context.getSymbols(), ["AAA", "BBB"]);
     assert.equal(context.getInstrumentMetadata("BBB").lot, 100);
 });
 
-test("однобумажный источник без вселенной: кэш не ломает запасной путь через метаданные", () => {
+test("a single-ticker source without a universe: the cache keeps the metadata fallback working", () => {
     const single = { async getHistory() { return []; }, async getTradingSchedule() { return []; } };
     const context = new TemporalView({
         dataSource: new MarketDataCache(single),

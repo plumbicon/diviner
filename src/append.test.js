@@ -31,7 +31,7 @@ async function workspace() {
 const closes = async (path, minutes = 1) =>
     (await loadDataset(path)).series.get(minutes).map((c) => c.close);
 
-test("свежий период дописывается, история и другие интервалы сохраняются", async () => {
+test("a fresh period is appended, history and other intervals are kept", async () => {
     const { dir, into, fresh } = await workspace();
     try {
         // 3 and 4 overlap: the exchange may have recomputed the bar — the fresh candle wins.
@@ -39,8 +39,8 @@ test("свежий период дописывается, история и др
         const { summary } = await append(into, [src]);
 
         assert.deepEqual(await closes(into), [100, 101, 102, 203, 204, 205, 206]);
-        assert.deepEqual(await closes(into, 1440), [90], "дневные свечи не пропали");
-        assert.equal((await loadDataset(into)).metadata.instrument.lot, 10, "метаданные листинга на месте");
+        assert.deepEqual(await closes(into, 1440), [90], "daily candles did not disappear");
+        assert.equal((await loadDataset(into)).metadata.instrument.lot, 10, "the listing's metadata is in place");
         assert.deepEqual(summary.find((s) => s.minutes === 1), {
             minutes: 1, was: 5, now: 7, added: 2, from: "2026-01-06", to: "2026-01-06",
         });
@@ -49,7 +49,7 @@ test("свежий период дописывается, история и др
     }
 });
 
-test("свежий файл короче листинга — история не укорачивается", async () => {
+test("a fresh file shorter than the listing — history is not shortened", async () => {
     // Exactly the mistake the command guards against: a fragment downloaded and put in place of the file.
     const { dir, into, fresh } = await workspace();
     try {
@@ -61,7 +61,7 @@ test("свежий файл короче листинга — история н�
     }
 });
 
-test("--dry-run считает итог, но файл не трогает", async () => {
+test("--dry-run computes the result but leaves the file alone", async () => {
     const { dir, into, fresh } = await workspace();
     try {
         const before = await stat(into);
@@ -75,7 +75,7 @@ test("--dry-run считает итог, но файл не трогает", asy
     }
 });
 
-test("свечи другой бумаги в листинг не сливаются", async () => {
+test("candles of another instrument are not merged into the listing", async () => {
     const { dir, into, fresh } = await workspace();
     try {
         const src = await fresh("other.parquet", [minute(5, 999)], "OTHER");
@@ -86,7 +86,7 @@ test("свечи другой бумаги в листинг не сливают
     }
 });
 
-test("в бандл не дописывает — бандл пересобирают из листингов", async () => {
+test("does not append to a bundle — bundles are rebuilt from listings", async () => {
     const dir = await mkdtemp(join(tmpdir(), "diviner-append-"));
     try {
         const bundle = join(dir, "bundle.parquet");

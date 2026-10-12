@@ -21,21 +21,13 @@ function sources(dir = ROOT) {
 }
 
 const CYRILLIC = /[А-Яа-яЁё]/;
-
-/**
- * Comment part of a line, or null: a whole-line comment (`//`, `/*`, ` * …`) or a trailing
- * `// …` after code.
- */
-function commentOf(line) {
-    const trimmed = line.trim();
-    if (/^(\/\/|\/\*|\*)/.test(trimmed)) return trimmed;
-    const trailing = line.match(/\s\/\/\s.*$/);
-    return trailing ? trailing[0] : null;
-}
+// Regex literals that contain Cyrillic: they match the broker's Russian messages and
+// operation types — that is data, the only place Cyrillic is allowed in the code.
+const CYRILLIC_REGEX_LITERAL = /\/(?:\\.|[^/\n])*[А-Яа-яЁё](?:\\.|[^/\n])*\/[a-z]*/g;
 
 /**
  * Style violations in a file: tabs and trailing spaces, code indentation not a multiple
- * of 4, no final newline, comments not in English. JSDoc lines (` * …`) and the content of
+ * of 4, no final newline, Cyrillic text (comments, logs, test names must be in English). JSDoc lines (` * …`) and the content of
  * multi-line template literals are not checked for indentation — there it is part of the text.
  */
 function violations(path) {
@@ -44,25 +36,24 @@ function violations(path) {
     let inTemplate = false;
     text.split("\n").forEach((line, i) => {
         const where = `${relative(ROOT, path)}:${i + 1}`;
-        if (/\t/.test(line)) found.push(`${where} табуляция`);
-        if (/\s+$/.test(line)) found.push(`${where} пробелы в конце строки`);
+        if (/\t/.test(line)) found.push(`${where} tab`);
+        if (/\s+$/.test(line)) found.push(`${where} trailing spaces`);
         const insideTemplate = inTemplate;
         if ((line.match(/`/g) || []).length % 2 === 1) inTemplate = !inTemplate;
+        if (CYRILLIC.test(line.replace(CYRILLIC_REGEX_LITERAL, ""))) found.push(`${where} text is not in English`);
         if (insideTemplate) return;
-        const comment = commentOf(line);
-        if (comment && CYRILLIC.test(comment)) found.push(`${where} comment is not in English`);
         const indent = line.match(/^( *)(\S)/);
         if (indent && indent[2] !== "*" && indent[1].length % 4 !== 0) {
-            found.push(`${where} отступ ${indent[1].length} — не кратен 4`);
+            found.push(`${where} indent ${indent[1].length} — not a multiple of 4`);
         }
     });
-    if (text.length > 0 && !text.endsWith("\n")) found.push(`${relative(ROOT, path)} нет перевода строки в конце`);
+    if (text.length > 0 && !text.endsWith("\n")) found.push(`${relative(ROOT, path)} no final newline`);
     return found;
 }
 
-test("код движка: отступ 4 пробела, без табуляций и хвостовых пробелов, комментарии на английском", () => {
+test("engine code: 4-space indent, no tabs or trailing spaces, text in English", () => {
     const files = sources();
-    assert.ok(files.length > 50, "файлы найдены");
+    assert.ok(files.length > 50, "files found");
     const all = files.flatMap(violations);
-    assert.deepEqual(all, [], `нарушения стиля (см. CONTRIBUTING.md):\n${all.slice(0, 20).join("\n")}`);
+    assert.deepEqual(all, [], `style violations (see CONTRIBUTING.md):\n${all.slice(0, 20).join("\n")}`);
 });

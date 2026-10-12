@@ -1,65 +1,66 @@
-# CLI: использование
+# CLI usage
 
-Архитектура — [structure.md](structure.md).
+Architecture — [structure.md](structure.md).
 
-## Установка
+## Installation
 
 ```bash
 npm install
-export T_INVEST_TOKEN=<your-token>   # для команд, обращающихся к T-Invest API
+export T_INVEST_TOKEN=<your-token>   # for commands that call the T-Invest API
 ```
 
-## Единая точка входа
+## Single entry point
 
 ```bash
-diviner <путь-к-брокеру> --strategy <путь> [опции брокера]
+diviner <path-to-broker> --strategy <path> [broker options]
 ```
 
-`<путь-к-брокеру>` — обязательный позиционный аргумент, путь к файлу брокера (как `--strategy` —
-путь к стратегии). Опции брокера валидируются по его `export const options`, поэтому добавить
-брокера — это добавить файл, не трогая CLI.
+`<path-to-broker>` is a required positional argument, the path to the broker file (just as
+`--strategy` is the path to the strategy). Broker options are validated against its
+`export const options`, so adding a broker means adding a file without touching the CLI.
 
-Загрузка данных и конвертация в Parquet — не часть `diviner`, это отдельные скрипты
-(см. [Загрузка данных](#загрузка-данных) и [Конвертация](#конвертация) ниже).
+Data download and conversion to Parquet are not part of `diviner` — they are separate scripts
+(see [Data download](#data-download) and [Conversion](#conversion) below).
 
-**Первый запуск без токена и без данных** — в [`examples/`](../examples/README.md): генератор
-синтетических свечей и две стратегии-примера, однобумажная и кросс-секционная.
+**A first run without a token or data** — see [`examples/`](../examples/README.md): a synthetic candle
+generator and two example strategies, a single-ticker and a cross-sectional one.
 
-## Бэктест одного инструмента (`simulated`)
+## Backtest of one instrument (`simulated`)
 
 ```bash
 diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
-  --strategy <путь-к-стратегии> --balance 10000 --commission 0.0005
+  --strategy <path-to-strategy> --balance 10000 --commission 0.0005
 ```
 
-| Опция | Описание | По умолчанию |
-|-------|----------|-------------|
-| `--strategy` | Путь к файлу стратегии | — |
-| `--balance` | Начальный виртуальный баланс | `10000` |
-| `--commission` | Комиссия | `0.0005` |
-| `--leverage` | Плечо шорта: масштабирует размер позиции и залог | `1` |
-| `--fill-next-open` | Заливка по open следующей свечи той же бумаги, а не по close текущей | выкл |
-| `--intrabar-stops` | SL/TP по high/low, исполнение по уровню | выкл |
-| `--model-liquidation` | gap-aware филлы + margin-call (с leverage>1) | выкл |
-| `--risk-rates <file>` | Ставки риска брокера по бумагам: плечо бумаги не выше `1/dshort` (только вселенная) | — |
-| `--verbose` | Включить `trade_log` в отчёт | выкл |
-| `[source]` | Позиционный аргумент — Parquet (или stdin) | — |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--strategy` | Path to the strategy file | — |
+| `--balance` | Starting virtual balance | `10000` |
+| `--commission` | Commission | `0.0005` |
+| `--leverage` | Short leverage: scales the position size and the margin | `1` |
+| `--fill-next-open` | Fill at the next open of the same instrument instead of the current close | off |
+| `--intrabar-stops` | SL/TP by high/low, filled at the level | off |
+| `--model-liquidation` | gap-aware fills + margin call (with leverage > 1) | off |
+| `--risk-rates <file>` | Broker risk rates per instrument: an instrument's leverage is at most `1/dshort` (universe only) | — |
+| `--verbose` | Include `trade_log` in the report | off |
+| `[source]` | Positional argument — Parquet (or stdin) | — |
 
-Данные можно подать через pipe: `cat data/tinkoff/SBER_2024_1m.parquet | diviner src/broker/simulated/broker.js --strategy …`.
-Отчёт печатается в stdout как JSON (`backtest_parameters`, `performance_metrics`, `trade_log`).
+Data can be piped: `cat data/tinkoff/SBER_2024_1m.parquet | diviner src/broker/simulated/broker.js --strategy …`.
+The report is printed to stdout as JSON (`backtest_parameters`, `performance_metrics`, `trade_log`).
 
-**Размер позиции по умолчанию:** весь кэш, кратно лоту —
-`floor(cash / (price·1.01·(1/leverage + commission)·lot))·lot`, где 1% — запас на проскальзывание.
-Размер лота — из метаданных parquet, поэтому бэктест сайзит так же, как live-брокер.
+**Default position size:** all the cash, in whole lots —
+`floor(cash / (price·1.01·(1/leverage + commission)·lot))·lot`, where 1% is the slippage reserve.
+The lot size comes from the parquet metadata, so the backtest sizes positions the way the live
+broker does.
 
-**Просадка** (`maxDrawdownPct`) считается от пика капитала перед просадкой. До 11.10.2026 она
-делилась на максимум всего прогона и у растущей кривой была занижена — старые отчёты с новыми
-по просадке и Calmar несравнимы.
+**Drawdown** (`maxDrawdownPct`) is measured from the equity peak before the drawdown. Before
+2026-10-11 it was divided by the maximum of the whole run and was understated on a rising curve —
+drawdown and Calmar of older reports are not comparable with new ones.
 
-## Бэктест вселенной (мультитикерный бандл)
+## Backtest of a universe (multi-ticker bundle)
 
-Кросс-секционной стратегии нужен один файл со всей вселенной. Его собирает `src/bundle.js` из
-однобумажных листингов:
+A cross-sectional strategy needs one file with the whole universe. `src/bundle.js` builds it from
+single-ticker listings:
 
 ```bash
 node src/bundle.js --out data/tinkoff/UNIVERSE_2026_1m.parquet \
@@ -67,136 +68,137 @@ node src/bundle.js --out data/tinkoff/UNIVERSE_2026_1m.parquet \
 ```
 ```bash
 diviner src/broker/simulated/broker.js data/tinkoff/UNIVERSE_2026_1m.parquet \
-  --strategy <путь-к-стратегии> --balance 100000 --fill-next-open --intrabar-stops
+  --strategy <path-to-strategy> --balance 100000 --fill-next-open --intrabar-stops
 ```
 
-Опции те же, что у однобумажного бэктеста. Отличия:
-- поток — все бумаги по времени, минута отдаётся пачкой, последняя свеча пачки — `isBatchEnd`;
-- размер позиции задаёт стратегия: `this.execution.sell({ ticker, budget, … })`;
-- капитал отмечается раз в минуту (на конце пачки) по ценам всех открытых позиций;
-- `--risk-rates` ограничивает плечо шорта по каждой бумаге ставкой риска брокера.
+The options are the same as for a single-ticker backtest. Differences:
+- the stream carries every instrument by time, a minute comes as a batch, its last candle is `isBatchEnd`;
+- the strategy sets the position size: `this.execution.sell({ ticker, budget, … })`;
+- equity is marked once a minute (at the end of the batch) at the prices of all open positions;
+- `--risk-rates` caps the short leverage of each instrument by the broker's risk rate.
 
-## Бэктест всех тикеров (параллельно)
+## Backtest of every ticker (in parallel)
 
 ```bash
-node scripts/backtest.mjs --strategy <ИМЯ> --year 2026 --leverage 4 --intrabar-stops [--workers 8] [--top 25]
+node scripts/backtest.mjs --strategy <NAME> --year 2026 --leverage 4 --intrabar-stops [--workers 8] [--top 25]
 ```
 
-Прогоняет все `data/tinkoff/*_<year>_1m.parquet` на пуле `worker_threads` (переопределяется
-`BACKTEST_DATA_DIR`), печатает рейтинг по доходности
-(+ MaxDD/Sharpe/Calmar/WinRate) и агрегаты. Резолвит стратегию как `src/strategies/<name>/<name>.js`.
+Runs every `data/tinkoff/*_<year>_1m.parquet` on a `worker_threads` pool (override with
+`BACKTEST_DATA_DIR`), prints a ranking by return (+ MaxDD/Sharpe/Calmar/WinRate) and aggregates.
+Resolves the strategy as `src/strategies/<name>/<name>.js`.
 
 ## Live (`tinkoff/multi-broker.js`)
 
-Единственный live-путь на MOEX: одна подписка на свечи всей вселенной, одна стратегия, один счёт.
-Одна бумага — это вселенная из одного тикера (`--tickers SBER`).
+The only live path on MOEX: one candle subscription for the whole universe, one strategy, one
+account. A single instrument is a one-ticker universe (`--tickers SBER`).
 
 ```bash
 T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/multi-broker.js \
-  --strategy <путь-к-стратегии> --account <id> \
+  --strategy <path-to-strategy> --account <id> \
   --universe-file data/universe.json --intrabar-stops --log logs/bot.log
 ```
 
-| Опция | Описание | По умолчанию |
-|-------|----------|-------------|
-| `--tickers <list>` | Вселенная списком через запятую | — |
-| `--universe-file <path>` | JSON со вселенной и кэшем инструментов (делает `src/universe.js --out`) | — |
-| `--account <id>` | ID счёта | — |
-| `--sandbox`, `--dry-run` | Песочница / без отправки заявок | выкл |
-| `--interval <minutes>` | Интервал свечей | `1` |
-| `--batch-grace-ms <ms>` | Сколько ждать отставших бумаг минуты перед решением | `8000` |
-| `--stall-timeout <minutes>` | Порог тишины всего стрима в сессии (0 — выключить), см. ниже | `30` |
-| `--intrabar-stops` | SL/TP по high/low пришедшей свечи | выкл |
-| `--leverage <n>` | Плечо; >1 шлёт `confirmMarginTrade` | `1` |
-| `--close-on-exit` | Закрыть все позиции при остановке | выкл |
-| `--order-retries`, `--order-tag` | Повторы заявки, метка ключа идемпотентности | `2`, `div` |
-| `--state-dir <path>` | Каталог файлов состояния позиций | `.diviner-state` |
-| `--print-balance`, `--print-history`, `--history-from` | Утилиты счёта, см. ниже | — |
-| `--log <path>` | Дублировать вывод в файл | — |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--tickers <list>` | The universe as a comma-separated list | — |
+| `--universe-file <path>` | JSON with the universe and instrument cache (made by `src/universe.js --out`) | — |
+| `--account <id>` | Account ID | — |
+| `--sandbox`, `--dry-run` | Sandbox / no orders sent | off |
+| `--interval <minutes>` | Candle interval | `1` |
+| `--batch-grace-ms <ms>` | How long to wait for late instruments of a minute before deciding | `8000` |
+| `--stall-timeout <minutes>` | Silence threshold of the whole stream during a session (0 disables), see below | `30` |
+| `--intrabar-stops` | SL/TP by the high/low of the arrived candle | off |
+| `--leverage <n>` | Leverage; > 1 sends `confirmMarginTrade` | `1` |
+| `--close-on-exit` | Close all positions on shutdown | off |
+| `--order-retries`, `--order-tag` | Order retries, idempotency key label | `2`, `div` |
+| `--state-dir <path>` | Directory of position state files | `.diviner-state` |
+| `--print-balance`, `--print-history`, `--history-from` | Account utilities, see below | — |
+| `--log <path>` | Duplicate output to a file | — |
 
-Файл вселенной — `{"tickers": [...], "instruments": {...}}`; резолв инструментов кэшируется в нём
-же (резолв сотни тикеров через API занимает ~40 с). Минута отдаётся стратегии, когда пришли все
-бумаги или истекло `--batch-grace-ms` с первой свечи минуты: тонкая бумага без сделок в минуте
-свечи не печатает, и ждать её бесполезно. Бумага, по которой брокер отклонил заявку как
-недоступную (нужен тест инструмента, нет шорта), блокируется до перезапуска; при нехватке залога —
-до роста кассы.
+The universe file is `{"tickers": [...], "instruments": {...}}`; instrument resolution is cached in
+the same file (resolving a hundred tickers through the API takes ~40 s). A minute is handed to the
+strategy once every instrument has arrived or `--batch-grace-ms` has passed since the minute's first
+candle: a thin instrument without trades in a minute prints no candle, and waiting for it is
+pointless. An instrument whose order the broker rejected as unavailable (an instrument test is
+required, no shorting) is blocked until restart; on insufficient margin — until the cash grows.
 
-Режимы: `--sandbox`, `--dry-run`, реальный счёт (без флагов). По SIGINT/SIGTERM движок выходит
-из цикла, брокер закрывает сессию (отписка, сводка, по `--close-on-exit` — закрытие позиций).
-После рестарта открытые позиции подхватываются со счёта, уровни SL/TP — из файлов состояния в
-`--state-dir`, история удержания и минутки текущей сессии догружаются стратегией.
+Modes: `--sandbox`, `--dry-run`, a real account (no flags). On SIGINT/SIGTERM the engine leaves its
+loop and the broker closes the session (unsubscribe, summary, positions closed with
+`--close-on-exit`). After a restart open positions are picked up from the account, SL/TP levels from
+the state files in `--state-dir`, and the strategy catches up the holding history and the current
+session's minute candles.
 
-> ⚠️ Без `--verbose` стартовый вывод (подключение, баланс, подписка) печатается безусловно, а
-> поминутный heartbeat свечей — только с `--verbose`.
+> ⚠️ Without `--verbose` the start-up output (connection, balance, subscription) is printed
+> unconditionally, while the per-minute candle heartbeat is printed only with `--verbose`.
 
-> ⚠️ Макс. плечо шорта ограничено брокером (≈ `1/dShort`, своё у каждой бумаги): у ликвидных
-> MOEX-имён ~4.5–5×, у волатильных меньше. Заявку выше лимита брокер отклоняет («Not enough
-> balance»), поэтому исполнитель заранее урезает размер до разрешённого.
+> ⚠️ The maximum short leverage is capped by the broker (≈ `1/dShort`, per instrument): ~4.5–5× for
+> liquid MOEX names, less for volatile ones. The broker rejects an order above the limit ("Not
+> enough balance"), so the executor trims the size to the allowed one beforehand.
 
-### Обрыв стрима свечей
+### Candle stream outages
 
-Соединение может умереть молча: без данных и без ошибки. Защита — в `TinkoffClient` и в стороже
-тишины источника данных:
+A connection can die silently: no data and no error. The defences are in `TinkoffClient`
+(`candle-stream.js`) and in the data source's silence watchdog:
 
-| Уровень | Что ловит | Реакция |
-|---------|-----------|---------|
-| gRPC keepalive (PING раз в 60 с, ответ ≤ 20 с) | полуоткрытое TCP-соединение | соединение рвётся, обычное переподключение |
-| Пинги брокера в стриме (по документации раз в 120 с, на деле ~60 с, если нет других сообщений) | стрим жив по сокету, но не отдаёт ничего дольше 5 мин | вызов бросается, переподключение в новом |
-| Таймаут подписки (30 с) | подписка ждёт ответа, которого не будет | вызов бросается, повтор с нарастающей паузой |
-| Сторож тишины, `--stall-timeout` (30 мин без живых свечей в сессии) | всё остальное | переподписка в новом вызове; если и после неё ещё порог тишины — поток завершается ошибкой, процесс выходит с кодом 1, systemd поднимает новый |
+| Level | What it catches | Reaction |
+|-------|-----------------|----------|
+| gRPC keepalive (PING every 60 s, answer within 20 s) | a half-open TCP connection | the connection is dropped, the ordinary reconnect follows |
+| Broker pings in the stream (every 120 s per the docs, ~60 s in practice, when nothing else is sent) | the stream is alive at the socket level but delivers nothing for more than 5 min | the call is abandoned, the reconnect goes into a new one |
+| Subscription timeout (30 s) | a subscription waiting for an answer that will never come | the call is abandoned, retried with growing pauses |
+| Silence watchdog, `--stall-timeout` (30 min without live candles during a session) | everything else | resubscription in a new call; if the silence threshold passes again after it, the stream ends with an error, the process exits with code 1 and systemd starts a new one |
 
-Свечи догрузки по REST сторож тишины не считает: они приходят и при мёртвой подписке. Опции
-клиента: `keepaliveTimeMs`, `keepaliveTimeoutMs`, `streamSilenceMs`, `subscribeTimeoutMs`.
+The silence watchdog ignores REST catch-up candles: they arrive even with a dead subscription. Client
+options: `keepaliveTimeMs`, `keepaliveTimeoutMs`, `streamSilenceMs`, `subscribeTimeoutMs`.
 
-### Идентификация ордеров
+### Order identification
 
-Ключ идемпотентности (`order_id`) детерминированно строится из метки/тикера/действия/времени и
-кодируется как UUIDv5 (песочница требует UUID-формат). Формат seed:
-`<tag>-<ticker>-<O|C><B|S>-<yyMMddHHmmss>`. Это не «комментарий к сделке» — для богатых метаданных
-ведите свой лог по этому ключу.
+The idempotency key (`order_id`) is built deterministically from the label/ticker/action/time and
+encoded as a UUIDv5 (the sandbox requires the UUID format). Seed format:
+`<tag>-<ticker>-<O|C><B|S>-<yyMMddHHmmss>`. It is not a "trade comment" — for rich metadata keep your
+own log keyed by it.
 
-### Аккаунт-утилиты (без стратегии)
+### Account utilities (no strategy)
 
 ```bash
-# Инспекция — работает и на боевом (по умолчанию), и в sandbox (с --sandbox):
+# Inspection — works on a real account (default) and in the sandbox (with --sandbox):
 diviner src/broker/tinkoff/multi-broker.js --account <id> --print-balance
 diviner src/broker/tinkoff/multi-broker.js --account <id> --print-history --history-from 2026-06-01
 
-# Управление тестовыми счетами — только sandbox (требуют --sandbox):
+# Test account management — sandbox only (requires --sandbox):
 diviner src/broker/tinkoff/multi-broker.js --sandbox --create-account [--increase-balance 10000]
 diviner src/broker/tinkoff/multi-broker.js --sandbox --list-sandboxes
 ```
 
-Инспекция (`--print-balance`, `--print-history`) идёт по **боевому** счёту по умолчанию;
-с `--sandbox` — по песочнице. Управление счетами
-(`--list-sandboxes` · `--create-account` · `--remove-account` · `--reset-positions` ·
-`--increase-balance <amount>`) существует только в sandbox-API и **требует** `--sandbox`.
+Inspection (`--print-balance`, `--print-history`) targets the **real** account by default; with
+`--sandbox`, the sandbox. Account management (`--list-sandboxes` · `--create-account` ·
+`--remove-account` · `--reset-positions` · `--increase-balance <amount>`) exists only in the sandbox
+API and **requires** `--sandbox`.
 
-## Загрузка данных
+## Data download
 
-Не часть `diviner` — самостоятельный скрипт, часть брокера:
+Not part of `diviner` — a standalone script that belongs to the broker:
 
 ```bash
 T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-date 2024-01-01 \
   --till-date 2024-12-31 --interval 1 --parquet > data/tinkoff/SBER_2024_1m.parquet
 ```
 
-| Опция | Описание | По умолчанию |
-|-------|----------|-------------|
-| `--security` / `--ticker` | Тикер | `SBER` |
-| `--class-code` | Код класса | `TQBR` |
-| `--from-date` / `--till-date` | Диапазон (YYYY-MM-DD, MSK) | — / сегодня |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--security` / `--ticker` | Ticker | `SBER` |
+| `--class-code` | Class code | `TQBR` |
+| `--from-date` / `--till-date` | Range (YYYY-MM-DD, Moscow) | — / today |
 | `--interval` | 1=1m, 5=5m, 15=15m, 60=1h, 240=4h, 24=1d, … | `24` |
-| `--parquet` | Писать Parquet в stdout | выкл |
+| `--parquet` | Write Parquet to stdout | off |
 
-Крипта (OKX): `src/broker/okx/fetch.js`, `fetch-batch.js`, `fetch-metrics.js`.
+Crypto (OKX): `src/broker/okx/fetch.js`, `fetch-batch.js`, `fetch-metrics.js`.
 
-## Логирование стакана OKX
+## OKX order book logging
 
-Ни T-API, ни OKX не отдают историю L2-стакана — только текущий снэпшот и (для OKX) ~90 дней
-истории трейдов. Единственный способ получить данные стакана для скальп-стратегий — писать их
-самостоятельно, вперёд по времени, через публичный WebSocket (креды не нужны — это публичные
-рыночные данные).
+Neither the T-API nor OKX serves L2 order book history — only the current snapshot and (for OKX)
+~90 days of trade history. The only way to get order book data for scalping strategies is to record
+it yourself, forward in time, through the public WebSocket (no credentials needed — it is public
+market data).
 
 ```bash
 node src/broker/okx/orderbook-logger.js \
@@ -204,37 +206,38 @@ node src/broker/okx/orderbook-logger.js \
   --rotate-minutes 30 --out-dir data/okx-orderbook
 ```
 
-| Опция | Описание | По умолчанию |
-|-------|----------|-------------|
-| `--symbols` | Comma-separated ccxt-символы | топ-50 ликвидных (`TRAIN_SYMBOLS` из `fetch-batch.js`) |
-| `--depth` | Уровней на сторону | `20` |
-| `--interval-ms` | Период снэпшота | `1000` |
-| `--rotate-minutes` | Раз в сколько минут закрывать текущий файл и открывать новый | `30` |
-| `--out-dir` | Куда писать `.parquet` | `data/okx-orderbook` |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--symbols` | Comma-separated ccxt symbols | top 50 liquid (`TRAIN_SYMBOLS` from `fetch-batch.js`) |
+| `--depth` | Levels per side | `20` |
+| `--interval-ms` | Snapshot period | `1000` |
+| `--rotate-minutes` | How often to close the current file and open a new one | `30` |
+| `--out-dir` | Where to write `.parquet` | `data/okx-orderbook` |
 
-Файл во время записи называется `ob_okx_<timestamp>.parquet.inprogress` и переименовывается в
-`ob_okx_<timestamp>.parquet` только после чистого закрытия (ротация или Ctrl-C/SIGTERM) —
-**копировать с сервера безопасно только файлы без суффикса `.inprogress`**. Ротация ограничивает
-объём потери при жёстком kille (SIGKILL/OOM/обрыв питания) окном в `--rotate-minutes`.
+While being written, a file is named `ob_okx_<timestamp>.parquet.inprogress` and is renamed to
+`ob_okx_<timestamp>.parquet` only after a clean close (rotation or Ctrl-C/SIGTERM) — **only files
+without the `.inprogress` suffix are safe to copy from the server**. Rotation bounds the loss on a
+hard kill (SIGKILL/OOM/power loss) to a `--rotate-minutes` window.
 
-Рабочий цикл на диск-ограниченном сервере: запустить логгер → периодически забирать готовые
-(`.parquet`, не `.inprogress`) файлы `rsync`/`scp` и удалять их с сервера, оставляя место → при
-полной остановке (Ctrl-C) следующий запуск сам откроет новый файл с новым таймстампом, без
-коллизий с предыдущими.
+The routine on a disk-constrained server: start the logger → periodically pull the finished
+(`.parquet`, not `.inprogress`) files with `rsync`/`scp` and delete them from the server to free
+space → after a full stop (Ctrl-C) the next start opens a new file with a new timestamp, without
+colliding with the previous ones.
 
-Склейка скачанных чанков в один архив — на локальной машине:
+Merging the downloaded chunks into one archive — on the local machine:
 
 ```bash
 node scripts/merge-okx-orderbook.mjs data/okx-orderbook-chunks/*.parquet \
   --output data/okx-orderbook-2026-Q3.parquet
 ```
 
-Чанки должны быть с одинаковым `--depth`; скрипт стримит построчно (не грузит всё в память) и
-полагается на то, что имена чанков (`ob_okx_<ISO-таймстамп>...`) уже сортируются хронологически.
+The chunks must share the same `--depth`; the script streams row by row (does not load everything
+into memory) and relies on the chunk names (`ob_okx_<ISO-timestamp>...`) already sorting
+chronologically.
 
-## Конвертация
+## Conversion
 
-Не часть `diviner` — самостоятельный скрипт:
+Not part of `diviner` — a standalone script:
 
 ```bash
 node scripts/convert.mjs --input-json sber.json --output-parquet sber.parquet

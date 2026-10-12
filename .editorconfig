@@ -9,7 +9,7 @@ indent_style = space
 indent_size = 4
 
 [*.md]
-# Два пробела в конце строки — перенос в Markdown.
+# Two trailing spaces are a line break in Markdown.
 trim_trailing_whitespace = false
 
 [{package.json,package-lock.json}]

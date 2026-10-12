@@ -124,8 +124,8 @@ export class MultiSymbolTinkoffDataSource {
         );
         this._startStallWatchdog();
         console.log(
-            `[MultiTinkoff] Подписка на ${this.instruments.length} инструментов, `
-            + `интервал ${this.interval}м, окно сбора минуты ${this.batchGraceMs} мс.`,
+            `[MultiTinkoff] Subscribed to ${this.instruments.length} instruments, `
+            + `interval ${this.interval}m, minute grace window ${this.batchGraceMs} ms.`,
         );
 
         while (!this._closed) {
@@ -151,7 +151,7 @@ export class MultiSymbolTinkoffDataSource {
         const last = this._lastTimeByTicker.get(ticker);
         if (last != null && time <= last) {
             if (this.verbose) {
-                console.log(`[MultiTinkoff] ${ticker}: дубль/устаревшая ${candle.datetime.toISOString()}`);
+                console.log(`[MultiTinkoff] ${ticker}: duplicate/stale ${candle.datetime.toISOString()}`);
             }
             return;
         }
@@ -159,8 +159,8 @@ export class MultiSymbolTinkoffDataSource {
             this._droppedLate += 1;
             if (this._droppedLate === 1 || this._droppedLate % 100 === 0) {
                 console.warn(
-                    `[MultiTinkoff] ${ticker}: свеча ${candle.datetime.toISOString()} старше уже`
-                    + ` отданной минуты — отброшена (всего ${this._droppedLate}).`,
+                    `[MultiTinkoff] ${ticker}: candle ${candle.datetime.toISOString()} is older than the`
+                    + ` last released minute — dropped (total ${this._droppedLate}).`,
                 );
             }
             return;
@@ -210,7 +210,7 @@ export class MultiSymbolTinkoffDataSource {
             });
             this._lastFlushedTs = Math.max(this._lastFlushedTs, minute);
             if (this.verbose) {
-                console.log(`[MultiTinkoff] минута ${new Date(minute).toISOString()}: ${tickers.length} бумаг`);
+                console.log(`[MultiTinkoff] minute ${new Date(minute).toISOString()}: ${tickers.length} instruments`);
             }
         }
         if (this._notify) {
@@ -242,7 +242,7 @@ export class MultiSymbolTinkoffDataSource {
                         closeTs: day.endTime ? new Date(day.endTime).getTime() : null,
                     });
                 }
-            } catch { /* ниже отработает запасное окно */ }
+            } catch { /* the fallback window below takes over */ }
         }
         const entry = this._sessionCache.get(dateKey);
         if (entry) {
@@ -263,7 +263,7 @@ export class MultiSymbolTinkoffDataSource {
         if (this._stallTimeoutMs <= 0 || this._stallTimer) return;
         this._stallTimer = setInterval(() => {
             this._checkStall(new Date()).catch((error) => {
-                console.error(`[MultiTinkoff] Сторож молчания упал: ${error.message}`);
+                console.error(`[MultiTinkoff] Silence watchdog failed: ${error.message}`);
             });
         }, 60_000);
         this._stallTimer.unref?.();
@@ -286,15 +286,15 @@ export class MultiSymbolTinkoffDataSource {
             // only after a restart. The stream ends with an error, the process exits with
             // code 1, systemd starts a new one, and positions are restored from the account.
             this._fail(new Error(
-                `Тишина ${minutes} мин после переподписки — стрим не восстановился, нужен перезапуск процесса.`,
+                `Silence for ${minutes} min after resubscribing — the stream did not recover, the process needs a restart.`,
             ));
             return;
         }
         // Silence across the WHOLE universe during an open session is a stream failure,
         // not a quiet market: at least one liquid instrument trades every minute.
         console.warn(
-            `[MultiTinkoff] Тишина ${minutes} мин по всем `
-            + `${this.instruments.length} инструментам при открытой сессии — переподписка.`,
+            `[MultiTinkoff] Silence for ${minutes} min across all `
+            + `${this.instruments.length} instruments during an open session — resubscribing.`,
         );
         this._lastCandleWall = now.getTime();
         this._stallReconnected = true;
@@ -329,14 +329,14 @@ export class MultiSymbolTinkoffDataSource {
         try {
             await this.client.restartMarketStream("candle silence");
         } catch (error) {
-            console.warn(`[MultiTinkoff] Переподписка не удалась: ${error.message}.`);
+            console.warn(`[MultiTinkoff] Resubscription failed: ${error.message}.`);
             return;
         }
-        console.log("[MultiTinkoff] Подписка на свечи восстановлена (процесс жив).");
+        console.log("[MultiTinkoff] Candle subscription restored (process kept alive).");
         try {
             await this._catchUpAll(bounds);
         } catch (error) {
-            console.warn(`[MultiTinkoff] Догрузка после переподписки не удалась: ${error.message}`);
+            console.warn(`[MultiTinkoff] Catch-up after resubscription failed: ${error.message}`);
         }
     }
 
@@ -360,7 +360,7 @@ export class MultiSymbolTinkoffDataSource {
                     from, to: now, interval: this.interval, includeWeekend: true,
                 });
             } catch (error) {
-                console.error(`[MultiTinkoff] ${ticker}: догрузка не удалась — ${error.message}`);
+                console.error(`[MultiTinkoff] ${ticker}: catch-up failed — ${error.message}`);
                 continue;
             }
             const closed = (candles || [])
@@ -410,7 +410,7 @@ export class MultiSymbolTinkoffDataSource {
         const days = await this._provider(instrument?.ticker ?? this.instruments[0].ticker)
             .getTradingSchedule({ exchange: instrument?.exchange || DEFAULT_EXCHANGE, ...range, ...params });
         if (!days?.length) {
-            console.warn(`[MultiTinkoff] ${ticker ?? "?"}: расписание торгов пустое — стратегия сочтёт день неторговым.`);
+            console.warn(`[MultiTinkoff] ${ticker ?? "?"}: trading schedule is empty — the strategy will treat the day as non-trading.`);
         }
         return days;
     }
@@ -421,7 +421,7 @@ export class MultiSymbolTinkoffDataSource {
         if (this._stallTimer) { clearInterval(this._stallTimer); this._stallTimer = null; }
         for (const timer of this._timers.values()) clearTimeout(timer);
         this._timers.clear();
-        try { await this.client.unsubscribeCandles?.(); } catch { /* уже закрыт */ }
+        try { await this.client.unsubscribeCandles?.(); } catch { /* already closed */ }
         if (this._notify) { const notify = this._notify; this._notify = null; notify(); }
     }
 }

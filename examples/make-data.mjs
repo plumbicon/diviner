@@ -104,7 +104,7 @@ const round = (value) => Math.round(value * 100) / 100;
  * @returns {Promise<{tickers: Array<string>, candles: number}>} Summary.
  */
 export async function generate({ out, tickers, days = 20, seed = 1, from = "2026-01-05", printProb = 0.85 }) {
-    if (!tickers?.length) throw new Error("нужен хотя бы один тикер");
+    if (!tickers?.length) throw new Error("at least one ticker is required");
     const start = new Date(`${from}T00:00:00.000Z`);
     const bySymbol = new Map();
     let total = 0;
@@ -140,12 +140,12 @@ export async function generate({ out, tickers, days = 20, seed = 1, from = "2026
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const program = new Command()
         .name("make-data")
-        .description("Синтетические минутные свечи для примеров")
-        .requiredOption("--out <path>", "Куда записать parquet")
-        .option("--tickers <list>", "Тикеры через запятую; несколько — мультитикерный бандл", "DEMO")
-        .option("--days <n>", "Торговых дней", "20")
-        .option("--seed <n>", "Зерно случайного блуждания", "1")
-        .option("--from <date>", "Первый календарный день, YYYY-MM-DD", "2026-01-05")
+        .description("Synthetic minute candles for the examples")
+        .requiredOption("--out <path>", "Where to write the parquet")
+        .option("--tickers <list>", "Comma-separated tickers; several make a multi-ticker bundle", "DEMO")
+        .option("--days <n>", "Trading days", "20")
+        .option("--seed <n>", "Random walk seed", "1")
+        .option("--from <date>", "First calendar day, YYYY-MM-DD", "2026-01-05")
         .parse();
     const opts = program.opts();
     const summary = await generate({
@@ -155,5 +155,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         seed: Number(opts.seed),
         from: opts.from,
     });
-    console.error(`[make-data] ${opts.out}: ${summary.tickers.join(",")}, ${summary.candles} свечей`);
+    console.error(`[make-data] ${opts.out}: ${summary.tickers.join(",")}, ${summary.candles} candles`);
 }

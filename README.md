@@ -25,66 +25,34 @@ With MOEX data and the broker:
 ```bash
 export T_INVEST_TOKEN=<your-token>
 
-# backtest every ticker (in parallel, worker_threads)
-node scripts/backtest.mjs --strategy <NAME> --year 2026 --leverage 4 --intrabar-stops
-
 # backtest one instrument
 diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
   --strategy <path-to-strategy> --balance 10000 --commission 0.0005
 
-# live (sandbox) on a universe of instruments; a single instrument is --tickers SBER
+# backtest every ticker (in parallel, worker_threads)
+node scripts/backtest.mjs --strategy <NAME> --year 2026 --intrabar-stops
+
+# live (sandbox) on a set of instruments; a single instrument is --tickers SBER
 diviner src/broker/tinkoff/multi-broker.js --strategy <path-to-strategy> \
   --sandbox --account <id> --universe-file data/universe.json --intrabar-stops
-
-# download MOEX candles → Parquet
-T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-date 2024-01-01 \
-  --till-date 2024-12-31 --interval 1 --parquet > data/tinkoff/SBER_2024_1m.parquet
-
-# select shortable liquid shares through the API (ticker list on stdout)
-T_INVEST_TOKEN=<token> node src/universe.js --table
-
-# append a fresh period to an existing listing (growth only, never shortening)
-node src/append.js --into data/tinkoff/ALRS_2026_1m.parquet /tmp/ALRS_fresh.parquet
-
-# build a universe into one multi-ticker Parquet (for cross-sectional strategies)
-node src/bundle.js --out data/tinkoff/CORE62_2026_1m.parquet \
-  --tickers ALRS,ROSN,SBER --from 2026-01-01 --to 2026-06-08 data/tinkoff/*_2026_1m.parquet
 ```
 
-### Universe composition
+A strategy works on one instrument or on a set of them at once (a universe): in a backtest the engine
+reads a multi-ticker Parquet file, live it subscribes to every instrument of the list. How this looks
+from inside a strategy is in [`devs/structure.md`](devs/structure.md).
 
-`src/universe.js` asks the broker for every share and keeps the tradeable ones by instrument flags:
-`shortEnabledFlag` (shorting allowed), `liquidityFlag` (liquidity), `apiTradeAvailableFlag` and
-`sellAvailableFlag`, minus OTC, blocked and qualified-investor-only instruments, plus a minimum
-depth of minute history (`--min-history-days`). Lot cost is computed separately — on a 10,000 ₽
-account with four slots an instrument whose lot costs more than 2,500 ₽ cannot physically be bought
-(`--max-lot-cost`).
+## Data
 
-The point is that the universe updates itself: an instrument whose short was disabled drops out of
-the list on the next run instead of living in a hard-coded constant until someone notices.
-`--show-rejected` shows who was rejected and why — without it an instrument that unexpectedly
-disappears turns debugging into guesswork.
+The engine reads candles from Parquet files in `data/` (not in git). The tools that prepare them are
+not part of the engine; each is described in [`devs/usage.md`](devs/usage.md):
 
-### Multi-ticker datasets
-
-A cross-sectional strategy needs access to any instrument of the universe, not only the one it was
-started on. `src/bundle.js` merges single-ticker listings into one Parquet, tagging every row with
-its ticker; the sources are only read, and an existing output is not overwritten without `--force`.
-
-`loadDataset` reads such a file **as columns** (`src/core/candle-series.js`): a candle object costs
-~259 bytes of V8 heap, so a year of the universe (~40M candles) does not fit the heap limit as
-objects at all. Columns take 52 bytes per candle, live outside the heap, and an object is built only
-on `at(i)`. Measured on core62 for January–June 2026: 7.5M candles — 370 MB as columns against
-1.8 GB as objects, loaded in 6.5 s.
-
-The dataset provides `bySymbol` (ticker → interval → series), `symbols`, `instruments`
-(lot/exchange/figi) and `mergeStream(minutes)` — a chronological stream over the whole universe by
-merging, without copying data. Single-ticker listings are read the old way, as object arrays: their
-behaviour does not change.
-
-The series interface is a subset of `Array` (`length`, `at(i)`, `slice()`, the iterator), so a
-consumer does not care whether it got an array or columns. The only requirement: use `at(i)`, not
-`[i]`.
+| Tool | What it does |
+|---|---|
+| `src/broker/tinkoff/fetch.js` | Download MOEX candles into Parquet |
+| `src/append.js` | Append a fresh period to a listing (it only grows, never shrinks) |
+| `src/bundle.js` | Merge single-ticker listings into one multi-ticker file |
+| `src/broker/tinkoff/universe.js` | Build the instrument list for live trading from the broker's instrument flags |
+| `src/broker/okx/fetch.js` | Download OKX perpetual-swap candles |
 
 The full CLI reference (every backtest/live option) is in [`devs/usage.md`](devs/usage.md).
 
@@ -102,8 +70,8 @@ diviner/
 ├── scripts/             backtest.mjs (batch backtest) · convert.mjs · merge-okx-orderbook.mjs
 ├── src/
 │   ├── diviner.js        entry point: diviner <broker-path> [options]
-│   ├── universe.js       universe selection via the API · bundle.js — bundle · append.js — listing append
-│   ├── broker/           simulated (backtest) · tinkoff (live MOEX) · okx (crypto) · common
+│   ├── bundle.js         multi-ticker bundle · append.js — listing append
+│   ├── broker/           simulated (backtest) · tinkoff (live MOEX, fetch, universe) · okx (crypto) · common
 │   ├── core/             mode-blind core: engine, stops, portfolio, strategy, data, metrics
 │   └── strategies/       strategies — a separate repository, not part of the engine's git
 ├── examples/             example strategies and a synthetic candle generator

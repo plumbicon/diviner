@@ -185,9 +185,17 @@ Candles are stored in Parquet ([`src/core/candle-parquet.js`](../src/core/candle
 
 Metadata sits under the `diviner.metadata` key (JSON). A single-ticker listing carries `ticker`,
 `instrument` (lot, figi, exchange), `intervalMinutes`, `intervals`; a bundle carries `tickers` and
-`instruments` (ticker → instrument). A bundle is read as columns
-([`candle-series.js`](../src/core/candle-series.js)): a year of the universe does not fit the V8 heap
-as objects.
+`instruments` (ticker → instrument).
+
+A bundle is read **as columns** ([`candle-series.js`](../src/core/candle-series.js)). A candle object
+costs ~259 bytes of V8 heap, so a year of a universe (tens of millions of candles) does not fit the heap
+limit as objects at all; columns take 52 bytes per candle and live outside the heap, and an object is
+built only on `at(i)`. For example, 7.5M candles: 370 MB as columns against 1.8 GB as objects, loaded
+in 6.5 s. The dataset provides `bySymbol` (ticker → interval → series), `symbols`, `instruments` and
+`mergeStream(minutes)` — a chronological stream over the whole universe by merging, without copying
+data. Single-ticker listings are still read as object arrays. The series interface is a subset of
+`Array` (`length`, `at(i)`, `slice()`, the iterator), so a consumer does not care which one it got —
+the only requirement is `at(i)` instead of `[i]`.
 
 **Listings are only appended to.** A fresh period is added to the existing file (`src/append.js`)
 instead of replacing it: a listing that became shorter silently shifts the backtest window, and the

@@ -5,7 +5,7 @@
  * logic is in {@link MultiSymbolTinkoffDataSource} and {@link MultiSymbolTinkoffExecutor}.
  *
  * The universe is given as a list (`--tickers`) or a file (`--universe-file`) produced by
- * `src/universe.js`. Instrument resolution is cached on disk: 97 tickers through
+ * `src/broker/tinkoff/universe.js`. Instrument resolution is cached on disk: ~100 tickers through
  * `getInstrumentByTicker` take ~40 seconds, and there is no reason to pay that on every
  * start.
  *
@@ -26,7 +26,7 @@ export { runUtility, isUtilityRequest };
 
 export const options = [
     { flags: "--tickers <list>", description: "Universe instruments, comma-separated" },
-    { flags: "--universe-file <path>", description: "JSON with the ticker list and instrument cache (see src/universe.js)" },
+    { flags: "--universe-file <path>", description: "JSON with the ticker list and instrument cache (see src/broker/tinkoff/universe.js)" },
     { flags: "--account <id>", description: "Account ID" },
     { flags: "--sandbox", description: "Sandbox (virtual money)", default: false },
     { flags: "--dry-run", description: "The strategy runs, but no orders are sent", default: false },

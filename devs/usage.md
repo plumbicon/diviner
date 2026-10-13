@@ -101,7 +101,7 @@ T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/multi-broker.js \
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--tickers <list>` | The universe as a comma-separated list | — |
-| `--universe-file <path>` | JSON with the universe and instrument cache (made by `src/universe.js --out`) | — |
+| `--universe-file <path>` | JSON with the universe and instrument cache (made by `src/broker/tinkoff/universe.js --out`) | — |
 | `--account <id>` | Account ID | — |
 | `--sandbox`, `--dry-run` | Sandbox / no orders sent | off |
 | `--interval <minutes>` | Candle interval | `1` |
@@ -192,6 +192,42 @@ T_INVEST_TOKEN=<token> node src/broker/tinkoff/fetch.js --security SBER --from-d
 | `--parquet` | Write Parquet to stdout | off |
 
 Crypto (OKX): `src/broker/okx/fetch.js`, `fetch-batch.js`, `fetch-metrics.js`.
+
+A download returns only the requested range, so a fresh period is **appended** to the existing listing
+instead of replacing it: a merge by `datetime` + `interval` with deduplication (fresh candles win), and
+a result shorter than the original is refused.
+
+```bash
+node src/append.js --into data/tinkoff/SBER_2026_1m.parquet [--dry-run] /tmp/SBER_fresh.parquet
+```
+
+## Instrument selection (`tinkoff/universe.js`)
+
+Builds the instrument list for `multi-broker.js` (`--universe-file`) from the broker's own instrument
+flags, so the list follows the broker instead of living in a hard-coded constant: an instrument that
+loses a required flag drops out on the next run.
+
+```bash
+T_INVEST_TOKEN=<token> node src/broker/tinkoff/universe.js --table --show-rejected
+T_INVEST_TOKEN=<token> node src/broker/tinkoff/universe.js --out data/universe.json
+```
+
+An instrument is kept when it carries the exchange's liquidity mark (`liquidityFlag`), can be traded and
+sold through the API (`apiTradeAvailableFlag`, `sellAvailableFlag`), is not OTC, blocked or
+qualified-investor-only, trades in rubles on MOEX and has enough minute history. The tests the broker
+requires for the asset are matched against the tests the account has passed — otherwise a missing test
+shows up only as a rejected order.
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--require-short` | Keep only instruments the broker allows to short (`shortEnabledFlag`) | off |
+| `--min-history-days <n>` | Minimum depth of minute history, days | `400` |
+| `--max-lot-cost <rub>` | Drop instruments whose lot costs more: a lot above the budget of one position cannot be bought | `0` (off) |
+| `--allow-qual` | Keep qualified-investor instruments | off |
+| `--no-check-tests` | Do not match required tests against the account | — |
+| `--table`, `--json` | A table or full records instead of a ticker list | off |
+| `--show-rejected` | Who was rejected and why | off |
+| `--out <path>` | Write the universe file for `multi-broker.js` | — |
 
 ## OKX order book logging
 

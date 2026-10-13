@@ -17,8 +17,8 @@ example, regular expressions that match the broker's Russian replies. `src/style
   change it only after a discussion.
 - `src/broker/<name>/` — a broker: `broker.js` with `options` and `createBroker()`, plus its clients
   and data loaders. All the difference between backtest and live lives here.
-- `src/*.js` — standalone commands (`universe.js`, `bundle.js`, `append.js`); `scripts/` — helper
-  scripts over the project.
+- `src/*.js` — standalone commands (`bundle.js`, `append.js`); broker-specific tools live with the broker
+  (`src/broker/tinkoff/fetch.js`, `universe.js`); `scripts/` — helper scripts over the project.
 - `examples/` — example strategies and synthetic data.
 - `src/strategies/` — strategies, a separate repository. Neither strategy code, nor their parameters,
   nor measurement results get into the engine repository — including comments, documentation and

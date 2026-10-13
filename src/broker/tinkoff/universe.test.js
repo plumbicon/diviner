@@ -45,9 +45,11 @@ test("a suitable instrument passes without remarks", () => {
     assert.deepEqual(rejectionReasons(goodShare, { now: Date.parse("2026-09-01") }), []);
 });
 
-test("a short ban rejects the instrument", () => {
-    const reasons = rejectionReasons({ ...goodShare, shortEnabledFlag: false }, { now: Date.parse("2026-09-01") });
-    assert.deepEqual(reasons, ["short disabled"]);
+test("a short ban rejects the instrument only with requireShort", () => {
+    const share = { ...goodShare, shortEnabledFlag: false };
+    const now = Date.parse("2026-09-01");
+    assert.deepEqual(rejectionReasons(share, { now }), []);
+    assert.deepEqual(rejectionReasons(share, { now, requireShort: true }), ["short disabled"]);
 });
 
 test("a short history rejects the instrument and states the depth", () => {

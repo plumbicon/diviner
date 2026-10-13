@@ -15,7 +15,7 @@
  * --force: listings are never deleted or replaced with a shorter sample (CONTRIBUTING.md).
  *
  * Usage:
- *   node src/bundle.js --out data/tinkoff/CORE62_2025_1m.parquet data/tinkoff/*_2025_1m.parquet
+ *   node src/bundle.js --out data/tinkoff/UNIVERSE_2025_1m.parquet data/tinkoff/*_2025_1m.parquet
  *   node src/bundle.js --out u.parquet --tickers ALRS,ROSN --from 2026-01-01 data/tinkoff/*_2026_1m.parquet
  */
 import * as parquet from "@dsnp/parquetjs";

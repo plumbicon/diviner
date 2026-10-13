@@ -2,13 +2,13 @@
 /**
  * Select the tradeable universe from the T-Invest API.
  *
- * A cross-sectional strategy needs not "a list someone made a year and a half ago" but
- * the current set of instruments that can be shorted through the API RIGHT NOW. An
- * instrument whose short was disabled must drop out of the universe by itself, not live
+ * A multi-instrument strategy needs not "a list someone made a year and a half ago" but
+ * the current set of instruments the account can actually trade through the API. An
+ * instrument that lost a required flag must drop out of the universe by itself, not live
  * in a hard-coded constant until someone notices.
  *
  * Selection is by instrument flags (all checked against the SDK):
- *   shortEnabledFlag       shorting allowed — without it the strategy does not apply;
+ *   shortEnabledFlag       shorting allowed — required only with --require-short;
  *   liquidityFlag          liquidity mark from the exchange;
  *   apiTradeAvailableFlag  tradeable through the API, not only in the app;
  *   sellAvailableFlag      selling available;
@@ -22,15 +22,15 @@
  * passed ones on the user (`users.getInfo` → `qualifiedForWorkWith`). Without this check a
  * missing test is only discovered when a real order is rejected live.
  *
- * Lot cost (last price × lot) is computed separately: on a 10,000 ₽ account with four
- * slots an instrument whose lot costs more than 2,500 ₽ cannot physically be bought, no
- * matter how well it scores. That is a property of the deposit, not of the instrument,
- * so the filter is separate and off by default.
+ * Lot cost (last price × lot) is computed separately: an instrument whose lot costs more
+ * than the budget of one position cannot be bought at all, no matter how well it scores.
+ * That is a property of the deposit, not of the instrument, so the filter is separate and
+ * off by default.
  *
  * Usage:
- *   T_INVEST_TOKEN=<token> node src/universe.js
- *   T_INVEST_TOKEN=<token> node src/universe.js --table --min-history-days 400
- *   T_INVEST_TOKEN=<token> node src/universe.js --max-lot-cost 2500 --json
+ *   T_INVEST_TOKEN=<token> node src/broker/tinkoff/universe.js
+ *   T_INVEST_TOKEN=<token> node src/broker/tinkoff/universe.js --table --min-history-days 400
+ *   T_INVEST_TOKEN=<token> node src/broker/tinkoff/universe.js --require-short --max-lot-cost 5000 --out data/universe.json
  */
 import { Command } from "commander";
 import { TinkoffInvestApi } from "tinkoff-invest-api";
@@ -39,7 +39,7 @@ import { InstrumentStatus, InstrumentType } from "tinkoff-invest-api/dist/genera
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // How many asset cards to fetch in parallel. getAssetBy is one call per asset — fewer
-// than a hundred requests for our universe; four in flight stay within the limits and
+// than a hundred requests for a typical universe; four in flight stay within the limits and
 // do not drag the run out.
 const ASSET_CONCURRENCY = 4;
 
@@ -63,11 +63,12 @@ export function rejectionReasons(share, options = {}) {
         currency = "rub",
         minHistoryDays = 400,
         allowQual = false,
+        requireShort = false,
         now = Date.now(),
     } = options;
 
     const out = [];
-    if (!share.shortEnabledFlag) out.push("short disabled");
+    if (requireShort && !share.shortEnabledFlag) out.push("short disabled");
     if (!share.liquidityFlag) out.push("illiquid");
     if (!share.apiTradeAvailableFlag) out.push("no API trading");
     if (!share.sellAvailableFlag) out.push("selling unavailable");
@@ -294,9 +295,10 @@ export async function selectUniverse(options = {}) {
 const program = new Command();
 program
     .name("diviner-universe")
-    .description("Select shortable liquid shares through the T-Invest API")
+    .description("Select liquid shares tradeable through the T-Invest API")
     .option("--min-history-days <n>", "Minimum depth of minute history, days", "400")
     .option("--max-lot-cost <rub>", "Drop instruments whose lot costs more (0 = no filter)", "0")
+    .option("--require-short", "Keep only instruments the broker allows to short", false)
     .option("--allow-qual", "Keep instruments for qualified investors", false)
     .option("--no-check-tests", "Do not match instruments' required tests against the account's passed tests")
     .option("--table", "Human-readable table instead of a ticker list", false)
@@ -311,6 +313,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         minHistoryDays: Number(opts.minHistoryDays),
         maxLotCost: Number(opts.maxLotCost),
         allowQual: Boolean(opts.allowQual),
+        requireShort: Boolean(opts.requireShort),
         checkTests: opts.checkTests !== false,
     });
 
@@ -327,6 +330,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                 minHistoryDays: Number(opts.minHistoryDays),
                 maxLotCost: Number(opts.maxLotCost) || null,
                 allowQual: Boolean(opts.allowQual),
+                requireShort: Boolean(opts.requireShort),
                 checkTests: opts.checkTests !== false,
             },
         }, null, 2));

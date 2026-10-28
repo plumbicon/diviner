@@ -27,6 +27,18 @@ import { evaluateIntrabarStop, classifyStopExit } from "../../core/stops.js";
  * share of the price against the order: a sale fills lower, a purchase higher. Live the
  * market order crosses the spread and walks the book; the candle open does not. Stops are
  * left at the level: live they filled no worse than it.
+ *
+ * Entries can instead be limit orders at the decision price (the close of the decision
+ * candle), alive for `entryLimitTtl` minutes. A limit pays no slippage. Filling is judged
+ * by the instrument's candles after the decision: at the open when the open is already at
+ * or better than the limit; otherwise at the limit — on the first candle only when the
+ * candle closes at or past it (live the order is placed seconds into that minute, and its
+ * high may have come before), on later candles when the range goes strictly past it (a mere
+ * touch may leave a resting order unfilled). An order not filled in time is cancelled, or
+ * with `entryLimitFallback: "market"` becomes a market order at the next open.
+ * `entryLimitStrict` is the pessimistic bound: on the first candle the order fills only at
+ * the limit and only when the candle closes at or past it — never at the first open, which
+ * live is gone by the time the order is placed.
  */
 export class MultiSymbolExecutor {
     /**
@@ -36,12 +48,24 @@ export class MultiSymbolExecutor {
      * @param {boolean} [params.intrabarStops] - Intrabar SL/TP.
      * @param {Map<string, object>} [params.instruments] - Ticker → instrument (lot).
      * @param {number} [params.slippage] - Market order slippage, share of the price (0.001 = 0.1%).
+     * @param {number} [params.entryLimitTtl] - Entry limit lifetime, minutes; 0 = market entries.
+     * @param {string} [params.entryLimitFallback] - "cancel" or "market" when the limit expires.
+     * @param {boolean} [params.entryLimitStrict] - No fill at the first candle's open.
      */
-    constructor({ portfolio, fillOnNextOpen = false, intrabarStops = false, instruments = null, slippage = 0 }) {
+    constructor({
+        portfolio, fillOnNextOpen = false, intrabarStops = false, instruments = null, slippage = 0,
+        entryLimitTtl = 0, entryLimitFallback = "cancel", entryLimitStrict = false,
+    }) {
         this.portfolio = portfolio;
         this.fillOnNextOpen = fillOnNextOpen;
         this.intrabarStops = intrabarStops;
         this.slippage = Number(slippage) || 0;
+        this.entryLimitTtl = Math.max(0, Number(entryLimitTtl) || 0);
+        if (!["cancel", "market"].includes(entryLimitFallback)) {
+            throw new Error(`entryLimitFallback must be "cancel" or "market", got "${entryLimitFallback}"`);
+        }
+        this.entryLimitFallback = entryLimitFallback;
+        this.entryLimitStrict = Boolean(entryLimitStrict);
         this.instruments = instruments instanceof Map ? instruments : new Map();
 
         this.currentCandle = null;
@@ -69,7 +93,9 @@ export class MultiSymbolExecutor {
 
         if (!this.fillOnNextOpen || !candle) return;
         const pending = this._pending.get(this.currentTicker);
-        if (pending) this._settle(pending, candle.open, candle.datetime);
+        if (!pending) return;
+        if (pending.limit != null) this._tryLimit(pending, candle);
+        else this._settle(pending, candle.open, candle.datetime);
     }
 
     /** Position of the instrument whose candle is being processed. @returns {object|null} Position. */
@@ -236,6 +262,12 @@ export class MultiSymbolExecutor {
 
         const order = { type: `open-${side}`, ticker, size, budget, sl, tp, exitDeadline };
         if (this.fillOnNextOpen) {
+            const decision = this.lastCandle.get(ticker);
+            if (this.entryLimitTtl > 0 && Number.isFinite(decision?.close)) {
+                order.limit = decision.close;
+                order.decisionTs = decision.datetime.getTime();
+                order.expiresTs = order.decisionTs + this.entryLimitTtl * 60_000;
+            }
             this._pending.set(ticker, order);
             return true;
         }
@@ -244,8 +276,37 @@ export class MultiSymbolExecutor {
         return true;
     }
 
+    /**
+     * One candle of a resting entry limit: fill, keep waiting, expire.
+     * @param {object} order - Pending entry with `limit`, `decisionTs`, `expiresTs`.
+     * @param {object} candle - The instrument's candle after the decision.
+     * @private
+     */
+    _tryLimit(order, candle) {
+        const sell = order.type === "open-short";
+        const limit = order.limit;
+        const ts = candle.datetime.getTime();
+        const first = ts - order.decisionTs <= 60_000;
+        const better = (price) => (sell ? price >= limit : price <= limit);
+        const through = (price) => (sell ? price > limit : price < limit);
+        let price = null;
+        if (better(candle.open) && !(first && this.entryLimitStrict)) price = candle.open;
+        else if (first ? better(candle.close) : through(sell ? candle.high : candle.low)) price = limit;
+        if (price !== null) {
+            this._settle(order, price, candle.datetime, false);
+            return;
+        }
+        if (ts < order.expiresTs) return;
+        if (this.entryLimitFallback === "market") {
+            delete order.limit;                          // the next candle fills it at its open
+            return;
+        }
+        this._pending.delete(order.ticker);
+        this.limitsCancelled = (this.limitsCancelled ?? 0) + 1;
+    }
+
     /** @private */
-    _settle(order, price, datetime) {
+    _settle(order, price, datetime, slip = true) {
         this._pending.delete(order.ticker);
         if (!Number.isFinite(price)) return;
 
@@ -256,7 +317,7 @@ export class MultiSymbolExecutor {
         const side = order.type === "open-long" ? "long" : "short";
         this.portfolio.open(order.ticker, {
             side,
-            price: this._slip(price, side === "long" ? "buy" : "sell"),
+            price: slip ? this._slip(price, side === "long" ? "buy" : "sell") : price,
             datetime,
             lot: Number(this.instruments.get(order.ticker)?.lot) || 1,
             size: order.size,
@@ -294,6 +355,10 @@ export class MultiSymbolExecutor {
      */
     flush() {
         for (const order of [...this._pending.values()]) {
+            if (order.limit != null) {                   // an unfilled limit just lapses
+                this._pending.delete(order.ticker);
+                continue;
+            }
             const candle = this.lastCandle.get(order.ticker);
             this._settle(order, candle?.close, candle?.datetime);
         }

@@ -17,7 +17,7 @@ const bars = (ticker, closes) => closes.map((close, i) => ({
 }));
 
 /** Multi-ticker broker over a synthetic dataset. */
-function makeBroker({ aaa, bbb, lots = { AAA: 10, BBB: 1 }, slippage = 0 }) {
+function makeBroker({ aaa, bbb, lots = { AAA: 10, BBB: 1 }, slippage = 0, entryLimitTtl = 0, entryLimitFallback = "cancel", entryLimitStrict = false }) {
     const bySymbol = new Map([
         ["AAA", new Map([[1, CandleSeries.from(bars("AAA", aaa))]])],
         ["BBB", new Map([[1, CandleSeries.from(bars("BBB", bbb))]])],
@@ -51,7 +51,7 @@ function makeBroker({ aaa, bbb, lots = { AAA: 10, BBB: 1 }, slippage = 0 }) {
         candles: null, series: null, bySymbol, symbols, instruments, mergeStream,
         metadata: { intervalMinutes: 1 },
         initialCash: 10000, commission: 0.0005, leverage: 1,
-        fillOnNextOpen: true, intrabarStops: true, slippage,
+        fillOnNextOpen: true, intrabarStops: true, slippage, entryLimitTtl, entryLimitFallback, entryLimitStrict,
     });
 }
 
@@ -241,4 +241,70 @@ test("slippage is off by default and shows in the report", async () => {
     const report = await run(broker, new ShortBoth(new StreamingCandleSink(), 10000, 0.0005));
     assert.equal(report.backtest_parameters.slippage, 0);
     assert.equal(report.trade_log.find((t) => t.ticker === "AAA").entryPrice, 100);
+});
+
+/** Candle of AAA at minute i with explicit OHLC. */
+const ohlc = (i, open, high, low, close) => ({
+    datetime: new Date(base + i * MIN), open, high, low, close, volume: 1000, ticker: "AAA",
+});
+
+/** Short AAA on the decision candle with a limit entry; returns the executor. */
+function limitShort({ ttl = 2, fallback = "cancel", slippage = 0, strict = false } = {}) {
+    const broker = makeBroker({
+        aaa: [100], bbb: [50], slippage, entryLimitTtl: ttl, entryLimitFallback: fallback, entryLimitStrict: strict,
+    });
+    const exec = broker.exec;
+    exec.setCurrentCandle(ohlc(0, 100, 100, 100, 100));  // decision candle, close 100 = the limit
+    exec.sell({ ticker: "AAA", budget: 3000 });
+    return exec;
+}
+
+test("entry limit: an open already past the limit fills at the open, without slippage", () => {
+    const exec = limitShort({ slippage: 0.01 });
+    exec.setCurrentCandle(ohlc(1, 101, 101, 99, 99));
+    assert.equal(exec.getPositionOf("AAA").entryPrice, 101);
+});
+
+test("entry limit: on the first candle a touch fills only when the candle closes at the limit", () => {
+    let exec = limitShort();
+    exec.setCurrentCandle(ohlc(1, 99, 101, 98, 98));     // the high may have come before the order
+    assert.equal(exec.getPositionOf("AAA"), null);
+    assert.deepEqual(exec.getPendingTickers(), ["AAA"]);
+
+    exec = limitShort();
+    exec.setCurrentCandle(ohlc(1, 99, 101, 98, 100));    // closes at the limit — filled at it
+    assert.equal(exec.getPositionOf("AAA").entryPrice, 100);
+});
+
+test("entry limit: on a later candle the range must go strictly past the limit", () => {
+    const exec = limitShort({ ttl: 3 });
+    exec.setCurrentCandle(ohlc(1, 99, 99, 98, 98));
+    exec.setCurrentCandle(ohlc(2, 98, 100, 97, 97));     // a touch only — the queue may not reach us
+    assert.equal(exec.getPositionOf("AAA"), null);
+    exec.setCurrentCandle(ohlc(3, 98, 100.5, 97, 97));
+    assert.equal(exec.getPositionOf("AAA").entryPrice, 100);
+});
+
+test("entry limit: cancelled after its lifetime, or turned into a market order", () => {
+    let exec = limitShort({ ttl: 1 });
+    exec.setCurrentCandle(ohlc(1, 99, 99, 98, 98));
+    assert.deepEqual(exec.getPendingTickers(), [], "expired and cancelled");
+    exec.setCurrentCandle(ohlc(2, 101, 102, 100, 101));
+    assert.equal(exec.getPositionOf("AAA"), null);
+
+    exec = limitShort({ ttl: 1, fallback: "market", slippage: 0.01 });
+    exec.setCurrentCandle(ohlc(1, 99, 99, 98, 98));
+    assert.deepEqual(exec.getPendingTickers(), ["AAA"], "still pending, now as a market order");
+    exec.setCurrentCandle(ohlc(2, 97, 98, 96, 96));
+    assert.equal(exec.getPositionOf("AAA").entryPrice.toFixed(4), (97 * 0.99).toFixed(4), "market fill pays slippage");
+});
+
+test("entry limit, strict: the first candle never fills at its open", () => {
+    let exec = limitShort({ strict: true });
+    exec.setCurrentCandle(ohlc(1, 101, 101, 99, 99));    // opened past the limit, closed below it
+    assert.equal(exec.getPositionOf("AAA"), null);
+
+    exec = limitShort({ strict: true });
+    exec.setCurrentCandle(ohlc(1, 101, 102, 100, 101));  // closed past the limit — filled at the limit
+    assert.equal(exec.getPositionOf("AAA").entryPrice, 100);
 });

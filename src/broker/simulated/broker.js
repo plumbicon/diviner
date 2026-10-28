@@ -32,6 +32,9 @@ export const options = [
     { flags: "--model-liquidation", description: "With --intrabar-stops + leverage>1: gap-aware stop fills + margin-call liquidation (loss capped at posted margin). Off = stops always fill at the level (no liquidation)." },
     { flags: "--risk-rates <file>", description: "JSON with per-instrument risk rates: {TICKER: 0.25} or {TICKER: {dshort: 0.25, dlong: 0.2}}. Short leverage of a name is capped at 1/dshort, long leverage at 1/dlong; --leverage and --long-leverage stay the upper bounds. Multi-symbol runs only." },
     { flags: "--slippage <rate>", description: "Market order slippage, share of the price against the order (0.0015 = 0.15%): entries and non-stop exits; intrabar SL/TP fill at the level. Multi-symbol runs only", default: "0" },
+    { flags: "--entry-limit-ttl <minutes>", description: "Entries as limit orders at the decision price, alive this many minutes; no slippage on a limit fill (0 = market entries). Multi-symbol runs with --fill-next-open only", default: "0" },
+    { flags: "--entry-limit-fallback <mode>", description: "When an entry limit expires: cancel it or send a market order at the next open (cancel|market)", default: "cancel" },
+    { flags: "--entry-limit-strict", description: "Pessimistic entry limits: on the first candle after the decision fill only at the limit and only when the candle closes at or past it" },
     { flags: "--long-leverage <n>", description: "Long-side leverage (margin buying), multi-symbol runs only: scales long position size and locks notional/leverage as margin (default 1 = unleveraged, the previous behaviour)", default: "1" },
 ];
 
@@ -121,6 +124,9 @@ export async function createBroker(config = {}) {
         leverage:      Number(config.leverage),
         longLeverage:  Number(config.longLeverage ?? 1),
         slippage:      Number(config.slippage ?? 0),
+        entryLimitTtl: Number(config.entryLimitTtl ?? 0),
+        entryLimitFallback: config.entryLimitFallback ?? "cancel",
+        entryLimitStrict: Boolean(config.entryLimitStrict),
         riskRates:     config.riskRates ?? null,
         fillOnNextOpen: Boolean(config.fillNextOpen),
         intrabarStops: Boolean(config.intrabarStops),
@@ -578,6 +584,9 @@ export function createSimulatedBroker({
     leverage = 1,
     longLeverage = 1,
     slippage = 0,
+    entryLimitTtl = 0,
+    entryLimitFallback = "cancel",
+    entryLimitStrict = false,
     riskRates = null,
     fillOnNextOpen = false,
     intrabarStops = false,
@@ -612,6 +621,9 @@ export function createSimulatedBroker({
     if (!multiSymbol && longLeverage > 1) {
         console.error("[SimulatedBroker] --long-leverage applies to multi-symbol runs only; ignored");
     }
+    if (entryLimitTtl > 0 && (!multiSymbol || !fillOnNextOpen)) {
+        console.error("[SimulatedBroker] --entry-limit-ttl needs a multi-symbol run with --fill-next-open; ignored");
+    }
     if (!multiSymbol && slippage > 0) {
         console.error("[SimulatedBroker] --slippage applies to multi-symbol runs only; ignored");
     }
@@ -625,7 +637,9 @@ export function createSimulatedBroker({
         bySymbol, symbols, instruments, mergeStream,
     });
     const exec = multiSymbol
-        ? new MultiSymbolExecutor({ portfolio, fillOnNextOpen, intrabarStops, instruments, slippage })
+        ? new MultiSymbolExecutor({
+            portfolio, fillOnNextOpen, intrabarStops, instruments, slippage, entryLimitTtl, entryLimitFallback, entryLimitStrict,
+        })
         : new SimulatedExecutor({ portfolio, fillOnNextOpen, intrabarStops, modelLiquidation });
 
     return {
@@ -655,6 +669,10 @@ export function createSimulatedBroker({
                         strategy_file: meta.strategyFile || "",
                         fill_mode: fillOnNextOpen ? "next-open" : "current-close",
                         slippage,
+                        entry_limit_ttl: entryLimitTtl,
+                        entry_limit_fallback: entryLimitTtl > 0 ? entryLimitFallback : null,
+                        entry_limit_strict: entryLimitTtl > 0 ? entryLimitStrict : null,
+                        entry_limits_cancelled: exec.limitsCancelled ?? 0,
                         symbols: symbols || [],
                     },
                     performance_metrics: new PerformanceMetrics({

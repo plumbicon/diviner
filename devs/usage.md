@@ -44,6 +44,9 @@ diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
 | `--risk-rates <file>` | Broker risk rates per instrument, `{TICKER: {dshort, dlong}}`: short leverage is at most `1/dshort`, long leverage at most `1/dlong` (universe only) | — |
 | `--long-leverage <n>` | Long leverage (margin buying, universe only): scales the long position size and locks notional/leverage as margin; 1 keeps the unleveraged long exactly as before | `1` |
 | `--slippage <rate>` | Market order slippage, a share of the price against the order (universe only): a sale fills lower, a purchase higher; entries and every exit except an intrabar SL/TP, which fill at the level | `0` |
+| `--entry-limit-ttl <minutes>` | Entries as limit orders at the decision price (the decision candle's close), alive this many minutes, no slippage on a limit fill (universe with `--fill-next-open` only) | `0` |
+| `--entry-limit-fallback <mode>` | When an entry limit expires: `cancel` it or send a `market` order at the next open | `cancel` |
+| `--entry-limit-strict` | Pessimistic limits: on the first candle after the decision fill only at the limit and only when the candle closes at or past it, never at its open | off |
 | `--verbose` | Include `trade_log` in the report | off |
 | `[source]` | Positional argument — Parquet (or stdin) | — |
 
@@ -87,6 +90,11 @@ The options are the same as for a single-ticker backtest. Differences:
 diviner src/broker/simulated/broker.js data/tinkoff/UNIVERSE_2026_1m.parquet \
   --strategy <path-to-strategy> --balance 100000 --fill-next-open --intrabar-stops --slippage 0.0015
 ```
+- `--entry-limit-ttl` models entry limit orders. A limit fills at the candle open when the open is already
+  at or better than it, otherwise at the limit: on the first candle after the decision only when the candle
+  closes at or past it (live the order goes out seconds into the minute), later when the range goes strictly
+  past it. `--entry-limit-strict` also forbids the fill at the first open — the result can depend almost
+  entirely on that one assumption, so run both and treat them as the optimistic and pessimistic bounds.
 
 ## Backtest of every ticker (in parallel)
 

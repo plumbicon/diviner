@@ -387,7 +387,8 @@ export class MultiSymbolTinkoffExecutor {
         });
         this._armExitDeadline(ticker, exitDeadline);
         this._inFlight.add(ticker);
-        this._enqueue(ticker, () => this._executeOrder(ticker, side === "long" ? "buy" : "sell", lots));
+        const marks = this._latencyMarks();
+        this._enqueue(ticker, () => this._executeOrder(ticker, side === "long" ? "buy" : "sell", lots, marks));
         return position;
     }
 
@@ -409,7 +410,8 @@ export class MultiSymbolTinkoffExecutor {
         slot.position = null;
         slot.store.clear();
         this._inFlight.add(ticker);
-        this._enqueue(ticker, () => this._closeRealPosition(ticker, closed, reason));
+        const marks = this._latencyMarks();
+        this._enqueue(ticker, () => this._closeRealPosition(ticker, closed, reason, marks));
         return closed;
     }
 
@@ -475,6 +477,38 @@ export class MultiSymbolTinkoffExecutor {
         if (slot?.exitTimer) { clearTimeout(slot.exitTimer); slot.exitTimer = null; }
     }
 
+    /**
+     * Latency marks of an order being queued: the close of the decision candle and the
+     * moment its minute was released to the engine (set by the data source).
+     * @returns {{closedAt: number|null, releasedAt: number|null, queuedAt: number}} Marks, ms.
+     * @private
+     */
+    _latencyMarks() {
+        const candle = this.currentCandle;
+        return {
+            closedAt: Number.isFinite(candle?.closedAt) ? candle.closedAt : null,
+            releasedAt: Number.isFinite(candle?.releasedAt) ? candle.releasedAt : null,
+            queuedAt: Date.now(),
+        };
+    }
+
+    /**
+     * Log how long an order took after its decision candle closed: batch release, queueing
+     * in the strategy, sending (after the trading status check) and the fill report.
+     * @param {string} ticker - Ticker.
+     * @param {string} kind - "open" or "close".
+     * @param {object} marks - Marks from {@link _latencyMarks} plus sentAt and filledAt.
+     * @private
+     */
+    _logLatency(ticker, kind, marks) {
+        if (!Number.isFinite(marks?.closedAt)) return;
+        const after = (at) => (Number.isFinite(at) ? `+${at - marks.closedAt} ms` : "n/a");
+        console.log(
+            `[MultiExec] ${ticker}: ${kind} latency after the candle close — released ${after(marks.releasedAt)},`
+            + ` queued ${after(marks.queuedAt)}, sent ${after(marks.sentAt)}, filled ${after(marks.filledAt)}`,
+        );
+    }
+
     /** @private */
     _enqueue(ticker, operation) {
         this.orderQueue = this.orderQueue
@@ -491,7 +525,7 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /** @private */
-    async _executeOrder(ticker, direction, lots) {
+    async _executeOrder(ticker, direction, lots, marks = {}) {
         const instrument = this.byTicker.get(ticker);
         const slot = this.slots.get(ticker);
         try {
@@ -503,6 +537,7 @@ export class MultiSymbolTinkoffExecutor {
                 this._abortEntry(ticker);
                 return;
             }
+            marks.sentAt = Date.now();
             const result = await this.orderManager.postMarketOrder({
                 figi: instrument.figi,
                 instrumentId: instrument.uid || instrument.figi,
@@ -511,6 +546,7 @@ export class MultiSymbolTinkoffExecutor {
                 orderId: this._orderId(ticker, "open", direction),
                 confirmMarginTrade: this.confirmMarginTrade,
             });
+            marks.filledAt = Date.now();
             const summary = this.client.getOrderExecutionSummary(result);
             const executed = summary.lotsExecuted ?? lots;
             this.sessionTrades.push({
@@ -522,6 +558,7 @@ export class MultiSymbolTinkoffExecutor {
                 `[MultiExec] Open order executed: ${ticker} ${direction} ${executed}/${lots} lots${fill}`
                 + ` (${summary.statusName})`,
             );
+            this._logLatency(ticker, "open", marks);
             if (executed !== lots && slot.position) {
                 console.warn(`[MultiExec] ${ticker}: filled ${executed} of ${lots} lots — adjusting the state.`);
                 slot.position.size = executed;
@@ -583,11 +620,12 @@ export class MultiSymbolTinkoffExecutor {
     }
 
     /** @private */
-    async _closeRealPosition(ticker, position, reason) {
+    async _closeRealPosition(ticker, position, reason, marks = {}) {
         const instrument = this.byTicker.get(ticker);
         const slot = this.slots.get(ticker);
         try {
             const direction = position.side === "short" ? "buy" : "sell";
+            marks.sentAt = Date.now();
             const result = await this.orderManager.closePosition({
                 figi: instrument.figi,
                 instrumentId: instrument.uid || instrument.figi,
@@ -595,6 +633,7 @@ export class MultiSymbolTinkoffExecutor {
                 currentSide: position.side,
                 orderId: this._orderId(ticker, "close", direction),
             });
+            marks.filledAt = Date.now();
             const summary = this.client.getOrderExecutionSummary(result);
             const executed = summary.lotsExecuted ?? position.size;
             if (executed <= 0) throw new Error(`order not filled (${summary.statusName})`);
@@ -623,6 +662,7 @@ export class MultiSymbolTinkoffExecutor {
                 `[MultiExec] Close order executed: ${ticker} ${position.side} ${executed}/${position.size} lots`
                 + `${fill} [reason=${reason}] (${summary.statusName})`,
             );
+            this._logLatency(ticker, "close", marks);
         } catch (error) {
             // The position was dropped from the state BEFORE the order was sent
             // (optimistically). If the order failed, the position is still on the account —

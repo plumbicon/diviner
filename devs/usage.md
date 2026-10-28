@@ -130,7 +130,12 @@ The universe file is `{"tickers": [...], "instruments": {...}}`; instrument reso
 the same file (resolving a hundred tickers through the API takes ~40 s). A minute is handed to the
 strategy once every instrument has arrived or `--batch-grace-ms` has passed since the minute's first
 candle: a thin instrument without trades in a minute prints no candle, and waiting for it is
-pointless. An instrument whose order the broker rejected as unavailable (an instrument test is
+pointless. Closed candles arrive 0.13–0.20 s after the minute ends (measured 2026-10-28), while almost
+never all instruments of a universe trade in one minute — so with the default 8 s every order waits
+the full window; 1000–1500 ms is enough. Each order logs its latency after the decision candle's
+close: `AAA: open latency after the candle close — released +X ms, queued +Y ms, sent +Z ms, filled
++W ms` (release of the minute, the strategy's decision, the order sent after the trading status check,
+the fill report). A candle that comes after its minute was released is dropped with a warning. An instrument whose order the broker rejected as unavailable (an instrument test is
 required, no shorting) is blocked until restart; on insufficient margin — until the cash grows.
 
 Modes: `--sandbox`, `--dry-run`, a real account (no flags). On SIGINT/SIGTERM the engine leaves its

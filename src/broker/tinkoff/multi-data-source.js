@@ -195,6 +195,7 @@ export class MultiSymbolTinkoffDataSource {
      */
     _flushUpTo(ts) {
         const due = [...this._buckets.keys()].filter((t) => t <= ts).sort((a, b) => a - b);
+        const releasedAt = Date.now();
         for (const minute of due) {
             const bucket = this._buckets.get(minute);
             this._buckets.delete(minute);
@@ -206,6 +207,10 @@ export class MultiSymbolTinkoffDataSource {
             tickers.forEach((ticker, index) => {
                 const candle = bucket.get(ticker);
                 candle.isBatchEnd = index === tickers.length - 1;
+                // Latency marks: the executor logs how long an order took from the candle
+                // close, through the batch release, to the fill.
+                candle.closedAt = minute + this.intervalMs;
+                candle.releasedAt = releasedAt;
                 this._queue.push(candle);
             });
             this._lastFlushedTs = Math.max(this._lastFlushedTs, minute);

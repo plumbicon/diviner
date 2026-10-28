@@ -51,6 +51,9 @@ test("a minute is released as a batch, the last candle is marked isBatchEnd", as
     });
     assert.deepEqual(got.map((c) => c.ticker), ["AAA", "BBB", "CCC"], "ordered by ticker");
     assert.deepEqual(got.map((c) => Boolean(c.isBatchEnd)), [false, false, true]);
+    // Latency marks for the executor: the candle close and the batch release.
+    assert.ok(got.every((c) => c.closedAt === base + MIN), "closes one interval after the minute start");
+    assert.ok(got.every((c) => c.releasedAt === got[0].releasedAt && c.releasedAt > 0), "one release moment per batch");
     await src.requestStop();
 });
 

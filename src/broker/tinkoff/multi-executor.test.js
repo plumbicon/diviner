@@ -532,3 +532,41 @@ test("quotationToNumber: {units, nano} → number, absent and zero rate → null
     assert.equal(quotationToNumber(undefined), null);
     assert.equal(quotationToNumber({ units: 0, nano: 0 }), null, "a zero rate counts as unset");
 });
+
+test("order latency is logged from the decision candle's close to the fill", async () => {
+    const { exec } = build();
+    await exec.refreshBalance();
+    const closedAt = Date.now() - 900;
+    exec.setCurrentCandle(candle("AAA", 50, { closedAt, releasedAt: closedAt + 200 }));
+    const lines = [];
+    const log = console.log;
+    console.log = (line) => lines.push(String(line));
+    try {
+        assert.ok(exec.sell({ ticker: "AAA", budget: 5000 }));
+        await exec.drainOrders();
+        assert.ok(exec.closePosition("signal", "AAA"));
+        await exec.drainOrders();
+    } finally {
+        console.log = log;
+    }
+    const latency = lines.filter((line) => line.includes("latency after the candle close"));
+    assert.equal(latency.length, 2, "one line per order");
+    assert.match(latency[0], /AAA: open latency .* released \+200 ms, queued \+\d+ ms, sent \+\d+ ms, filled \+\d+ ms/);
+    assert.match(latency[1], /AAA: close latency/);
+});
+
+test("no latency line without the data source's marks", async () => {
+    const { exec } = build();
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    const lines = [];
+    const log = console.log;
+    console.log = (line) => lines.push(String(line));
+    try {
+        exec.sell({ ticker: "AAA", budget: 5000 });
+        await exec.drainOrders();
+    } finally {
+        console.log = log;
+    }
+    assert.equal(lines.filter((line) => line.includes("latency")).length, 0);
+});

@@ -141,3 +141,44 @@ test("per-instrument leverage: equity counts each position's margin at its lever
     assert.ok(Math.abs(p.equity(() => 99) - (10000 + 40 + 20)) < 1e-9);
     assert.ok(a && b);
 });
+
+// ── long leverage (margin buying) ─────────────────────────────────────────────
+
+test("long leverage 1 keeps the unleveraged long path exactly", () => {
+    const plain = new MultiPortfolio({ cash: 10000, commission: 0.0005 });
+    const explicit = new MultiPortfolio({ cash: 10000, commission: 0.0005, longLeverage: 1 });
+    for (const p of [plain, explicit]) {
+        p.open("X", { side: "long", price: 57.57, datetime: new Date(0), lot: 10, budget: 5000 });
+    }
+    assert.equal(explicit.positionOf("X").size, plain.positionOf("X").size);
+    assert.equal(explicit.cash.toFixed(10), plain.cash.toFixed(10));
+    const a = plain.close("X", { price: 58.1, datetime: new Date(1) });
+    const b = explicit.close("X", { price: 58.1, datetime: new Date(1) });
+    assert.equal(b.pnl.toFixed(10), a.pnl.toFixed(10));
+    assert.equal(explicit.cash.toFixed(10), plain.cash.toFixed(10));
+});
+
+test("a margin long: size scales with leverage, margin is locked and returned with the P&L", () => {
+    const p = new MultiPortfolio({ cash: 10000, commission: 0.0005, longLeverage: 2 });
+    const pos = p.open("X", { side: "long", price: 100, datetime: new Date(0), lot: 1, budget: 2500 });
+    // budget 2500 at leverage 2 buys about 5000 of notional (the 1% sizing pad and commission take a little)
+    assert.ok(pos.size >= 48 && pos.size <= 50, `size ${pos.size}`);
+    assert.equal(pos.leverage, 2);
+    assert.equal(p.cash.toFixed(6), (10000 - (pos.size * 100) / 2).toFixed(6));
+    assert.equal(p.equity(() => 101).toFixed(6), (10000 + pos.size * 1).toFixed(6));
+    const trade = p.close("X", { price: 101, datetime: new Date(1) });
+    const fee = pos.size * (100 + 101) * 0.0005;
+    assert.equal(trade.pnl.toFixed(6), (pos.size * 1 - fee).toFixed(6));
+    assert.equal(p.cash.toFixed(6), (10000 + trade.pnl).toFixed(6));
+});
+
+test("long leverage is capped per instrument and never below 1", () => {
+    const caps = { A: 4.5, B: 1.5, C: 0.9 };
+    const p = new MultiPortfolio({ cash: 10000, longLeverage: 2, longLeverageFor: (t) => caps[t] ?? Infinity });
+    assert.equal(p.longLeverageOf("A"), 2);
+    assert.equal(p.longLeverageOf("B"), 1.5);
+    assert.equal(p.longLeverageOf("C"), 1);
+    assert.equal(p.longLeverageOf("Z"), 2);
+    // long caps do not touch shorts
+    assert.equal(p.leverageOf("B"), 1);
+});

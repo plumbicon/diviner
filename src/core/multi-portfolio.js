@@ -21,8 +21,14 @@ export class MultiPortfolio {
      * @param {number} [params.cash] - Starting capital.
      * @param {number} [params.commission] - Commission per side.
      * @param {number} [params.leverage] - Short leverage.
+     * @param {Function} [params.leverageFor] - Per-instrument short leverage cap.
+     * @param {number} [params.longLeverage] - Long leverage (margin buying); 1 = unleveraged.
+     * @param {Function} [params.longLeverageFor] - Per-instrument long leverage cap.
      */
-    constructor({ cash = 10000, commission = 0.0005, leverage = 1, leverageFor = null } = {}) {
+    constructor({
+        cash = 10000, commission = 0.0005, leverage = 1, leverageFor = null,
+        longLeverage = 1, longLeverageFor = null,
+    } = {}) {
         this.initialCash = cash;
         this.cash = cash;
         this.commission = commission;
@@ -32,6 +38,10 @@ export class MultiPortfolio {
         // leverage; the global --leverage stays the upper bound. Without it behaviour is
         // as before — one leverage for everything.
         this.leverageFor = typeof leverageFor === "function" ? leverageFor : null;
+        // Long leverage: the broker lends for buying on margin too, with its own risk rate
+        // (dlong). 1 keeps the unleveraged long path exactly as before.
+        this.longLeverage = Number.isFinite(Number(longLeverage)) && Number(longLeverage) > 0 ? Number(longLeverage) : 1;
+        this.longLeverageFor = typeof longLeverageFor === "function" ? longLeverageFor : null;
         /** Ticker → position. @type {Map<string, object>} */
         this.positions = new Map();
         this.trades = [];
@@ -53,15 +63,22 @@ export class MultiPortfolio {
 
     /**
      * Leverage a short in the instrument opens with: the minimum of the global one and the
-     * one allowed for this instrument. Longs in the simulator are unleveraged.
+     * one allowed for this instrument.
      * @param {string} ticker - Ticker.
      * @returns {number} Leverage.
      */
     leverageOf(ticker) {
-        if (!this.leverageFor) return this.leverage;
-        const own = Number(this.leverageFor(ticker));
-        if (!Number.isFinite(own) || own <= 0) return this.leverage;
-        return Math.min(this.leverage, own);
+        return capped(this.leverage, this.leverageFor, ticker);
+    }
+
+    /**
+     * Leverage a long in the instrument opens with: the minimum of the global long leverage
+     * and the one allowed for this instrument, never below 1.
+     * @param {string} ticker - Ticker.
+     * @returns {number} Leverage.
+     */
+    longLeverageOf(ticker) {
+        return Math.max(1, capped(this.longLeverage, this.longLeverageFor, ticker));
     }
 
     /**
@@ -97,11 +114,11 @@ export class MultiPortfolio {
         budget = null, sl = null, tp = null, exitDeadline = null,
     }) {
         if (this.positions.has(ticker)) return null;
-        const leverage = side === "short" ? this.leverageOf(ticker) : 1;
+        const leverage = side === "short" ? this.leverageOf(ticker) : this.longLeverageOf(ticker);
         const actualSize = size || this.sizeFor(price, lot, budget ?? this.cash, leverage);
         if (actualSize <= 0) return null;
 
-        if (side === "long") {
+        if (side === "long" && leverage === 1) {
             const cost = actualSize * price * (1 + this.commission);
             if (cost > this.cash) return null;
             this.cash -= cost;
@@ -131,9 +148,13 @@ export class MultiPortfolio {
         const { size, entryPrice, side } = position;
         const fee = size * (entryPrice + price) * this.commission;
         let pnl;
-        if (side === "long") {
+        if (side === "long" && (position.leverage ?? 1) === 1) {
             pnl = size * (price - entryPrice) - fee;
             this.cash += size * price * (1 - this.commission);
+        } else if (side === "long") {
+            // A margin long: the posted margin comes back together with the P&L, as for a short.
+            pnl = size * (price - entryPrice) - fee;
+            this.cash += (size * entryPrice) / position.leverage + pnl;
         } else {
             pnl = size * (entryPrice - price) - fee;
             // The margin of this very position is returned: with per-instrument leverage the
@@ -161,8 +182,11 @@ export class MultiPortfolio {
         let total = this.cash;
         for (const [ticker, position] of this.positions) {
             const price = priceOf(ticker, position) ?? position.entryPrice;
-            if (position.side === "long") {
+            if (position.side === "long" && (position.leverage ?? 1) === 1) {
                 total += position.size * price;
+            } else if (position.side === "long") {
+                total += (position.size * position.entryPrice) / position.leverage
+                    + position.size * (price - position.entryPrice);
             } else {
                 total += (position.size * position.entryPrice) / (position.leverage || this.leverage)
                     + position.size * (position.entryPrice - price);
@@ -170,4 +194,19 @@ export class MultiPortfolio {
         }
         return total;
     }
+}
+
+/**
+ * Leverage capped by a per-instrument limit; the global value stays the upper bound.
+ * @param {number} global - Global leverage.
+ * @param {Function|null} limitFor - Ticker → allowed leverage.
+ * @param {string} ticker - Ticker.
+ * @returns {number} Leverage.
+ * @private
+ */
+function capped(global, limitFor, ticker) {
+    if (!limitFor) return global;
+    const own = Number(limitFor(ticker));
+    if (!Number.isFinite(own) || own <= 0) return global;
+    return Math.min(global, own);
 }

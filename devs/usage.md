@@ -41,7 +41,8 @@ diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
 | `--fill-next-open` | Fill at the next open of the same instrument instead of the current close | off |
 | `--intrabar-stops` | SL/TP by high/low, filled at the level | off |
 | `--model-liquidation` | gap-aware fills + margin call (with leverage > 1) | off |
-| `--risk-rates <file>` | Broker risk rates per instrument: an instrument's leverage is at most `1/dshort` (universe only) | — |
+| `--risk-rates <file>` | Broker risk rates per instrument, `{TICKER: {dshort, dlong}}`: short leverage is at most `1/dshort`, long leverage at most `1/dlong` (universe only) | — |
+| `--long-leverage <n>` | Long leverage (margin buying, universe only): scales the long position size and locks notional/leverage as margin; 1 keeps the unleveraged long exactly as before | `1` |
 | `--verbose` | Include `trade_log` in the report | off |
 | `[source]` | Positional argument — Parquet (or stdin) | — |
 
@@ -75,7 +76,8 @@ The options are the same as for a single-ticker backtest. Differences:
 - the stream carries every instrument by time, a minute comes as a batch, its last candle is `isBatchEnd`;
 - the strategy sets the position size: `this.execution.sell({ ticker, budget, … })`;
 - equity is marked once a minute (at the end of the batch) at the prices of all open positions;
-- `--risk-rates` caps the short leverage of each instrument by the broker's risk rate.
+- `--risk-rates` caps the short leverage of each instrument by the broker's risk rate (`dshort`), and with
+  `--long-leverage` the long leverage too (`dlong`).
 
 ## Backtest of every ticker (in parallel)
 

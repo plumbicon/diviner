@@ -30,7 +30,8 @@ export const options = [
     { flags: "--fill-next-open", description: "Fill orders at the open of the next candle (more realistic than current-close fill)" },
     { flags: "--intrabar-stops", description: "Evaluate SL/TP intrabar by candle high/low and fill at the level (default off = close-only). Used by A07." },
     { flags: "--model-liquidation", description: "With --intrabar-stops + leverage>1: gap-aware stop fills + margin-call liquidation (loss capped at posted margin). Off = stops always fill at the level (no liquidation)." },
-    { flags: "--risk-rates <file>", description: "JSON with per-instrument short risk rates: {TICKER: 0.25} or {TICKER: {dshort: 0.25}}. Short leverage of a name is capped at 1/dshort, --leverage stays the upper bound. Multi-symbol runs only." },
+    { flags: "--risk-rates <file>", description: "JSON with per-instrument risk rates: {TICKER: 0.25} or {TICKER: {dshort: 0.25, dlong: 0.2}}. Short leverage of a name is capped at 1/dshort, long leverage at 1/dlong; --leverage and --long-leverage stay the upper bounds. Multi-symbol runs only." },
+    { flags: "--long-leverage <n>", description: "Long-side leverage (margin buying), multi-symbol runs only: scales long position size and locks notional/leverage as margin (default 1 = unleveraged, the previous behaviour)", default: "1" },
 ];
 
 /**
@@ -47,15 +48,47 @@ export const options = [
  */
 export function loadShortLeverageCaps(file) {
     if (!file) return null;
-    const raw = JSON.parse(readFileSync(file, "utf8"));
-    const caps = new Map();
-    for (const [ticker, value] of Object.entries(raw)) {
-        const dshort = Number(typeof value === "object" && value !== null ? value.dshort : value);
-        if (Number.isFinite(dshort) && dshort > 0) caps.set(ticker, 1 / dshort);
-    }
+    const caps = readRates(file, (value) => (typeof value === "object" && value !== null ? value.dshort : value));
     if (caps.size === 0) throw new Error(`--risk-rates: ${file} holds no dshort rates`);
     console.error(`[SimulatedBroker] risk rates: ${caps.size} instruments, short leverage capped at 1/dshort`);
     return (ticker) => caps.get(ticker) ?? Infinity;
+}
+
+/**
+ * Long leverage caps from the same risk rates file: an instrument's long leverage is
+ * 1/dlong. A file without dlong rates caps nothing, and with --long-leverage > 1 that is
+ * said out loud: margin buying then runs at the global leverage for every name.
+ *
+ * @param {string|null} file - Path to the JSON.
+ * @param {number} longLeverage - The global --long-leverage.
+ * @returns {((ticker: string) => number)|null} Instrument long leverage, or null.
+ */
+export function loadLongLeverageCaps(file, longLeverage = 1) {
+    if (!file) return null;
+    const caps = readRates(file, (value) => (typeof value === "object" && value !== null ? value.dlong : null));
+    if (caps.size === 0) {
+        if (longLeverage > 1) console.error(`[SimulatedBroker] --risk-rates: ${file} holds no dlong rates — long leverage is not capped per instrument`);
+        return null;
+    }
+    console.error(`[SimulatedBroker] risk rates: ${caps.size} instruments, long leverage capped at 1/dlong`);
+    return (ticker) => caps.get(ticker) ?? Infinity;
+}
+
+/**
+ * Read a risk rates file into ticker → leverage (1/rate).
+ * @param {string} file - Path to the JSON.
+ * @param {(value: *) => *} pick - Extracts the rate from a file entry.
+ * @returns {Map<string, number>} Leverage per ticker.
+ * @private
+ */
+function readRates(file, pick) {
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    const caps = new Map();
+    for (const [ticker, value] of Object.entries(raw)) {
+        const rate = Number(pick(value));
+        if (Number.isFinite(rate) && rate > 0) caps.set(ticker, 1 / rate);
+    }
+    return caps;
 }
 
 /**
@@ -85,6 +118,7 @@ export async function createBroker(config = {}) {
         initialCash:   Number(config.balance),
         commission:    Number(config.commission),
         leverage:      Number(config.leverage),
+        longLeverage:  Number(config.longLeverage ?? 1),
         riskRates:     config.riskRates ?? null,
         fillOnNextOpen: Boolean(config.fillNextOpen),
         intrabarStops: Boolean(config.intrabarStops),
@@ -540,6 +574,7 @@ export function createSimulatedBroker({
     initialCash = 10000,
     commission = 0.0005,
     leverage = 1,
+    longLeverage = 1,
     riskRates = null,
     fillOnNextOpen = false,
     intrabarStops = false,
@@ -570,8 +605,12 @@ export function createSimulatedBroker({
     // Per-instrument short risk rates: each has its own leverage cap (1/dshort), below the
     // global --leverage. Without the file behaviour is as before — one leverage for all.
     const leverageFor = multiSymbol ? loadShortLeverageCaps(riskRates) : null;
+    const longLeverageFor = multiSymbol ? loadLongLeverageCaps(riskRates, longLeverage) : null;
+    if (!multiSymbol && longLeverage > 1) {
+        console.error("[SimulatedBroker] --long-leverage applies to multi-symbol runs only; ignored");
+    }
     const portfolio = multiSymbol
-        ? new MultiPortfolio({ cash: initialCash, commission, leverage, leverageFor })
+        ? new MultiPortfolio({ cash: initialCash, commission, leverage, leverageFor, longLeverage, longLeverageFor })
         : new Portfolio({ cash: initialCash, commission, lot, leverage });
     const equity = [];
     const data = new SimulatedDataSource({

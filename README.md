@@ -29,6 +29,10 @@ export T_INVEST_TOKEN=<your-token>
 diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
   --strategy <path-to-strategy> --balance 10000 --commission 0.0005
 
+# backtest a universe with live-like market fills (0.15% slippage against each market order)
+diviner src/broker/simulated/broker.js data/tinkoff/UNIVERSE_2026_1m.parquet \
+  --strategy <path-to-strategy> --balance 100000 --fill-next-open --intrabar-stops --slippage 0.0015
+
 # backtest every ticker (in parallel, worker_threads)
 node scripts/backtest.mjs --strategy <NAME> --year 2026 --intrabar-stops
 

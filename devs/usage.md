@@ -43,6 +43,7 @@ diviner src/broker/simulated/broker.js data/tinkoff/SBER_2024_1m.parquet \
 | `--model-liquidation` | gap-aware fills + margin call (with leverage > 1) | off |
 | `--risk-rates <file>` | Broker risk rates per instrument, `{TICKER: {dshort, dlong}}`: short leverage is at most `1/dshort`, long leverage at most `1/dlong` (universe only) | — |
 | `--long-leverage <n>` | Long leverage (margin buying, universe only): scales the long position size and locks notional/leverage as margin; 1 keeps the unleveraged long exactly as before | `1` |
+| `--slippage <rate>` | Market order slippage, a share of the price against the order (universe only): a sale fills lower, a purchase higher; entries and every exit except an intrabar SL/TP, which fill at the level | `0` |
 | `--verbose` | Include `trade_log` in the report | off |
 | `[source]` | Positional argument — Parquet (or stdin) | — |
 
@@ -78,6 +79,14 @@ The options are the same as for a single-ticker backtest. Differences:
 - equity is marked once a minute (at the end of the batch) at the prices of all open positions;
 - `--risk-rates` caps the short leverage of each instrument by the broker's risk rate (`dshort`), and with
   `--long-leverage` the long leverage too (`dlong`).
+- `--slippage` makes market fills pay the spread and the book, which the candle open does not. For a
+  strategy with several market orders a day on thin MOEX names, 0.15% (`--slippage 0.0015`) matched live
+  fills; without it such a backtest can overstate the return several times.
+
+```bash
+diviner src/broker/simulated/broker.js data/tinkoff/UNIVERSE_2026_1m.parquet \
+  --strategy <path-to-strategy> --balance 100000 --fill-next-open --intrabar-stops --slippage 0.0015
+```
 
 ## Backtest of every ticker (in parallel)
 

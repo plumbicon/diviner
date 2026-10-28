@@ -17,7 +17,7 @@ const bars = (ticker, closes) => closes.map((close, i) => ({
 }));
 
 /** Multi-ticker broker over a synthetic dataset. */
-function makeBroker({ aaa, bbb, lots = { AAA: 10, BBB: 1 } }) {
+function makeBroker({ aaa, bbb, lots = { AAA: 10, BBB: 1 }, slippage = 0 }) {
     const bySymbol = new Map([
         ["AAA", new Map([[1, CandleSeries.from(bars("AAA", aaa))]])],
         ["BBB", new Map([[1, CandleSeries.from(bars("BBB", bbb))]])],
@@ -51,7 +51,7 @@ function makeBroker({ aaa, bbb, lots = { AAA: 10, BBB: 1 } }) {
         candles: null, series: null, bySymbol, symbols, instruments, mergeStream,
         metadata: { intervalMinutes: 1 },
         initialCash: 10000, commission: 0.0005, leverage: 1,
-        fillOnNextOpen: true, intrabarStops: true,
+        fillOnNextOpen: true, intrabarStops: true, slippage,
     });
 }
 
@@ -209,4 +209,36 @@ test("closeAtLast closes at once at the last trade price and drops the pending o
     exec.setCurrentCandle(aaa[3]);                       // the next candle no longer fills anything
     assert.equal(exec.getPositions().length, 0);
     assert.equal(exec.closeAtLast("time", "AAA"), null);
+});
+
+test("slippage: a market order fills against itself, a stop at the level", () => {
+    const broker = makeBroker({ aaa: [100, 100, 100, 100, 100], bbb: [50, 50, 50, 50, 50], slippage: 0.01 });
+    const exec = broker.exec;
+    const aaa = bars("AAA", [100, 100, 100, 100, 100]);
+    const bbb = bars("BBB", [50, 50, 50, 50, 50]);
+    exec.setCurrentCandle(aaa[0]);
+    exec.sell({ ticker: "AAA", budget: 3000 });
+    exec.setCurrentCandle(bbb[0]);
+    exec.buy({ ticker: "BBB", budget: 3000, sl: 45 });
+    exec.setCurrentCandle(aaa[1]);                       // short sold 1% below the open
+    exec.setCurrentCandle(bbb[1]);                       // long bought 1% above the open
+    assert.equal(exec.getPositionOf("AAA").entryPrice.toFixed(4), "99.0000");
+    assert.equal(exec.getPositionOf("BBB").entryPrice.toFixed(4), "50.5000");
+
+    exec.closePosition("signal", "AAA");
+    exec.setCurrentCandle(aaa[2]);                       // short covered 1% above the open
+    const covered = broker.portfolio.trades.find((t) => t.ticker === "AAA");
+    assert.equal(covered.exitPrice.toFixed(4), "101.0000");
+
+    // The stop is touched intrabar: it fills exactly at the level, no slippage.
+    const stopped = exec.checkStops({ ...bbb[2], low: 44 });
+    assert.equal(stopped.exitPrice, 45);
+    assert.equal(stopped.reason, "sl");
+});
+
+test("slippage is off by default and shows in the report", async () => {
+    const broker = makeBroker({ aaa: [100, 100, 98, 96, 94], bbb: [50, 50, 49, 48, 47] });
+    const report = await run(broker, new ShortBoth(new StreamingCandleSink(), 10000, 0.0005));
+    assert.equal(report.backtest_parameters.slippage, 0);
+    assert.equal(report.trade_log.find((t) => t.ticker === "AAA").entryPrice, 100);
 });

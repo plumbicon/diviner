@@ -22,6 +22,11 @@ import { evaluateIntrabarStop, classifyStopExit } from "../../core/stops.js";
  * Fills happen at the open of the next candle of THE SAME instrument (`fillOnNextOpen`).
  * Stops execute intrabar at the level, bypassing the buffer: an exchange stop triggers on
  * touch, not at the open of the next bar.
+ *
+ * Market orders (entries and every exit except an intrabar stop) can pay `slippage` — a
+ * share of the price against the order: a sale fills lower, a purchase higher. Live the
+ * market order crosses the spread and walks the book; the candle open does not. Stops are
+ * left at the level: live they filled no worse than it.
  */
 export class MultiSymbolExecutor {
     /**
@@ -30,11 +35,13 @@ export class MultiSymbolExecutor {
      * @param {boolean} [params.fillOnNextOpen] - Fill at the next candle's open.
      * @param {boolean} [params.intrabarStops] - Intrabar SL/TP.
      * @param {Map<string, object>} [params.instruments] - Ticker → instrument (lot).
+     * @param {number} [params.slippage] - Market order slippage, share of the price (0.001 = 0.1%).
      */
-    constructor({ portfolio, fillOnNextOpen = false, intrabarStops = false, instruments = null }) {
+    constructor({ portfolio, fillOnNextOpen = false, intrabarStops = false, instruments = null, slippage = 0 }) {
         this.portfolio = portfolio;
         this.fillOnNextOpen = fillOnNextOpen;
         this.intrabarStops = intrabarStops;
+        this.slippage = Number(slippage) || 0;
         this.instruments = instruments instanceof Map ? instruments : new Map();
 
         this.currentCandle = null;
@@ -113,9 +120,7 @@ export class MultiSymbolExecutor {
             }
             return null;
         }
-        return this.portfolio.close(ticker, {
-            price: this.lastCandle.get(ticker)?.close, datetime: this.currentCandle?.datetime, reason,
-        });
+        return this._marketClose(ticker, this.lastCandle.get(ticker)?.close, this.currentCandle?.datetime, reason);
     }
 
     /**
@@ -133,11 +138,10 @@ export class MultiSymbolExecutor {
         if (!position) return null;
         if (this._pending.get(ticker)?.type === "close") this._pending.delete(ticker);
         const candle = this.lastCandle.get(ticker);
-        return this.portfolio.close(ticker, {
-            price: candle?.close ?? position.entryPrice,
-            datetime: datetime ?? candle?.datetime ?? this.currentCandle?.datetime,
-            reason,
-        });
+        return this._marketClose(
+            ticker, candle?.close ?? position.entryPrice,
+            datetime ?? candle?.datetime ?? this.currentCandle?.datetime, reason,
+        );
     }
 
     /**
@@ -246,17 +250,42 @@ export class MultiSymbolExecutor {
         if (!Number.isFinite(price)) return;
 
         if (order.type === "close") {
-            this.portfolio.close(order.ticker, { price, datetime, reason: order.reason });
+            this._marketClose(order.ticker, price, datetime, order.reason);
             return;
         }
+        const side = order.type === "open-long" ? "long" : "short";
         this.portfolio.open(order.ticker, {
-            side: order.type === "open-long" ? "long" : "short",
-            price, datetime,
+            side,
+            price: this._slip(price, side === "long" ? "buy" : "sell"),
+            datetime,
             lot: Number(this.instruments.get(order.ticker)?.lot) || 1,
             size: order.size,
             budget: order.budget,
             sl: order.sl, tp: order.tp, exitDeadline: order.exitDeadline,
         });
+    }
+
+    /**
+     * Close a position with a market order: at the price minus slippage against the order.
+     * @private
+     */
+    _marketClose(ticker, price, datetime, reason) {
+        const position = this.portfolio.positionOf(ticker);
+        if (!position) return null;
+        const action = position.side === "short" ? "buy" : "sell";
+        return this.portfolio.close(ticker, { price: this._slip(price, action), datetime, reason });
+    }
+
+    /**
+     * Market order fill price: a purchase pays more, a sale gets less.
+     * @param {number} price - Reference price (candle open or close).
+     * @param {"buy"|"sell"} action - Order direction.
+     * @returns {number} Fill price.
+     * @private
+     */
+    _slip(price, action) {
+        if (!this.slippage || !Number.isFinite(price)) return price;
+        return action === "buy" ? price * (1 + this.slippage) : price * (1 - this.slippage);
     }
 
     /**
@@ -270,11 +299,10 @@ export class MultiSymbolExecutor {
         }
         for (const position of this.getPositions()) {
             const candle = this.lastCandle.get(position.ticker);
-            this.portfolio.close(position.ticker, {
-                price: candle?.close ?? position.entryPrice,
-                datetime: candle?.datetime ?? position.entryTime,
-                reason: "eod",
-            });
+            this._marketClose(
+                position.ticker, candle?.close ?? position.entryPrice,
+                candle?.datetime ?? position.entryTime, "eod",
+            );
         }
         if (this.equity.length > 0) this.equity[this.equity.length - 1] = this.getEquity();
     }

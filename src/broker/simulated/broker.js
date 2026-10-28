@@ -31,6 +31,7 @@ export const options = [
     { flags: "--intrabar-stops", description: "Evaluate SL/TP intrabar by candle high/low and fill at the level (default off = close-only). Used by A07." },
     { flags: "--model-liquidation", description: "With --intrabar-stops + leverage>1: gap-aware stop fills + margin-call liquidation (loss capped at posted margin). Off = stops always fill at the level (no liquidation)." },
     { flags: "--risk-rates <file>", description: "JSON with per-instrument risk rates: {TICKER: 0.25} or {TICKER: {dshort: 0.25, dlong: 0.2}}. Short leverage of a name is capped at 1/dshort, long leverage at 1/dlong; --leverage and --long-leverage stay the upper bounds. Multi-symbol runs only." },
+    { flags: "--slippage <rate>", description: "Market order slippage, share of the price against the order (0.0015 = 0.15%): entries and non-stop exits; intrabar SL/TP fill at the level. Multi-symbol runs only", default: "0" },
     { flags: "--long-leverage <n>", description: "Long-side leverage (margin buying), multi-symbol runs only: scales long position size and locks notional/leverage as margin (default 1 = unleveraged, the previous behaviour)", default: "1" },
 ];
 
@@ -119,6 +120,7 @@ export async function createBroker(config = {}) {
         commission:    Number(config.commission),
         leverage:      Number(config.leverage),
         longLeverage:  Number(config.longLeverage ?? 1),
+        slippage:      Number(config.slippage ?? 0),
         riskRates:     config.riskRates ?? null,
         fillOnNextOpen: Boolean(config.fillNextOpen),
         intrabarStops: Boolean(config.intrabarStops),
@@ -575,6 +577,7 @@ export function createSimulatedBroker({
     commission = 0.0005,
     leverage = 1,
     longLeverage = 1,
+    slippage = 0,
     riskRates = null,
     fillOnNextOpen = false,
     intrabarStops = false,
@@ -609,6 +612,9 @@ export function createSimulatedBroker({
     if (!multiSymbol && longLeverage > 1) {
         console.error("[SimulatedBroker] --long-leverage applies to multi-symbol runs only; ignored");
     }
+    if (!multiSymbol && slippage > 0) {
+        console.error("[SimulatedBroker] --slippage applies to multi-symbol runs only; ignored");
+    }
     const portfolio = multiSymbol
         ? new MultiPortfolio({ cash: initialCash, commission, leverage, leverageFor, longLeverage, longLeverageFor })
         : new Portfolio({ cash: initialCash, commission, lot, leverage });
@@ -619,7 +625,7 @@ export function createSimulatedBroker({
         bySymbol, symbols, instruments, mergeStream,
     });
     const exec = multiSymbol
-        ? new MultiSymbolExecutor({ portfolio, fillOnNextOpen, intrabarStops, instruments })
+        ? new MultiSymbolExecutor({ portfolio, fillOnNextOpen, intrabarStops, instruments, slippage })
         : new SimulatedExecutor({ portfolio, fillOnNextOpen, intrabarStops, modelLiquidation });
 
     return {
@@ -648,6 +654,7 @@ export function createSimulatedBroker({
                         history_file: meta.historyFile || "",
                         strategy_file: meta.strategyFile || "",
                         fill_mode: fillOnNextOpen ? "next-open" : "current-close",
+                        slippage,
                         symbols: symbols || [],
                     },
                     performance_metrics: new PerformanceMetrics({

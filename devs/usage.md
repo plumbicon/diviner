@@ -124,7 +124,7 @@ T_INVEST_TOKEN=<token> diviner src/broker/tinkoff/multi-broker.js \
 | `--account <id>` | Account ID | — |
 | `--sandbox`, `--dry-run` | Sandbox / no orders sent | off |
 | `--interval <minutes>` | Candle interval | `1` |
-| `--batch-grace-ms <ms>` | How long to wait for late instruments of a minute before deciding | `8000` |
+| `--batch-grace-ms <ms>` | How long to wait for late instruments of a minute before deciding | `500` |
 | `--stall-timeout <minutes>` | Silence threshold of the whole stream during a session (0 disables), see below | `30` |
 | `--intrabar-stops` | SL/TP by the high/low of the arrived candle | off |
 | `--leverage <n>` | Leverage; > 1 sends `confirmMarginTrade` | `1` |
@@ -139,8 +139,10 @@ the same file (resolving a hundred tickers through the API takes ~40 s). A minut
 strategy once every instrument has arrived or `--batch-grace-ms` has passed since the minute's first
 candle: a thin instrument without trades in a minute prints no candle, and waiting for it is
 pointless. Closed candles arrive 0.13–0.20 s after the minute ends (measured 2026-10-28), while almost
-never all instruments of a universe trade in one minute — so with the default 8 s every order waits
-the full window; 1000–1500 ms is enough. Each order logs its latency after the decision candle's
+never all instruments of a universe trade in one minute — so every order waits the full window, and
+the default is a short 500 ms. Orders of different instruments go out in parallel (one instrument's
+orders stay in sequence), so the last entry of a minute does not wait for the fills of the others.
+Each order logs its latency after the decision candle's
 close: `AAA: open latency after the candle close — released +X ms, queued +Y ms, sent +Z ms, filled
 +W ms` (release of the minute, the strategy's decision, the order sent after the trading status check,
 the fill report). A candle that comes after its minute was released is dropped with a warning. An instrument whose order the broker rejected as unavailable (an instrument test is

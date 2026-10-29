@@ -39,7 +39,7 @@ export class MultiSymbolTinkoffDataSource {
      */
     constructor({
         client, instruments, interval = 1, verbose = false,
-        stallTimeoutMin = 30, batchGraceMs = 8000,
+        stallTimeoutMin = 30, batchGraceMs = 500,
     }) {
         if (!instruments?.length) throw new Error("MultiSymbolTinkoffDataSource requires instruments");
         this.client = client;

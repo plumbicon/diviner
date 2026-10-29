@@ -570,3 +570,51 @@ test("no latency line without the data source's marks", async () => {
     }
     assert.equal(lines.filter((line) => line.includes("latency")).length, 0);
 });
+
+test("orders of different instruments go out in parallel, not one after another", async () => {
+    const { exec } = build();
+    await exec.refreshBalance();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const sent = [];
+    const original = exec.orderManager.postMarketOrder.bind(exec.orderManager);
+    exec.orderManager.postMarketOrder = async (order) => {
+        sent.push(order.figi);
+        await gate;
+        return original(order);
+    };
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 3000 });
+    exec.setCurrentCandle(candle("BBB", 100));
+    exec.sell({ ticker: "BBB", budget: 3000 });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, ["figi_AAA", "figi_BBB"], "the second order does not wait for the first fill");
+    release();
+    await exec.drainOrders();
+    assert.equal(exec.getPositions().length, 2);
+});
+
+test("an older balance reply does not overwrite a newer one", async () => {
+    const { exec, client } = build({ balance: 1000 });
+    const replies = [];
+    client.getRubBalance = () => new Promise((resolve) => replies.push(resolve));
+    const first = exec.refreshBalance();
+    const second = exec.refreshBalance();
+    replies[1](2000);
+    await second;
+    replies[0](1000);
+    await first;
+    assert.equal(exec.getBalance(), 2000);
+});
+
+test("drainOrders waits for an order queued while draining", async () => {
+    const { exec, placed } = build();
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    exec.sell({ ticker: "AAA", budget: 3000 });
+    const drained = exec.drainOrders();
+    exec.setCurrentCandle(candle("BBB", 100));
+    exec.sell({ ticker: "BBB", budget: 3000 });
+    await drained;
+    assert.equal(placed.length, 2);
+});

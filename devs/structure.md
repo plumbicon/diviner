@@ -163,7 +163,7 @@ recover), the process exits with code 1 and systemd starts it again.
 | | backtest (`simulated`) | live (`tinkoff`) |
 |---|---|---|
 | `stream()` source | preloaded parquet | gRPC subscription to closed candles |
-| Minute assembly (universe) | bundle merged by time | wait for all instruments or 8 s after the minute's first candle (`--batch-grace-ms`) |
+| Minute assembly (universe) | bundle merged by time | wait for all instruments or 0.5 s after the minute's first candle (`--batch-grace-ms`) |
 | History for the strategy | from the file, only the intervals stored in it | requests to the broker; settled ranges cached by `MarketDataCache` |
 | Intervals | **no aggregation**: requesting an interval missing from the file is an error | the interval is requested natively from the broker |
 | SL/TP | `evaluateStops` / `evaluateIntrabarStop` | the same + a market close on touch |

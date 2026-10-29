@@ -35,7 +35,7 @@ export const options = [
     { flags: "--order-retries <count>", description: "Retries on transient order errors", default: "2" },
     { flags: "--order-tag <tag>", description: "Label in the order idempotency key", default: "div" },
     { flags: "--stall-timeout <minutes>", description: "Silence threshold of the WHOLE stream before resubscribing (0 disables)", default: "30" },
-    { flags: "--batch-grace-ms <ms>", description: "Minute grace window: how long to wait for late instruments before deciding", default: "8000" },
+    { flags: "--batch-grace-ms <ms>", description: "Minute grace window: how long to wait for late instruments before deciding", default: "500" },
     { flags: "--state-dir <path>", description: "Directory of position state files (default .diviner-state)" },
     { flags: "--intrabar-stops", description: "Check SL/TP against the arrived candle's high/low, not only its close", default: false },
     { flags: "--leverage <n>", description: "Leverage. >1 sends confirmMarginTrade=true", default: "1" },
@@ -147,7 +147,7 @@ export async function createBroker(config = {}) {
         client, instruments, interval,
         verbose: Boolean(config.verbose),
         stallTimeoutMin: parseInt(config.stallTimeout ?? "30", 10),
-        batchGraceMs: parseInt(config.batchGraceMs ?? "8000", 10),
+        batchGraceMs: parseInt(config.batchGraceMs ?? "500", 10),
     });
     const exec = new MultiSymbolTinkoffExecutor({
         client, instruments, interval,

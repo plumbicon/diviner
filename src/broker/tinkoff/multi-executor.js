@@ -9,8 +9,10 @@
  * the fill price. How many instruments to hold and in what proportion is the
  * strategy's call.
  *
- * There is one order queue for all instruments: exchange orders must go out one at a
- * time, otherwise a partial fill of one would interleave with a rollback of another.
+ * Orders of one instrument go out one at a time, otherwise a partial fill would
+ * interleave with a rollback of the same position. Orders of different instruments go
+ * out in parallel: each one is a network round trip of ~0.5 s, and in a serial queue
+ * the last entry of a minute waited for every one before it.
  */
 import { join } from "node:path";
 import { PositionStore } from "../common/position-store.js";
@@ -106,6 +108,8 @@ export class MultiSymbolTinkoffExecutor {
 
         this.accountRubBalance = 0;
         this._balanceAt = 0;
+        this._balanceSeq = 0;
+        this._balanceApplied = 0;
         // How often to re-read the balance regardless of trades: money leaves the
         // account besides our orders too — fees, service charges, withdrawals. The cached
         // value then overstates the cash, and an order goes out for money that is gone.
@@ -123,7 +127,8 @@ export class MultiSymbolTinkoffExecutor {
          * could be traded never gets a chance.
          */
         this._blocked = new Map();
-        this.orderQueue = Promise.resolve();
+        /** Ticker → tail of the instrument's order chain. */
+        this._chains = new Map();
         this.sessionTrades = [];
     }
 
@@ -181,7 +186,7 @@ export class MultiSymbolTinkoffExecutor {
 
     /** Wait until every queued order has been processed. */
     async drainOrders() {
-        await this.orderQueue;
+        while (this._chains.size > 0) await Promise.all(this._chains.values());
     }
 
     // ── strategy contract ───────────────────────────────────────────────────
@@ -511,11 +516,15 @@ export class MultiSymbolTinkoffExecutor {
 
     /** @private */
     _enqueue(ticker, operation) {
-        this.orderQueue = this.orderQueue
+        const chain = (this._chains.get(ticker) ?? Promise.resolve())
             .then(operation)
             .catch((error) => console.error(`[MultiExec] ${ticker}: order queue failed — ${error.message}`))
-            .finally(() => { this._inFlight.delete(ticker); });
-        return this.orderQueue;
+            .finally(() => {
+                this._inFlight.delete(ticker);
+                if (this._chains.get(ticker) === chain) this._chains.delete(ticker);
+            });
+        this._chains.set(ticker, chain);
+        return chain;
     }
 
     /** @private */
@@ -689,8 +698,15 @@ export class MultiSymbolTinkoffExecutor {
     /** Refresh the account's RUB balance. */
     async refreshBalance() {
         if (!this.client?.getRubBalance) return this.accountRubBalance;
+        // Orders of different instruments refresh the balance in parallel, and the
+        // replies may come back out of order: a read sent before a fill must not
+        // overwrite one sent after it.
+        const seq = ++this._balanceSeq;
         try {
-            this.accountRubBalance = await this.client.getRubBalance(this.client.accountId);
+            const balance = await this.client.getRubBalance(this.client.accountId);
+            if (seq < this._balanceApplied) return this.accountRubBalance;
+            this._balanceApplied = seq;
+            this.accountRubBalance = balance;
             this._balanceAt = Date.now();
         } catch (error) {
             // Do not fail the tick: keep working with the previous value, but do not mark

@@ -194,7 +194,7 @@ export async function createBroker(config = {}) {
             if (blocked.length) {
                 console.log(
                     "[MultiBroker] Rejected by the exchange: "
-                    + blocked.map((b) => `${b.ticker} (${b.permanent ? "permanently" : "no margin"})`).join(", "),
+                    + blocked.map((b) => `${b.ticker} (${b.shortDisabled ? "short disabled" : b.permanent ? "permanently" : "no margin"})`).join(", "),
                 );
             }
             await client.close();

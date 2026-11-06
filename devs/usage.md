@@ -147,6 +147,10 @@ close: `AAA: open latency after the candle close — released +X ms, queued +Y m
 +W ms` (release of the minute, the strategy's decision, the order sent after the trading status check,
 the fill report). A candle that comes after its minute was released is dropped with a warning. An instrument whose order the broker rejected as unavailable (an instrument test is
 required, no shorting) is blocked until restart; on insufficient margin — until the cash grows.
+The broker's short permission (`shortEnabledFlag`) is read at start-up and again every day after 06:00 MSK: a
+short of an instrument the broker has turned shorts off for is not sent, and the strategy gives the slot to the next
+candidate. The broker rejects such a short with the margin text ("Not enough assets for a margin trade"), so after
+that rejection the flag is re-read at once instead of waiting for the cash to grow.
 
 Modes: `--sandbox`, `--dry-run`, a real account (no flags). On SIGINT/SIGTERM the engine leaves its
 loop and the broker closes the session (unsubscribe, summary, positions closed with

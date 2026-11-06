@@ -10,6 +10,7 @@
  */
 import { TinkoffInvestApi, RealAccount, SandboxAccount } from "tinkoff-invest-api";
 import { InstrumentIdType } from "tinkoff-invest-api/dist/generated/instruments.js";
+import { InstrumentStatus } from "tinkoff-invest-api/dist/generated/common.js";
 import { CandleStream } from "./candle-stream.js";
 import { OrderGateway, orderExecutionSummary } from "./orders.js";
 import { AccountService } from "./account.js";
@@ -107,6 +108,21 @@ export class TinkoffClient {
         } catch (error) {
             throw new Error(`Failed to get instrument: ${error.message}`);
         }
+    }
+
+    /**
+     * Whether the broker allows shorting each TQBR share, in one request. The flag is
+     * not fixed: the broker turns shorts off after a sharp move (LSRG, 2026-10-29) and
+     * the order is then rejected with the same text as for a lack of margin.
+     * @returns {Promise<Map<string, boolean>>} Ticker → shortEnabledFlag.
+     */
+    async getShortEnabledFlags() {
+        const { instruments } = await this.api.instruments.shares({
+            instrumentStatus: InstrumentStatus.INSTRUMENT_STATUS_BASE,
+        });
+        return new Map(instruments
+            .filter((share) => share.classCode === "TQBR")
+            .map((share) => [share.ticker, Boolean(share.shortEnabledFlag)]));
     }
 
     /**

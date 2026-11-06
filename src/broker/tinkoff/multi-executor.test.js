@@ -13,7 +13,7 @@ const instruments = [
 
 const figiToTicker = { figi_AAA: "AAA", figi_BBB: "BBB" };
 
-function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = {}) {
+function build({ balance = 10_000, orders = {}, positions = {}, status = {}, shortFlags = null } = {}) {
     const placed = [];
     const state = { balance, calls: 0, fail: false };
     const client = {
@@ -26,6 +26,10 @@ function build({ balance = 10_000, orders = {}, positions = {}, status = {} } = 
         async getInstrumentPosition(figi) { return positions[figi] ?? null; },
         async getTradingStatus(figi) { return status[figi] ?? { marketOrderAvailableFlag: true }; },
     };
+    // The real client reads every TQBR share in one request; the stub serves what the
+    // test put into `state.shortFlags` at the moment of the call.
+    state.shortFlags = shortFlags;
+    if (shortFlags) client.getShortEnabledFlags = async () => new Map(Object.entries(state.shortFlags));
     // Method names and response shape match the real OrderManager/client: a stub with an
     // invented interface would let a call to a non-existent method slip through.
     const orderManager = {
@@ -387,6 +391,67 @@ test("an insufficient-margin block is lifted once cash grows", async () => {
     exec.setCurrentCandle(candle("AAA", 50));
     assert.ok(exec.sell({ ticker: "AAA", budget: 500 }), "the order is accepted again");
     await exec.drainOrders();
+});
+
+// ── the broker's short permission ───────────────────────────────────────────
+// Found live: LSRG became unshortable on 2026-10-29 and every short was rejected with
+// "Not enough assets for a margin trade" — the margin text — so the executor waited for
+// the cash to grow and tried again, day after day.
+
+test("a short of an instrument the broker does not let short is not sent", async () => {
+    const { exec, placed } = build({ shortFlags: { AAA: false, BBB: true } });
+    await exec.init();
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null, "the strategy gets a refusal");
+    assert.ok(exec.buy({ ticker: "AAA", budget: 5000 }), "a long of the same instrument is allowed");
+    exec.setCurrentCandle(candle("BBB", 100));
+    assert.ok(exec.sell({ ticker: "BBB", budget: 2500 }), "other instruments short as usual");
+    await exec.drainOrders();
+    assert.deepEqual(placed.map((o) => [o.figi, o.direction]), [["figi_AAA", "buy"], ["figi_BBB", "sell"]]);
+    assert.deepEqual(exec.getBlocked().filter((b) => b.shortDisabled).map((b) => b.ticker), ["AAA"]);
+    clearInterval(exec._shortFlagsTimer);
+});
+
+test("a margin-text rejection of a disabled short is not taken for a lack of cash", async () => {
+    const { exec, placed, state } = build({
+        balance: 1000,
+        orders: { throwOn: "AAA", throwMessage: "Not enough assets for a margin trade" },
+        shortFlags: { AAA: true, BBB: true },
+    });
+    await exec.refreshBalance();
+    await exec.refreshShortFlags();
+    state.shortFlags = { AAA: false, BBB: true };    // turned off after the morning read
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.ok(exec.sell({ ticker: "AAA", budget: 500 }), "the flag was still on: the order goes out");
+    await exec.drainOrders();
+    assert.equal(exec.isBlocked("AAA"), false, "not a margin block");
+
+    state.balance = 5000;                            // more cash does not help
+    await exec.refreshBalance();
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.equal(exec.sell({ ticker: "AAA", budget: 500 }), null, "no second rejected order");
+    assert.equal(placed.length, 1);
+});
+
+test("a short allowed again is traded after the next read of the flags", async () => {
+    const { exec, state } = build({ shortFlags: { AAA: false, BBB: true } });
+    await exec.refreshBalance();
+    await exec.refreshShortFlags();
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null);
+    state.shortFlags = { AAA: true, BBB: true };
+    await exec.refreshShortFlags();
+    assert.ok(exec.sell({ ticker: "AAA", budget: 5000 }), "the morning read lifts it");
+    await exec.drainOrders();
+});
+
+test("a failed read of the short flags keeps the previous ones", async () => {
+    const { exec, client } = build({ shortFlags: { AAA: false, BBB: true } });
+    await exec.refreshShortFlags();
+    client.getShortEnabledFlags = async () => { throw new Error("the broker is silent"); };
+    await exec.refreshShortFlags();
+    exec.setCurrentCandle(candle("AAA", 50));
+    assert.equal(exec.sell({ ticker: "AAA", budget: 5000 }), null);
 });
 
 test("a rejection for one instrument does not block the others", async () => {

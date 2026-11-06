@@ -46,6 +46,20 @@ const SOFT_REJECTIONS = [
 // a penny move of the balance.
 const BLOCK_RELEASE_RATIO = 1.25;
 
+// The broker's short permission is re-read once a day, after this Moscow time and before
+// the 07:00 open, and the clock is checked this often. The flag changes rarely, but when
+// it does, every short of the instrument is rejected — with the same "not enough assets"
+// text as for a lack of margin, so the rejection alone cannot tell the two apart.
+const SHORT_FLAGS_FROM_MSK_MIN = 6 * 60;
+const SHORT_FLAGS_CHECK_MS = 10 * 60 * 1000;
+const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+/** Moscow date and minute of the day of a timestamp. @private */
+function mskClock(ms) {
+    const iso = new Date(ms + MSK_OFFSET_MS).toISOString();
+    return { day: iso.slice(0, 10), minute: Number(iso.slice(11, 13)) * 60 + Number(iso.slice(14, 16)) };
+}
+
 /**
  * T-Invest Quotation `{units, nano}` → number.
  * @param {{units: number|string, nano: number}|undefined} q - API value.
@@ -127,6 +141,13 @@ export class MultiSymbolTinkoffExecutor {
          * could be traded never gets a chance.
          */
         this._blocked = new Map();
+        /** Tickers the broker does not let short now (shortEnabledFlag = false). */
+        this._shortDisabled = new Set();
+        /** Moscow date of the last successful read of the short flags. */
+        this._shortFlagsDay = null;
+        this._shortFlagsTimer = null;
+        this.shortFlagsCheckMs = Number.isFinite(options.shortFlagsCheckMs)
+            ? options.shortFlagsCheckMs : SHORT_FLAGS_CHECK_MS;
         /** Ticker → tail of the instrument's order chain. */
         this._chains = new Map();
         this.sessionTrades = [];
@@ -138,6 +159,50 @@ export class MultiSymbolTinkoffExecutor {
     async init() {
         await this.refreshBalance();
         await this.syncWithAccountPositions();
+        await this.refreshShortFlags();
+        this._armShortFlagsTimer();
+    }
+
+    /**
+     * Re-read which instruments the broker lets short. A short of a disabled instrument
+     * is not sent at all: the strategy gets a refusal and gives the slot to the next
+     * candidate. Failure to read keeps the previous flags.
+     * @returns {Promise<void>}
+     */
+    async refreshShortFlags() {
+        if (typeof this.client?.getShortEnabledFlags !== "function") return;
+        let flags;
+        try {
+            flags = await this.client.getShortEnabledFlags();
+        } catch (error) {
+            console.warn(`[MultiExec] short flags not read — ${error.message}`);
+            return;
+        }
+        for (const ticker of this.byTicker.keys()) {
+            const enabled = flags.get(ticker);
+            if (enabled === false && !this._shortDisabled.has(ticker)) {
+                this._shortDisabled.add(ticker);
+                console.warn(`[MultiExec] ${ticker}: the broker does not allow shorting it — short entries skipped.`);
+            } else if (enabled === true && this._shortDisabled.delete(ticker)) {
+                console.log(`[MultiExec] ${ticker}: shorting allowed again.`);
+            }
+        }
+        this._shortFlagsDay = mskClock(Date.now()).day;
+    }
+
+    /**
+     * Once a day, before the open, re-read the short flags. Live only: the timer runs on
+     * the wall clock and does not keep the process alive.
+     * @private
+     */
+    _armShortFlagsTimer() {
+        if (this._shortFlagsTimer || !(this.shortFlagsCheckMs > 0)) return;
+        if (typeof this.client?.getShortEnabledFlags !== "function") return;
+        this._shortFlagsTimer = setInterval(() => {
+            const { day, minute } = mskClock(Date.now());
+            if (day !== this._shortFlagsDay && minute >= SHORT_FLAGS_FROM_MSK_MIN) this.refreshShortFlags();
+        }, this.shortFlagsCheckMs);
+        this._shortFlagsTimer.unref?.();
     }
 
     setCurrentCandle(candle) {
@@ -249,7 +314,10 @@ export class MultiSymbolTinkoffExecutor {
 
     /** Blocked instruments and the reasons — for the exit report. */
     getBlocked() {
-        return [...this._blocked].map(([ticker, b]) => ({ ticker, ...b }));
+        return [
+            ...[...this._blocked].map(([ticker, b]) => ({ ticker, ...b })),
+            ...[...this._shortDisabled].map((ticker) => ({ ticker, permanent: false, shortDisabled: true })),
+        ];
     }
 
     /**
@@ -348,6 +416,10 @@ export class MultiSymbolTinkoffExecutor {
         // rejection repeats and the slot is wasted again.
         if (this.isBlocked(ticker)) {
             if (this.verbose) console.log(`[MultiExec] ${ticker}: skipped — instrument blocked by a rejection`);
+            return null;
+        }
+        if (side === "short" && this._shortDisabled.has(ticker)) {
+            if (this.verbose) console.log(`[MultiExec] ${ticker}: skipped — the broker does not allow shorting it`);
             return null;
         }
         // A warm-up candle from the catch-up updates state but must not trade — its
@@ -585,6 +657,13 @@ export class MultiSymbolTinkoffExecutor {
             console.error(`[MultiExec] ${ticker}: order failed — ${error.message}`);
             this._abortEntry(ticker);
             this._blockTicker(ticker, error.message || "");
+            // "Not enough assets" on a short is also what the broker answers when it has
+            // turned shorts of the instrument off. Check the flag at once: a disabled short
+            // must not look like a margin problem that more cash would solve.
+            if (direction === "sell" && SOFT_REJECTIONS.some((rx) => rx.test(error.message || ""))) {
+                await this.refreshShortFlags();
+                if (this._shortDisabled.has(ticker)) this._blocked.delete(ticker);
+            }
         }
         // The entry took margin: without a re-read the balance would stay at its
         // pre-trade value, getEquity() would count the margin twice — and the next slot
